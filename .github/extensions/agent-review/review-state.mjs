@@ -259,12 +259,31 @@ export class ReviewState {
         const attention = this.model.attention?.find((item) => item.id === id);
         const observation = this.generatedObservations.find((item) => item.id === id);
         const evidence = this.model.evidence?.[id];
-        const item = node || edge || packageChange || attention || observation || evidence;
+        const filePath = id?.startsWith("file:") ? id.slice("file:".length) : null;
+        const fileChange = filePath ? this.model.changes?.find((candidate) => candidate.path === filePath) : null;
+        const file = fileChange ? {
+            id,
+            kind: "file",
+            type: "file",
+            name: filePath,
+            path: filePath,
+            change: fileChange.status,
+            start_line: null,
+            end_line: null,
+            metrics: {
+                lines_added: fileChange.lines_added,
+                lines_removed: fileChange.lines_removed,
+                lines_changed: fileChange.lines_added + fileChange.lines_removed,
+            },
+            evidence_ids: [],
+        } : null;
+        const item = node || edge || packageChange || attention || observation || evidence || file;
         if (!item) throw new Error(`Unknown review item: ${id}`);
         const subject = node
             || (attention?.node_id ? this.model.nodes.find((candidate) => candidate.id === attention.node_id) : null)
             || (attention?.edge_id ? this.model.edges.find((candidate) => candidate.id === attention.edge_id) : null)
-            || packageChange;
+            || packageChange
+            || file;
         const evidenceIds = new Set(item.evidence_ids || []);
         if (this.model.evidence?.[id]) evidenceIds.add(id);
         const nodeById = new Map(this.model.nodes.map((candidate) => [candidate.id, candidate]));
@@ -292,9 +311,12 @@ export class ReviewState {
                     }
                     : null,
             })),
-            related_symbols: subject?.kind === "module"
+            related_symbols: subject?.kind === "module" || subject?.kind === "file"
                 ? this.model.nodes
-                    .filter((candidate) => candidate.module_id === subject.id && ["class", "function", "method"].includes(candidate.kind))
+                    .filter((candidate) =>
+                        ["class", "function", "method"].includes(candidate.kind)
+                        && (subject.kind === "module" ? candidate.module_id === subject.id : candidate.path === subject.path)
+                    )
                     .map((candidate) => ({
                         id: candidate.id,
                         kind: candidate.kind,

@@ -32,7 +32,11 @@ async function api(path, options = {}) {
         headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     });
     const body = await response.json();
-    if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+    if (!response.ok) {
+        const error = new Error(body.error || `Request failed (${response.status})`);
+        error.status = response.status;
+        throw error;
+    }
     return body;
 }
 
@@ -315,8 +319,13 @@ function field(label, value) {
 
 async function loadSource(query) {
     state.source = await api(`/api/source?${query}`);
-    const provenance = await api(`/api/attribution?path=${encodeURIComponent(state.source.path)}`);
-    state.attribution = provenance.attribution || [];
+    try {
+        const provenance = await api(`/api/attribution?path=${encodeURIComponent(state.source.path)}`);
+        state.attribution = provenance.attribution || [];
+    } catch (error) {
+        if (error.status !== 404) throw error;
+        state.attribution = [];
+    }
     state.sourceTab = state.source.diff ? "diff" : "current";
     renderSource();
 }
@@ -333,6 +342,7 @@ async function selectFile(change) {
     renderDetail(state.selected);
     try {
         await loadSource(`path=${encodeURIComponent(change.path)}`);
+        ensureAnnotation(state.selected);
     } catch (error) {
         showError(error);
     }
@@ -354,22 +364,124 @@ async function selectItem(item, notify = true) {
             if (!String(error.message).includes("has no source location")) showError(error);
         }
     }
-    if (item.evidence_ids?.length && (item.type || item.severity || item.node_id || item.edge_id)) {
-        const cached = state.payload?.annotations?.[item.id];
-        if (cached) {
-            renderAnnotation(item, cached);
-        } else {
-            renderAnnotation(item, null, true);
-            api("/api/annotation", {
-                method: "POST",
-                body: JSON.stringify({ id: item.id, evidence_ids: item.evidence_ids }),
-            })
-                .then(({ annotation }) => renderAnnotation(item, annotation))
-                .catch((error) => renderAnnotation(item, { error: error.message }));
-        }
+    if (item.path || item.evidence_ids?.length || item.node_id || item.edge_id) {
+        ensureAnnotation(item);
     } else {
         renderAnnotation(item, state.payload?.annotations?.[item.id] || null);
     }
+}
+
+function ensureAnnotation(item) {
+    const cached = state.payload?.annotations?.[item.id];
+    if (cached) {
+        renderAnnotation(item, cached);
+        return;
+    }
+    renderAnnotation(item, null, true);
+    api("/api/annotation", {
+        method: "POST",
+        body: JSON.stringify({ id: item.id, evidence_ids: item.evidence_ids || [] }),
+    })
+        .then(({ annotation }) => renderAnnotation(item, annotation))
+        .catch((error) => renderAnnotation(item, { error: error.message }));
+}
+
+function renderProvenance() {
+    const panel = elements.source_provenance;
+    panel.replaceChildren();
+    if (!state.attribution.length) {
+        panel.classList.add("hidden");
+        return;
+    }
+    panel.classList.remove("hidden");
+    const primary = state.attribution[0];
+    const heading = el("div", "provenance-heading");
+    heading.append(
+        el("span", "provenance-mark", "SESSION"),
+        el("strong", "", "Likely originating prompt"),
+        el("b", `confidence confidence-${primary.confidence}`, `${primary.confidence} match`),
+    );
+    panel.append(heading, el("p", "provenance-prompt", primary.prompt), el("p", "source-status", primary.reason));
+    const activity = primary.agent_activity.filter((item) => item.role === "assistant" || item.role === "tool").slice(-5);
+    if (activity.length) {
+        const details = el("details", "provenance-activity");
+        const summary = el("summary", "", `Visible agent activity (${activity.length})`);
+        const list = el("ul", "");
+        for (const item of activity) {
+            const label = item.role === "tool" ? item.tool_name || "tool" : "assistant";
+            const row = el("li", "");
+            row.append(el("strong", "", `${label}: `), document.createTextNode(item.summary));
+            list.append(row);
+        }
+        details.append(summary, list);
+        panel.append(details);
+    }
+    panel.append(el("p", "provenance-disclaimer", "Correlation uses visible prompts and file/tool activity. It does not expose hidden model reasoning or prove line-level authorship."));
+}
+
+function appendInlineMarkdown(container, text) {
+    const pattern = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+    let offset = 0;
+    for (const match of text.matchAll(pattern)) {
+        if (match.index > offset) container.append(document.createTextNode(text.slice(offset, match.index)));
+        const token = match[0];
+        if (token.startsWith("**")) {
+            const strong = el("strong", "");
+            appendInlineMarkdown(strong, token.slice(2, -2));
+            container.append(strong);
+        } else {
+            container.append(el("code", "inline-code", token.slice(1, -1)));
+        }
+        offset = match.index + token.length;
+    }
+    if (offset < text.length) container.append(document.createTextNode(text.slice(offset)));
+}
+
+function renderMarkdown(container, markdown) {
+    const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+    let list = null;
+    let paragraph = [];
+    const flushParagraph = () => {
+        if (!paragraph.length) return;
+        const node = el("p", "");
+        appendInlineMarkdown(node, paragraph.join(" "));
+        container.append(node);
+        paragraph = [];
+    };
+    const flushList = () => {
+        list = null;
+    };
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line) {
+            flushParagraph();
+            flushList();
+            continue;
+        }
+        if (/^[-*]\s+/.test(line)) {
+            flushParagraph();
+            if (!list) {
+                list = el("ul", "");
+                container.append(list);
+            }
+            const item = el("li", "");
+            appendInlineMarkdown(item, line.replace(/^[-*]\s+/, ""));
+            list.append(item);
+            continue;
+        }
+        if (/^#{1,3}\s+/.test(line)) {
+            flushParagraph();
+            flushList();
+            const level = Math.min(3, line.match(/^#+/)[0].length);
+            const heading = el(`h${level}`, "");
+            appendInlineMarkdown(heading, line.replace(/^#{1,3}\s+/, ""));
+            container.append(heading);
+            continue;
+        }
+        flushList();
+        paragraph.push(line);
+    }
+    flushParagraph();
 }
 
 function renderAnnotation(item, annotation, loading = false) {
@@ -378,39 +490,6 @@ function renderAnnotation(item, annotation, loading = false) {
     if (!item || (!loading && !annotation)) {
         panel.classList.add("hidden");
         return;
-    }
-
-    function renderProvenance() {
-        const panel = elements.source_provenance;
-        panel.replaceChildren();
-        if (!state.attribution.length) {
-            panel.classList.add("hidden");
-            return;
-        }
-        panel.classList.remove("hidden");
-        const primary = state.attribution[0];
-        const heading = el("div", "provenance-heading");
-        heading.append(
-            el("span", "provenance-mark", "SESSION"),
-            el("strong", "", "Likely originating prompt"),
-            el("b", `confidence confidence-${primary.confidence}`, `${primary.confidence} match`),
-        );
-        panel.append(heading, el("p", "provenance-prompt", primary.prompt), el("p", "source-status", primary.reason));
-        const activity = primary.agent_activity.filter((item) => item.role === "assistant" || item.role === "tool").slice(-5);
-        if (activity.length) {
-            const details = el("details", "provenance-activity");
-            const summary = el("summary", "", `Visible agent activity (${activity.length})`);
-            const list = el("ul", "");
-            for (const item of activity) {
-                const label = item.role === "tool" ? item.tool_name || "tool" : "assistant";
-                const row = el("li", "");
-                row.append(el("strong", "", `${label}: `), document.createTextNode(item.summary));
-                list.append(row);
-            }
-            details.append(summary, list);
-            panel.append(details);
-        }
-        panel.append(el("p", "provenance-disclaimer", "Correlation uses visible prompts and file/tool activity. It does not expose hidden model reasoning or prove line-level authorship."));
     }
     panel.classList.remove("hidden");
     const heading = el("div", "annotation-heading");
@@ -431,71 +510,6 @@ function renderAnnotation(item, annotation, loading = false) {
         const citations = el("div", "annotation-citations");
         citations.append(...annotation.evidence_ids.map(evidenceButton));
         panel.append(citations);
-    }
-
-    function appendInlineMarkdown(container, text) {
-        const pattern = /(\*\*[^*]+\*\*|`[^`]+`)/g;
-        let offset = 0;
-        for (const match of text.matchAll(pattern)) {
-            if (match.index > offset) container.append(document.createTextNode(text.slice(offset, match.index)));
-            const token = match[0];
-            if (token.startsWith("**")) {
-                const strong = el("strong", "");
-                appendInlineMarkdown(strong, token.slice(2, -2));
-                container.append(strong);
-            } else {
-                container.append(el("code", "inline-code", token.slice(1, -1)));
-            }
-            offset = match.index + token.length;
-        }
-        if (offset < text.length) container.append(document.createTextNode(text.slice(offset)));
-    }
-
-    function renderMarkdown(container, markdown) {
-        const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
-        let list = null;
-        let paragraph = [];
-        const flushParagraph = () => {
-            if (!paragraph.length) return;
-            const node = el("p", "");
-            appendInlineMarkdown(node, paragraph.join(" "));
-            container.append(node);
-            paragraph = [];
-        };
-        const flushList = () => {
-            list = null;
-        };
-        for (const rawLine of lines) {
-            const line = rawLine.trim();
-            if (!line) {
-                flushParagraph();
-                flushList();
-                continue;
-            }
-            if (/^[-*]\s+/.test(line)) {
-                flushParagraph();
-                if (!list) {
-                    list = el("ul", "");
-                    container.append(list);
-                }
-                const item = el("li", "");
-                appendInlineMarkdown(item, line.replace(/^[-*]\s+/, ""));
-                list.append(item);
-                continue;
-            }
-            if (/^#{1,3}\s+/.test(line)) {
-                flushParagraph();
-                flushList();
-                const level = Math.min(3, line.match(/^#+/)[0].length);
-                const heading = el(`h${level}`, "");
-                appendInlineMarkdown(heading, line.replace(/^#{1,3}\s+/, ""));
-                container.append(heading);
-                continue;
-            }
-            flushList();
-            paragraph.push(line);
-        }
-        flushParagraph();
     }
 }
 
