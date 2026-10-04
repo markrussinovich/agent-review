@@ -11,6 +11,14 @@ const execFileAsync = promisify(execFile);
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const analyzerPath = join(extensionRoot, "analyzer", "analyze.py");
 
+function withTimeout(promise, timeoutMs, message) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 function normalizeRepoPath(value) {
     return resolve(value || process.env.COPILOT_WORKSPACE_PATH || process.env.COPILOT_ROOT_PATH || process.cwd());
 }
@@ -138,6 +146,7 @@ export class ReviewState {
         this.refreshPromise = null;
         this.getSessionEvents = options.getSessionEvents || null;
         this.getHistoricalSessionContexts = options.getHistoricalSessionContexts || null;
+        this.historicalSessionTimeoutMs = options.historicalSessionTimeoutMs || 40_000;
         this.currentSessionId = options.currentSessionId || null;
         this.generateAnnotation = options.generateAnnotation || null;
         this.generatePackageExplanation = options.generatePackageExplanation || null;
@@ -262,7 +271,11 @@ export class ReviewState {
     refreshHistoricalSessionContexts() {
         if (!this.getHistoricalSessionContexts || this.historicalContextPromise) return;
         if (this.sessionHistories.size > 1) return;
-        this.historicalContextPromise = this.getHistoricalSessionContexts()
+        this.historicalContextPromise = withTimeout(
+            Promise.resolve().then(() => this.getHistoricalSessionContexts()),
+            this.historicalSessionTimeoutMs,
+            `Historical Copilot session search exceeded ${this.historicalSessionTimeoutMs >= 1000 ? `${Math.round(this.historicalSessionTimeoutMs / 1000)} seconds` : `${this.historicalSessionTimeoutMs} milliseconds`}.`,
+        )
             .then(({ contexts, failures }) => {
                 for (const context of contexts) {
                     this.sessionHistories.set(context.session_id, context);
@@ -275,6 +288,7 @@ export class ReviewState {
             })
             .catch((error) => {
                 this.sessionContext.history_error = `Unable to read historical sessions: ${error.message}`;
+                this.sessionContext.historical_search_complete = true;
                 this.broadcast("session-history-failed");
             })
             .finally(() => {

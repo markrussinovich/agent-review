@@ -48,6 +48,8 @@ Copilot actions.
 - Cached Copilot explanations generated in isolated, tool-free sessions and
   validated for the required sections: what the code is, usage, behavior
   changes, motivation, risk, and review focus
+- Repository-scoped prompt provenance with bounded history search and explicit
+  matched, no-match, and error states
 - Dependency versions and on-demand public risk indicators from PyPI, OSV,
   OpenSSF Scorecard, and PyPI download statistics
 - Responsive layouts for full-width and narrow side-panel Canvas sizes

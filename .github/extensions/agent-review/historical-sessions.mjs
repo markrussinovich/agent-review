@@ -5,9 +5,17 @@ import { promisify } from "node:util";
 
 import { CopilotClient, RuntimeConnection } from "@github/copilot-sdk";
 
-import { buildSessionContext } from "./session-context.mjs";
+import { buildSessionContext, isInternalAgentReviewPrompt } from "./session-context.mjs";
 
 const execFileAsync = promisify(execFile);
+
+function withTimeout(promise, timeoutMs, message) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 function normalizedPath(value) {
     return normalize(resolve(String(value || ""))).toLowerCase();
@@ -24,6 +32,7 @@ function isUsefulSession(metadata, currentSessionId, repositoryRoots) {
     if (!metadata?.sessionId || metadata.sessionId === currentSessionId) return false;
     const directory = String(metadata.context?.workingDirectory || "").replaceAll("\\", "/").toLowerCase();
     if (directory.endsWith("/canvas-catalog-probe")) return false;
+    if (isInternalAgentReviewPrompt(metadata.summary)) return false;
     return sessionMatchesRepository(metadata, repositoryRoots);
 }
 
@@ -53,7 +62,8 @@ async function repositoryWorktreeRoots(repoRoot) {
 }
 
 export async function loadHistoricalSessionContexts(repoRoot, currentSessionId, options = {}) {
-    const limit = Number.isInteger(options.limit) ? options.limit : 6;
+    const limit = Number.isInteger(options.limit) ? options.limit : 12;
+    const timeoutMs = Number.isInteger(options.timeoutMs) ? options.timeoutMs : 30_000;
     const cliPath = options.cliPath || await managedCopilotPath();
     const client = new CopilotClient({
         connection: RuntimeConnection.forStdio({
@@ -65,34 +75,45 @@ export async function loadHistoricalSessionContexts(repoRoot, currentSessionId, 
     });
     const contexts = [];
     const failures = [];
+    let operationError;
     try {
-        await client.start();
-        const repositoryRoots = await repositoryWorktreeRoots(repoRoot);
-        const sessions = (await client.listSessions())
-            .filter((metadata) => isUsefulSession(metadata, currentSessionId, repositoryRoots))
-            .sort((a, b) => new Date(b.modifiedTime).getTime() - new Date(a.modifiedTime).getTime())
-            .slice(0, limit);
-        for (const metadata of sessions) {
-            let historical;
-            try {
-                historical = await client.resumeSession(metadata.sessionId, {});
-                const context = buildSessionContext(await historical.getEvents(), repoRoot);
-                context.session_id = metadata.sessionId;
-                context.session_summary = metadata.summary || "Untitled session";
-                context.working_directory = metadata.context?.workingDirectory || null;
-                for (const turn of context.turns) {
-                    turn.session_id = metadata.sessionId;
-                    turn.session_summary = context.session_summary;
+        return await withTimeout((async () => {
+            await client.start();
+            const repositoryRoots = await repositoryWorktreeRoots(repoRoot);
+            const sessions = (await client.listSessions())
+                .filter((metadata) => isUsefulSession(metadata, currentSessionId, repositoryRoots))
+                .sort((a, b) => new Date(b.modifiedTime).getTime() - new Date(a.modifiedTime).getTime())
+                .slice(0, limit);
+            for (const metadata of sessions) {
+                let historical;
+                try {
+                    historical = await client.resumeSession(metadata.sessionId, {});
+                    const context = buildSessionContext(await historical.getEvents(), repoRoot);
+                    context.session_id = metadata.sessionId;
+                    context.session_summary = metadata.summary || "Untitled session";
+                    context.working_directory = metadata.context?.workingDirectory || null;
+                    for (const turn of context.turns) {
+                        turn.session_id = metadata.sessionId;
+                        turn.session_summary = context.session_summary;
+                    }
+                    contexts.push(context);
+                } catch (error) {
+                    failures.push({ session_id: metadata.sessionId, error: error.message });
+                } finally {
+                    if (historical) await historical.disconnect();
                 }
-                contexts.push(context);
-            } catch (error) {
-                failures.push({ session_id: metadata.sessionId, error: error.message });
-            } finally {
-                if (historical) await historical.disconnect();
             }
-        }
+            return { contexts, failures };
+        })(), timeoutMs, `Historical Copilot session search exceeded ${timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)} seconds` : `${timeoutMs} milliseconds`}.`);
+    } catch (error) {
+        operationError = error;
+        throw error;
     } finally {
-        await client.stop();
+        try {
+            await withTimeout(client.stop(), 5_000, "Stopping the historical Copilot session client timed out.");
+        } catch (error) {
+            if (!operationError) throw error;
+            console.error("[agent-review] Failed to stop historical Copilot session client:", error);
+        }
     }
-    return { contexts, failures };
 }

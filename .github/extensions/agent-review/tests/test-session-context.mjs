@@ -1,9 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildSessionContext, findSessionAttribution } from "../session-context.mjs";
+import {
+    buildSessionContext,
+    findSessionAttribution,
+    isInternalAgentReviewPrompt,
+} from "../session-context.mjs";
 
 const ROOT = "C:\\repo";
+
+test("identifies persisted Agent Review explanation sessions", () => {
+    assert.equal(
+        isInternalAgentReviewPrompt("[Agent Review internal request — exclude from change attribution]\n\nExplain code."),
+        true,
+    );
+    assert.equal(isInternalAgentReviewPrompt("Add health diagnostics to the workflow service."), false);
+});
 
 test("maps a changed file to the user turn whose tool activity referenced it", () => {
     const events = [

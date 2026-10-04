@@ -85,7 +85,7 @@ function isReviewPrompt(prompt) {
         && /\b(review|inspect|explain|highlight|canvas|copy button|not fixed|still finding|why is|doesn't work|broken|error)\b/i.test(String(prompt || ""));
 }
 
-function isInternalAgentReviewPrompt(content) {
+export function isInternalAgentReviewPrompt(content) {
     const text = String(content || "");
     return text.startsWith("[Agent Review internal request")
         || text.startsWith("Write a concrete system-understanding annotation about")
