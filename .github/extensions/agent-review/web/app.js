@@ -862,6 +862,15 @@ function renderCollection(model) {
             subtitle = state.mode === "lines"
                 ? `Change churn ${item.metrics?.lines_changed || 0} · +${item.metrics?.lines_added || 0} / −${item.metrics?.lines_removed || 0} · 90d churn ${historicalChurn}`
                 : item.reason || `${item.kind || item.change} · +${item.metrics?.lines_added || 0} / −${item.metrics?.lines_removed || 0}`;
+            if (state.mode === "lines") {
+                row.classList.add(
+                    item.change === "added"
+                        ? "file-added"
+                        : item.change === "removed"
+                            ? "file-removed"
+                            : "file-modified",
+                );
+            }
             row.addEventListener("click", () => item.id?.startsWith("package:") ? selectPackage(item) : selectItem(item));
         }
         const copy = el("span", "collection-copy");
