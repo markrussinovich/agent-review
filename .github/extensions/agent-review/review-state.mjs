@@ -265,6 +265,8 @@ export class ReviewState {
                 }
                 this.sessionContext = mergeSessionContexts([...this.sessionHistories.values()]);
                 this.sessionContext.history_failures = failures;
+                this.sessionContext.historical_search_complete = true;
+                this.sessionContext.historical_session_count = contexts.length;
                 this.broadcast("session-history");
             })
             .catch((error) => {
@@ -516,6 +518,22 @@ export class ReviewState {
 
     attributionForPath(path) {
         return findSessionAttribution(this.sessionContext, path);
+    }
+
+    attributionStatusForPath(path) {
+        const attribution = this.attributionForPath(path);
+        if (attribution.length) return { status: "matched", attribution };
+        if (this.sessionContext?.history_error) {
+            return { status: "error", attribution, message: this.sessionContext.history_error };
+        }
+        if (!this.sessionContext?.historical_search_complete) {
+            return { status: "loading", attribution, message: "Searching Copilot sessions for this repository…" };
+        }
+        return {
+            status: "no_match",
+            attribution,
+            message: "No originating prompt was found in Copilot sessions for this repository.",
+        };
     }
 
     async packageRiskFor(name, requestedVersion = null) {

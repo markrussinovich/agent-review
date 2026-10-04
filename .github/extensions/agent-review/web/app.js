@@ -9,6 +9,8 @@ const state = {
     sourceTab: "diff",
     packageRisk: new Map(),
     attribution: [],
+    attributionStatus: "loading",
+    attributionMessage: "",
     highlightedPromptEventId: null,
     selectionEpoch: 0,
     changedOnly: true,
@@ -376,13 +378,13 @@ function clearSelection() {
     renderEmptyDetail();
 }
 
-async function loadSource(query, epoch) {
+async function loadSource(query, epoch, preferredTab = null) {
     const source = await api(`/api/source?${query}`);
     const attribution = await fetchAttribution(source.path);
     if (epoch !== state.selectionEpoch) return false;
     state.source = source;
     state.attribution = attribution;
-    state.sourceTab = source.diff ? "diff" : "current";
+    state.sourceTab = preferredTab || (source.diff ? "diff" : "current");
     renderSource();
     return true;
 }
@@ -391,9 +393,13 @@ async function fetchAttribution(path) {
     if (!path) return [];
     try {
         const provenance = await api(`/api/attribution?path=${encodeURIComponent(path)}`);
+        state.attributionStatus = provenance.status || "matched";
+        state.attributionMessage = provenance.message || "";
         return provenance.attribution || [];
     } catch (error) {
         if (error.status !== 404) throw error;
+        state.attributionStatus = "no_match";
+        state.attributionMessage = "No originating prompt was found.";
         return [];
     }
 }
@@ -475,6 +481,27 @@ function ensureAnnotation(item, epoch = state.selectionEpoch) {
 function renderProvenance() {
     const panel = elements.source_provenance;
     panel.replaceChildren();
+    if (!state.attribution.length && state.attributionStatus === "loading") {
+        panel.classList.remove("hidden");
+        panel.append(el("p", "muted", state.attributionMessage || "Searching same-repository Copilot sessions…"));
+        return;
+    }
+    if (!state.attribution.length && state.attributionStatus === "no_match") {
+        panel.classList.remove("hidden");
+        const heading = el("div", "provenance-heading");
+        heading.append(el("span", "provenance-mark", "SESSION"), el("strong", "", "No originating session found"));
+        panel.append(
+            heading,
+            el("p", "provenance-prompt", state.attributionMessage),
+            el("p", "provenance-disclaimer", "Only Copilot sessions belonging to this Git repository are eligible. Sessions from other repositories are excluded."),
+        );
+        return;
+    }
+    if (!state.attribution.length && state.attributionStatus === "error") {
+        panel.classList.remove("hidden");
+        panel.append(el("p", "annotation-error", state.attributionMessage));
+        return;
+    }
     if (!state.attribution.length) {
         panel.classList.add("hidden");
         return;
@@ -557,16 +584,62 @@ function appendInlineMarkdown(container, text) {
     const pattern = /(\*\*[^*]+\*\*|`[^`]+`)/g;
     let offset = 0;
     for (const match of text.matchAll(pattern)) {
-        if (match.index > offset) container.append(document.createTextNode(text.slice(offset, match.index)));
+        if (match.index > offset) appendTextWithSourceReferences(container, text.slice(offset, match.index));
         const token = match[0];
         if (token.startsWith("**")) {
             const strong = el("strong", "");
             appendInlineMarkdown(strong, token.slice(2, -2));
             container.append(strong);
         } else {
-            container.append(el("code", "inline-code", token.slice(1, -1)));
+            const value = token.slice(1, -1);
+            const reference = parseSourceReference(value);
+            if (reference) {
+                container.append(sourceReferenceButton(value, reference));
+            } else {
+                container.append(el("code", "inline-code", value));
+            }
         }
         offset = match.index + token.length;
+    }
+    if (offset < text.length) appendTextWithSourceReferences(container, text.slice(offset));
+}
+
+function parseSourceReference(value) {
+    const match = /^((?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+\.(?:py|toml|txt|json|ya?ml|md|mjs|js|css|html))(?::(\d+(?:,\d+)*))?$/.exec(value.trim());
+    if (!match) return null;
+    return {
+        path: match[1].replaceAll("\\", "/"),
+        lines: match[2] ? match[2].split(",").map(Number).filter(Number.isFinite) : [],
+    };
+}
+
+function sourceReferenceButton(label, reference) {
+    const button = el("button", "source-reference", label);
+    button.type = "button";
+    button.title = reference.lines.length
+        ? `Open ${reference.path} at line ${reference.lines.join(", ")}`
+        : `Open ${reference.path}`;
+    button.addEventListener("click", async () => {
+        const epoch = ++state.selectionEpoch;
+        const query = new URLSearchParams({ path: reference.path });
+        if (reference.lines[0]) query.set("line", String(reference.lines[0]));
+        try {
+            await loadSource(query.toString(), epoch, "current");
+        } catch (error) {
+            if (epoch === state.selectionEpoch) showError(error);
+        }
+    });
+    return button;
+}
+
+function appendTextWithSourceReferences(container, text) {
+    const pattern = /((?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+\.(?:py|toml|txt|json|ya?ml|md|mjs|js|css|html)(?::\d+(?:,\d+)*)?)/g;
+    let offset = 0;
+    for (const match of text.matchAll(pattern)) {
+        if (match.index > offset) container.append(document.createTextNode(text.slice(offset, match.index)));
+        const reference = parseSourceReference(match[0]);
+        container.append(reference ? sourceReferenceButton(match[0], reference) : document.createTextNode(match[0]));
+        offset = match.index + match[0].length;
     }
     if (offset < text.length) container.append(document.createTextNode(text.slice(offset)));
 }

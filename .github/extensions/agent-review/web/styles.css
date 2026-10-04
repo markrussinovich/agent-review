@@ -553,6 +553,21 @@ marker path { fill: var(--cp-border-strong); }
   color: var(--cp-accent);
   font-family: Consolas, "Courier New", Courier, monospace;
 }
+.source-reference {
+  display: inline;
+  padding: 0 2px;
+  border: 0;
+  border-bottom: 1px dotted var(--cp-link);
+  background: transparent;
+  color: var(--cp-link);
+  font-family: Consolas, "Courier New", Courier, monospace;
+  font-size: inherit;
+  cursor: pointer;
+}
+.source-reference:hover, .source-reference:focus-visible {
+  border-bottom-style: solid;
+  color: var(--cp-accent);
+}
 .annotation-loading { color: var(--cp-text-muted); }
 .annotation-error { color: var(--cp-danger); }
 .code-view {
