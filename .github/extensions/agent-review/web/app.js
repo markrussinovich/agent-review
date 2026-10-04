@@ -13,7 +13,7 @@ const state = {
     query: "",
 };
 const elements = Object.fromEntries([
-    "status", "refresh", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
+    "status", "fullscreen", "refresh", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "session-intent",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail", "source-panel", "source-title",
     "source-provenance", "source-annotation", "source-close", "source",
@@ -682,6 +682,12 @@ function renderCollection(model) {
         if (item.path && item.status) {
             title = item.path;
             subtitle = `${item.status} · +${item.lines_added} / -${item.lines_removed}`;
+            const statusClass = item.status === "added"
+                ? "file-added"
+                : item.status === "deleted" || item.status === "removed"
+                    ? "file-removed"
+                    : "file-modified";
+            row.classList.add(statusClass);
             row.addEventListener("click", () => selectFile(item));
         } else if (item.source && item.target) {
             title = `${nodeById.get(item.source)?.name || item.source} → ${nodeById.get(item.target)?.name || item.target}`;
@@ -919,11 +925,35 @@ window.addEventListener("keydown", (event) => {
     }
 });
 let resizeTimer;
-window.addEventListener("resize", () => {
+function scheduleResizeRender() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
         if (state.payload?.model) render();
     }, 120);
+}
+window.addEventListener("resize", scheduleResizeRender);
+let observedWidth = document.documentElement.clientWidth;
+new ResizeObserver(() => {
+    const width = document.documentElement.clientWidth;
+    if (Math.abs(width - observedWidth) < 2) return;
+    observedWidth = width;
+    scheduleResizeRender();
+}).observe(document.documentElement);
+
+elements.fullscreen.addEventListener("click", async () => {
+    try {
+        if (document.fullscreenElement) {
+            await document.exitFullscreen();
+        } else {
+            await document.documentElement.requestFullscreen();
+        }
+    } catch (error) {
+        showError(new Error(`The Copilot host did not allow web fullscreen. Use the native Expand Canvas control. ${error.message}`));
+    }
+});
+document.addEventListener("fullscreenchange", () => {
+    elements.fullscreen.textContent = document.fullscreenElement ? "Exit full canvas" : "Full canvas";
+    scheduleResizeRender();
 });
 elements.source_close.addEventListener("click", () => {
     state.source = null;

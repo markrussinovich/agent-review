@@ -97,14 +97,14 @@ h3 { margin-top: 20px; font-size: .8125rem; }
   background: var(--cp-success);
 }
 .status.working::before { background: var(--cp-warning); }
-#refresh, .zoom-out, .tab, .source-close {
+#refresh, #fullscreen, .zoom-out, .tab, .source-close {
   padding: 8px 12px;
   border: 1px solid var(--cp-border);
   border-radius: .625rem;
   background: var(--cp-surface);
   cursor: pointer;
 }
-#refresh:hover, .zoom-out:hover:not(:disabled), .tab:hover, .source-close:hover { border-color: var(--cp-accent); }
+#refresh:hover, #fullscreen:hover, .zoom-out:hover:not(:disabled), .tab:hover, .source-close:hover { border-color: var(--cp-accent); }
 #refresh:disabled, .zoom-out:disabled { cursor: default; opacity: .5; }
 main { padding: 20px 20px 36px; }
 .error, .analysis-progress {
@@ -335,6 +335,18 @@ marker path { fill: var(--cp-border-strong); }
   cursor: pointer;
 }
 .collection-row:hover, .collection-row:focus-visible { border-color: var(--cp-accent); background: var(--cp-accent-soft); }
+.collection-row.file-added {
+  border-left: 5px solid var(--cp-success);
+  background: color-mix(in srgb, var(--cp-success) 8%, var(--cp-surface));
+}
+.collection-row.file-removed {
+  border-left: 5px solid var(--cp-danger);
+  background: color-mix(in srgb, var(--cp-danger) 8%, var(--cp-surface));
+}
+.collection-row.file-modified {
+  border-left: 5px solid var(--cp-warning);
+  background: color-mix(in srgb, var(--cp-warning) 8%, var(--cp-surface));
+}
 .collection-copy strong, .collection-copy small { display: block; }
 .collection-copy strong { overflow-wrap: anywhere; font-size: .75rem; }
 .collection-copy small { margin-top: 5px; color: var(--cp-text-muted); font-size: .625rem; }
