@@ -45,6 +45,24 @@ Copilot actions.
 
 ## Review experience
 
+The top toolbar's **Review** selector supports:
+
+- **Worktree**: staged, unstaged, and untracked changes against the configured baseline.
+- **Commit**: enter a SHA or Git revision (such as `HEAD`); compare its immutable tree
+  with its first parent. A root commit compares with an empty tree.
+- **Pull request**: enter a GitHub PR number for the current repository, or a full
+  GitHub PR URL. Requires the `gh` CLI and `gh auth login`. The extension fetches
+  PR objects and compares the head with the base/head merge base without checking
+  out files or modifying your worktree.
+
+Source, diff, graph, dependencies, and AI source context follow the selected
+snapshot. Worktree coverage is deliberately unavailable for commit/PR reviews.
+Refresh re-analyzes the resolved snapshot; submit the PR again to resolve a newly
+pushed head. Invalid revisions, missing authentication, and fetch errors are
+displayed explicitly. Switching waits for active briefings/assessments to finish.
+The selected immutable target is recorded with the Canvas marker so provider
+recovery restores the same review instead of reverting to the worktree.
+
 - A change brief on first load: file mix, source-versus-test churn, a
   highest-impact shortlist, and an on-demand Copilot summary with a suggested
   review order and gaps
@@ -101,5 +119,14 @@ node --check .github/extensions/agent-review/extension.mjs
 node --check .github/extensions/agent-review/web/app.js
 ```
 
+Browser regression (requires an existing `playwright-core` installation and Edge
+on Windows, or `AGENT_REVIEW_BROWSER_EXECUTABLE`):
 
+```powershell
+$env:AGENT_REVIEW_BROWSER_PACKAGE = 'C:\path\to\project\package.json'
+node .github\extensions\agent-review\tests\browser\review-target.mjs
+```
+
+Set `AGENT_REVIEW_LIVE_PR` to a GitHub PR URL to also exercise authenticated PR
+resolution, fetching, analysis, and UI switching against GitHub.
 

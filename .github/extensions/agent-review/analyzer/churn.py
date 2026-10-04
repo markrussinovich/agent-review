@@ -8,8 +8,8 @@ from typing import Any
 from git_snapshot import run_git
 
 
-def analyze_churn(repo: Path) -> list[dict[str, Any]]:
-    head_time = run_git(repo, "show", "-s", "--format=%cI", "HEAD", check=False).strip()
+def analyze_churn(repo: Path, revision: str = "HEAD") -> list[dict[str, Any]]:
+    head_time = run_git(repo, "show", "-s", "--format=%cI", revision, check=False).strip()
     if not head_time:
         return []
     end = datetime.fromisoformat(head_time)
@@ -22,6 +22,7 @@ def analyze_churn(repo: Path) -> list[dict[str, Any]]:
         "--format=commit:%H",
         "--numstat",
         "--no-renames",
+        revision,
         check=False,
     )
     stats: dict[str, dict[str, Any]] = defaultdict(

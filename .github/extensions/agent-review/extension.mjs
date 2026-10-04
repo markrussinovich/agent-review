@@ -39,7 +39,7 @@ const canvas = createCanvas({
     actions: [
         {
             name: "refresh",
-            description: "Re-analyze the current worktree after edits and update the open Agent Review canvas.",
+            description: "Re-analyze the selected worktree, commit, or PR snapshot and update the open Agent Review canvas.",
             handler: async (ctx) => {
                 const model = await instanceFor(ctx).state.refresh();
                 return { ok: true, summary: model.summary };
@@ -109,6 +109,7 @@ const canvas = createCanvas({
         const instance = instances.get(ctx.instanceId);
         if (!instance) return;
         instances.delete(ctx.instanceId);
+        instance.unsubscribeMarker?.();
         await instance.server.close();
     },
 });
@@ -116,6 +117,7 @@ const canvas = createCanvas({
 function createReviewState(requestedPath, input) {
     const state = new ReviewState(requestedPath, {
         baseRef: input.baseRef,
+        reviewTarget: input.reviewTarget,
         // Re-read on every refresh so a base_ref added by a later commit or checkout takes effect.
         resolveBaseRef: async () => {
             if (input.baseRef) return input.baseRef;
@@ -177,14 +179,19 @@ async function buildInstance(instanceId, input, serverOptions) {
         await server.close();
         return existing;
     }
-    const instance = { state, server };
-    instances.set(instanceId, instance);
-    await writeCanvasMarker({
+    const persistMarker = () => writeCanvasMarker({
         sessionId: session.sessionId,
         instanceId,
         port: server.port,
-        input: { repoPath: requestedPath, baseRef: input.baseRef || null },
-    }).catch((error) => console.error("[agent-review] Unable to persist Canvas marker:", error));
+        input: { repoPath: requestedPath, baseRef: input.baseRef || null, reviewTarget: state.reviewTarget },
+    });
+    const instance = { state, server, unsubscribeMarker: state.subscribe((event) => {
+        if (event.type === "refreshed") {
+            persistMarker().catch((error) => console.error("[agent-review] Unable to persist review target:", error));
+        }
+    }) };
+    instances.set(instanceId, instance);
+    await persistMarker().catch((error) => console.error("[agent-review] Unable to persist Canvas marker:", error));
     if (isNewState) {
         resolveRepoRoot(requestedPath)
             .then(async (repoRoot) => {
@@ -221,4 +228,3 @@ async function reclaimPersistedCanvases() {
 session = await joinSession({ canvases: [canvas] });
 await session.log("Agent Review canvas ready.", { ephemeral: true });
 reclaimPersistedCanvases().catch((error) => console.error("[agent-review] Canvas reclaim failed:", error));
-

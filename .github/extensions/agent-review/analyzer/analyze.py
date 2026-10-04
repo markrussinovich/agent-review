@@ -20,21 +20,23 @@ def progress(phase: str, message: str, percent: int) -> None:
 
 
 def build_review(
-    repo_arg: str | None, base_arg: str | None, excludes: tuple[str, ...]
+    repo_arg: str | None, base_arg: str | None, excludes: tuple[str, ...],
+    current_arg: str | None = None,
 ) -> ReviewModel:
     progress("repository", "Resolving repository and comparison base", 5)
     repo = discover_repo(repo_arg)
-    base_ref = discover_base(repo, base_arg)
-    head = run_git(repo, "rev-parse", "HEAD", check=False).strip() or None
+    base_ref = base_arg if current_arg else discover_base(repo, base_arg)
+    head = run_git(repo, "rev-parse", current_arg or "HEAD", check=False).strip() or None
     base_commit = (
-        run_git(repo, "merge-base", "HEAD", base_ref, check=False).strip()
+        (run_git(repo, "rev-parse", base_ref).strip() if current_arg else
+         run_git(repo, "merge-base", "HEAD", base_ref, check=False).strip())
         if base_ref
         else None
     )
     if base_ref and not base_commit:
         base_commit = run_git(repo, "rev-parse", f"{base_ref}^{{commit}}").strip()
     progress("snapshot", f"Reading base and current snapshots against {base_ref or 'empty base'}", 15)
-    snapshot = create_snapshot(repo, base_commit, excludes)
+    snapshot = create_snapshot(repo, base_commit, excludes, current_arg)
     generated_at = (
         run_git(repo, "show", "-s", "--format=%cI", head, check=False).strip()
         if head else None
@@ -73,18 +75,28 @@ def build_review(
     )
     progress("relationships", "Resolving package usage and aggregate architecture edges", 68)
     usage: dict[str, set[str]] = {}
+    evidence_by_id = {item["id"]: item for item in model.evidence}
     for edge in model.edges:
         if edge["kind"] == "uses_package" and edge["target"].startswith("package:"):
-            usage.setdefault(edge["target"][8:], set()).add(edge["source"])
+            locations = usage.setdefault(edge["target"][8:], set())
+            for evidence_id in edge["evidence_ids"]:
+                evidence = evidence_by_id[evidence_id]
+                if evidence.get("path"):
+                    locations.add(f"{evidence['path']}:{evidence.get('line', 1)}")
     for package in model.packages["current"]:
         package["used_by"] = sorted(usage.get(package["name"].replace("-", "_"), set()))
     python_paths = sorted(path for path in snapshot.current if path.endswith(".py"))
     progress("coverage", "Loading coverage and changed executable-line data", 76)
-    model.coverage = load_coverage(repo, base_commit, python_paths)
+    model.coverage = (
+        {"available": False, "files": [], "changed_lines": {}}
+        if current_arg else load_coverage(repo, base_commit, python_paths)
+    )
+    if current_arg:
+        model.warnings.append("Worktree coverage is not applicable to a historical commit or PR snapshot.")
     progress("churn", "Calculating 90-day Git churn and impact metrics", 84)
-    model.churn = analyze_churn(repo)
+    model.churn = analyze_churn(repo, current_arg or "HEAD")
     progress("architecture", "Loading CodeBoarding enrichment or path-derived components", 91)
-    model.codeboarding = load_codeboarding(repo)
+    model.codeboarding = load_codeboarding(repo, snapshot.current if current_arg else None)
     progress("review_model", "Assembling evidence, findings, and semantic zoom levels", 97)
     return model
 
@@ -93,6 +105,7 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description="Build a deterministic Agent Review model")
     value.add_argument("--repo", help="Path within the git repository")
     value.add_argument("--base-ref", help="Git revision used as the baseline")
+    value.add_argument("--current-ref", help="Analyze a committed tree instead of the worktree")
     value.add_argument(
         "--exclude",
         action="append",
@@ -105,7 +118,7 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        model = build_review(args.repo, args.base_ref, tuple(args.exclude))
+        model = build_review(args.repo, args.base_ref, tuple(args.exclude), args.current_ref)
     except (OSError, RuntimeError, ValueError) as error:
         print(f"agent-review analyzer: {error}", file=sys.stderr)
         return 2

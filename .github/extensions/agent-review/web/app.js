@@ -20,6 +20,7 @@ const state = {
     appliedServerSelection: null,
 };
 const elements = Object.fromEntries([
+    "review-target-form", "review-mode", "review-ref", "review-apply", "review-target-label",
     "status", "refresh", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "rail-resize",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail-toggle", "detail", "detail-close", "source-panel", "source-title",
@@ -1613,6 +1614,29 @@ function renderPackagePanel() {
     host.replaceChildren(...sections);
 }
 function render() {
+    elements.review_target_label.textContent = state.payload?.review_target?.label || "Worktree";
+    const targetKey = JSON.stringify(state.payload?.review_target || {});
+    if (state.reviewTargetKey !== targetKey) {
+        state.reviewTargetKey = targetKey;
+        const target = state.payload?.review_target;
+        elements.review_mode.value = target?.mode || "worktree";
+        elements.review_ref.value = target?.ref || "";
+        elements.review_ref.classList.toggle("hidden", elements.review_mode.value === "worktree");
+        elements.review_ref.required = elements.review_mode.value !== "worktree";
+        elements.review_ref.placeholder = elements.review_mode.value === "pr" ? "PR number or GitHub URL" : "Commit SHA or ref (e.g. HEAD)";
+        state.selectionEpoch += 1;
+        state.selected = null;
+        state.source = null;
+        state.stack = [];
+        state.mode = "graph";
+        state.appliedServerSelection = null;
+        state.sourceHistory = { entries: [], index: -1, pending: -1 };
+        state.packageData.clear();
+        state.query = "";
+        elements.review_search.value = "";
+        elements.source_panel.classList.add("hidden");
+        elements.session_history_panel.classList.add("hidden");
+    }
     const payload = state.payload;
     const model = payload?.model;
     const progress = payload?.progress;
@@ -1872,6 +1896,40 @@ document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click",
     if (current) current.tab = state.sourceTab;
     renderSource();
 }));
+
+elements.review_mode.addEventListener("change", () => {
+    const mode = elements.review_mode.value;
+    elements.review_ref.classList.toggle("hidden", mode === "worktree");
+    elements.review_ref.required = mode !== "worktree";
+    elements.review_ref.placeholder = mode === "pr" ? "PR number or GitHub URL" : "Commit SHA or ref (e.g. HEAD)";
+});
+elements.review_target_form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    elements.review_apply.disabled = true;
+    try {
+        await api("/api/review-target", {
+            method: "POST",
+            body: JSON.stringify({ mode: elements.review_mode.value, ref: elements.review_ref.value }),
+        });
+        state.selectionEpoch += 1;
+        state.selected = null;
+        state.source = null;
+        state.stack = [];
+        state.mode = "graph";
+        state.packageData.clear();
+        state.briefIntent = null;
+        state.briefIntentKey = null;
+        elements.source_panel.classList.add("hidden");
+        elements.session_history_panel.classList.add("hidden");
+        state.payload = await api("/api/state");
+        elements.error.classList.add("hidden");
+        render();
+    } catch (error) {
+        showError(error);
+    } finally {
+        elements.review_apply.disabled = false;
+    }
+});
 
 api("/api/state").then((payload) => {
     state.payload = payload;

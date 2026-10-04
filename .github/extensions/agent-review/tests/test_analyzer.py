@@ -124,7 +124,27 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual("package:requests", package["id"])
         self.assertTrue(package["declared_base"])
         self.assertTrue(package["declared_current"])
-        self.assertTrue(package["usage_locations"])
+        self.assertEqual(["main.py:1"], package["usage_locations"])
+
+    def test_revision_graph_dependencies_and_enrichment_ignore_worktree(self) -> None:
+        self.write("main.py", "def old():\n    return 1\n")
+        base = self.commit()
+        self.write("main.py", "import croniter\n\ndef committed():\n    return 2\n")
+        self.write("requirements.txt", "croniter==6.0.0\n")
+        self.write("codeboarding.json", '{"components":[{"name":"Committed","paths":["main.py"]}]}')
+        head = self.commit()
+        self.write("main.py", "def dirty_only():\n    return 999\n")
+        self.write("requirements.txt", "unrelated-package==1.0\n")
+        self.write("codeboarding.json", '{"components":[{"name":"Dirty","paths":["main.py"]}]}')
+        model = self.analyze(base, "--current-ref", head)
+        self.assertEqual(head, model["metadata"]["head_sha"])
+        self.assertEqual(base, model["metadata"]["base_sha"])
+        self.assertIn("committed", {symbol["name"] for symbol in model["symbols"]})
+        self.assertNotIn("dirty_only", {symbol["name"] for symbol in model["symbols"]})
+        self.assertEqual(["croniter"], [package["name"] for package in model["packages"]["current"]])
+        self.assertEqual(["main.py:1"], model["package_changes"][0]["usage_locations"])
+        self.assertFalse(model["coverage"]["available"])
+        self.assertEqual("Committed", model["codeboarding"]["components"][0]["name"])
 
     def test_changed_line_coverage_and_deterministic_output(self) -> None:
         self.write("calc.py", "def calc(value):\n    return value\n")

@@ -1394,3 +1394,25 @@ h3 { font-size: 14px; font-weight: 600; }
   background: var(--cp-accent-soft);
   box-shadow: 0 0 0 1px var(--cp-accent);
 }
+.review-target-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.review-target-form label { color: var(--cp-text-muted); font-size: 12px; font-weight: 600; }
+.review-target-form select, .review-target-form input, .review-target-form button {
+  height: 32px; border: 1px solid var(--cp-border); border-radius: 6px;
+  background: var(--cp-surface); color: var(--cp-text); font: inherit; padding: 0 8px;
+}
+.review-target-form button { background: var(--cp-surface-soft); cursor: pointer; }
+.review-target-form button:disabled { opacity: .5; cursor: wait; }
+.review-target-form input { width: 240px; max-width: 100%; }
+.review-target-label { color: var(--cp-text-muted); font-size: 12px; margin-bottom: 12px; overflow-wrap: anywhere; }
+.top-actions { flex-wrap: wrap; }
+/* Queue entries follow GitHub's neutral list treatment; severity belongs in text, not colored rails. */
+.rail .review-card {
+  border: 0; border-bottom: 1px solid var(--cp-border); border-radius: 0;
+  background: transparent; padding: 12px 8px; box-shadow: none;
+}
+.rail .cards { gap: 0; }
+.rail .review-card:hover { background: var(--cp-surface-soft); border-left: 0; }
+.rail .review-card.is-selected { background: var(--cp-accent-soft); border-left: 0; }
+.rail .review-card .card-heading strong { white-space: normal; font-weight: 600; font-size: 14px; }
+.rail .review-card .card-body { color: var(--cp-text-muted); font-size: 12px; }
+.rail .review-card .factor-line { font-size: 12px; }

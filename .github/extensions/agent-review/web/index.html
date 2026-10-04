@@ -21,11 +21,22 @@
             <h1>Agent Review</h1>
         </div>
         <div class="top-actions">
+            <form id="review-target-form" class="review-target-form">
+                <label for="review-mode">Review</label>
+                <select id="review-mode">
+                    <option value="worktree">Worktree</option>
+                    <option value="commit">Commit</option>
+                    <option value="pr">Pull request</option>
+                </select>
+                <input id="review-ref" class="hidden" aria-label="Commit or pull request" placeholder="Commit SHA or ref">
+                <button id="review-apply" type="submit">Review</button>
+            </form>
             <span id="status" class="status">Connecting</span>
             <button id="refresh" type="button">Refresh analysis</button>
         </div>
     </header>
     <main>
+        <p id="review-target-label" class="review-target-label"></p>
         <section id="error" class="error hidden" role="alert"></section>
         <section id="analysis-progress" class="analysis-progress hidden" aria-live="polite">
             <div class="progress-copy">

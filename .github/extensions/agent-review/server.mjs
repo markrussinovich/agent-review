@@ -106,6 +106,11 @@ export function startReviewServer(state, options = {}) {
                 sendJson(res, { ok: true, summary: model.summary });
                 return;
             }
+            if (req.method === "POST" && pathname === "/api/review-target") {
+                const model = await state.setReviewTarget(await readJson(req));
+                sendJson(res, { ok: true, summary: model.summary });
+                return;
+            }
             if (req.method === "POST" && pathname === "/api/selection") {
                 sendJson(res, { ok: true, context: state.select(await readJson(req)) });
                 return;

@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:pa
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { assessPackageRisk } from "./package-risk.mjs";
+import { resolveReviewTarget } from "./review-target.mjs";
 import { buildSessionContext, findSessionAttribution, mergeSessionContexts } from "./session-context.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -115,9 +116,10 @@ function runAnalyzerProcess(executable, args, onProgress) {
     });
 }
 
-async function runAnalyzer(repoRoot, baseRef, onProgress) {
+async function runAnalyzer(repoRoot, baseRef, onProgress, currentRef = null) {
     const args = [analyzerPath, "--repo", repoRoot];
     if (baseRef) args.push("--base-ref", baseRef);
+    if (currentRef) args.push("--current-ref", currentRef);
     const failures = [];
     for (const [executable, prefix] of pythonCandidates()) {
         try {
@@ -141,6 +143,8 @@ export class ReviewState {
     constructor(repoRoot, options = {}) {
         this.repoRoot = repoRoot;
         this.baseRef = options.baseRef || null;
+        this.worktreeBaseRef = this.baseRef;
+        this.reviewTarget = options.reviewTarget || { mode: "worktree", label: "Worktree", currentRef: null };
         this.resolveBaseRef = options.resolveBaseRef || null;
         this.model = null;
         this.error = null;
@@ -178,6 +182,7 @@ export class ReviewState {
             annotations: this.annotations,
             progress: this.progress,
             package_risks: this.packageRisks,
+            review_target: this.reviewTarget,
         };
     }
 
@@ -212,13 +217,14 @@ export class ReviewState {
         this.broadcast("refresh-started");
         const sessionContextPromise = this.refreshSessionContext(false);
         this.refreshPromise = Promise.resolve()
-            .then(() => this.resolveBaseRef ? this.resolveBaseRef() : this.baseRef)
+            .then(() => this.reviewTarget.mode !== "worktree" ? this.reviewTarget.baseRef
+                : this.resolveBaseRef ? this.resolveBaseRef() : this.worktreeBaseRef)
             .then((baseRef) => {
                 this.baseRef = baseRef ?? null;
                 return runAnalyzer(this.repoRoot, this.baseRef, (progress) => {
                     this.progress = { ...this.progress, ...progress };
                     this.broadcast("progress");
-                });
+                }, this.reviewTarget.currentRef);
             })
             .then((model) => {
                 this.model = model;
@@ -226,6 +232,7 @@ export class ReviewState {
                     observation.evidence_ids.every((id) => model.evidence?.[id])
                 );
                 this.annotations = {};
+                this.selection = null;
                 this.packageRisks = {};
                 this.packageAssessments = new Map();
                 this.loading = false;
@@ -246,6 +253,24 @@ export class ReviewState {
                 this.refreshPromise = null;
             });
         return this.refreshPromise;
+    }
+
+    async setReviewTarget(input) {
+        if (this.refreshPromise || this.switchingTarget) throw new Error("Wait for the current analysis or review switch to finish.");
+        if (this.annotationPromises.size || this.packageRiskPromises.size || this.packageAssessmentPromises.size) {
+            throw new Error("Wait for the current briefing or package assessment to finish before switching reviews.");
+        }
+        this.switchingTarget = true;
+        try {
+            const resolved = await resolveReviewTarget(this.repoRoot, input);
+            this.reviewTarget = resolved;
+            this.model = null;
+            this.selection = null;
+            this.generatedObservations = [];
+            return await this.refresh();
+        } finally {
+            this.switchingTarget = false;
+        }
     }
 
     async refreshSessionContext(broadcast = true) {
@@ -563,14 +588,9 @@ export class ReviewState {
         const subject = context.subject || {};
         const path = subject.path || evidenceWithPath?.path;
         if (!path) return null;
-        const fullPath = safePath(this.repoRoot, path);
-        let source;
-        try {
-            source = await readFile(fullPath, "utf8");
-        } catch (error) {
-            if (error.code === "ENOENT") return { path, unavailable: "File is removed in the current snapshot." };
-            throw error;
-        }
+        const snapshot = await this.sourceForPath(path);
+        const source = snapshot.current;
+        if (source === null) return { path, unavailable: "File is removed in the current snapshot." };
 
         const lines = source.split(/\r?\n/);
         const evidenceLine = Number(evidenceWithPath?.line || subject.start_line || 1);
@@ -581,17 +601,9 @@ export class ReviewState {
             ? Math.min(lines.length, 100)
             : Math.min(lines.length, Number(subject.end_line || evidenceLine + 30));
         const end = Math.min(requestedEnd, start + 119);
-        let diff = "";
-        let diffError = null;
-        const baseSha = this.model?.metadata?.base_sha;
-        if (baseSha) {
-            try {
-                diff = await git(this.repoRoot, ["diff", "--no-ext-diff", "--unified=6", baseSha, "--", path]);
-                if (diff.length > 24_000) diff = `${diff.slice(0, 24_000)}\n… diff truncated …`;
-            } catch (error) {
-                diffError = error.message;
-            }
-        }
+        const diff = snapshot.diff.length > 24_000
+            ? `${snapshot.diff.slice(0, 24_000)}\n… diff truncated …` : snapshot.diff;
+        const diffError = snapshot.diff_error;
         const usages = [];
         const subjectName = String(subject.name || "");
         if (/^[A-Za-z_][A-Za-z0-9_]{2,}$/.test(subjectName)) {
@@ -604,7 +616,8 @@ export class ReviewState {
             for (const candidatePath of pythonPaths) {
                 let candidateSource;
                 try {
-                    candidateSource = await readFile(safePath(this.repoRoot, candidatePath), "utf8");
+                    candidateSource = await this.readCurrentSource(candidatePath);
+                    if (candidateSource === null) continue;
                 } catch (error) {
                     if (error.code === "ENOENT") continue;
                     throw error;
@@ -722,13 +735,7 @@ export class ReviewState {
     }
 
     async sourceForPath(path, startLine = null, endLine = startLine) {
-        const fullPath = safePath(this.repoRoot, path);
-        let current = null;
-        try {
-            current = await readFile(fullPath, "utf8");
-        } catch (error) {
-            if (error.code !== "ENOENT") throw error;
-        }
+        const current = await this.readCurrentSource(path);
         let base = null;
         let baseError = null;
         const baseSha = this.model?.metadata?.base_sha;
@@ -743,10 +750,17 @@ export class ReviewState {
         let diffError = null;
         if (baseSha) {
             try {
-                diff = await git(this.repoRoot, ["diff", "--no-ext-diff", "--unified=4", baseSha, "--", path]);
+                diff = await git(this.repoRoot, ["diff", "--no-ext-diff", "--unified=4", baseSha,
+                    ...(this.reviewTarget.currentRef ? [this.reviewTarget.currentRef] : []), "--", path]);
             } catch (error) {
                 diffError = `Unable to load the source diff: ${error.message}`;
             }
+
+        }
+        if (!diff && base === null && current !== null) {
+            const lines = current.split(/\r?\n/);
+            if (lines.at(-1) === "") lines.pop();
+            diff = `@@ -0,0 +1,${lines.length} @@\n${lines.map((line) => `+${line}`).join("\n")}`;
         }
         return {
             path,
@@ -758,5 +772,20 @@ export class ReviewState {
             diff,
             diff_error: diffError,
         };
+    }
+
+    async readCurrentSource(path) {
+        const fullPath = safePath(this.repoRoot, path);
+        if (this.reviewTarget.currentRef) {
+            const name = path.replaceAll("\\", "/");
+            const exists = await git(this.repoRoot, ["ls-tree", "--name-only", this.reviewTarget.currentRef, "--", name]);
+            return exists ? git(this.repoRoot, ["show", `${this.reviewTarget.currentRef}:${name}`]) : null;
+        }
+        try {
+            return await readFile(fullPath, "utf8");
+        } catch (error) {
+            if (error.code === "ENOENT") return null;
+            throw error;
+        }
     }
 }

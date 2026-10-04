@@ -5,17 +5,19 @@ from pathlib import Path
 from typing import Any
 
 
-def load_codeboarding(repo: Path) -> dict[str, Any]:
+def load_codeboarding(repo: Path, files: dict[str, bytes] | None = None) -> dict[str, Any]:
     candidates = (
         repo / ".codeboarding" / "components.json",
         repo / ".codeboarding" / "codeboarding.json",
         repo / "codeboarding.json",
     )
     for path in candidates:
-        if not path.is_file():
+        name = path.relative_to(repo).as_posix()
+        exists = name in files if files is not None else path.is_file()
+        if not exists:
             continue
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(files[name].decode("utf-8") if files is not None else path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             continue
         raw = data.get("components", data if isinstance(data, list) else [])

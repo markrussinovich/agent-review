@@ -190,12 +190,14 @@ class Snapshot:
         return records
 
 
-def create_snapshot(repo: Path, base_ref: str | None, excludes: tuple[str, ...]) -> Snapshot:
+def create_snapshot(
+    repo: Path, base_ref: str | None, excludes: tuple[str, ...], current_ref: str | None = None
+) -> Snapshot:
     return Snapshot(
         repo,
         base_ref,
         baseline_files(repo, base_ref, excludes),
-        current_files(repo, excludes),
+        baseline_files(repo, current_ref, excludes) if current_ref else current_files(repo, excludes),
     )
 
 
