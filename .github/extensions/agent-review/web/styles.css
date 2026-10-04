@@ -442,12 +442,16 @@ marker path { fill: var(--cp-border-strong); }
 .annotation-heading strong { font-size: .75rem; }
 .copy-button {
   margin-left: auto;
-  padding: 5px 8px;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
   border: 1px solid var(--cp-border);
   border-radius: .625rem;
   background: var(--cp-surface);
   color: var(--cp-link);
-  font-size: .5625rem;
+  font: 700 1rem/1 Consolas, "Courier New", Courier, monospace;
   cursor: pointer;
 }
 .copy-button:hover { border-color: var(--cp-accent); }

@@ -135,7 +135,7 @@ function evidenceButton(id) {
 }
 
 async function copyText(button, text) {
-    const original = button.textContent;
+    const originalLabel = button.getAttribute("aria-label") || "Copy";
     try {
         if (navigator.clipboard?.writeText) {
             await navigator.clipboard.writeText(text);
@@ -149,9 +149,13 @@ async function copyText(button, text) {
             if (!document.execCommand("copy")) throw new Error("The browser rejected the copy command.");
             textarea.remove();
         }
-        button.textContent = "Copied";
+        button.textContent = "✓";
+        button.setAttribute("aria-label", "Copied");
+        button.title = "Copied";
         setTimeout(() => {
-            button.textContent = original;
+            button.textContent = "⧉";
+            button.setAttribute("aria-label", originalLabel);
+            button.title = originalLabel;
         }, 1500);
     } catch (error) {
         showError(new Error(`Unable to copy text: ${error.message}`));
@@ -159,8 +163,10 @@ async function copyText(button, text) {
 }
 
 function copyButton(text, label = "Copy") {
-    const button = el("button", "copy-button", label);
+    const button = el("button", "copy-button", "⧉");
     button.type = "button";
+    button.title = label;
+    button.setAttribute("aria-label", label);
     button.addEventListener("click", () => copyText(button, text));
     return button;
 }

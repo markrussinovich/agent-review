@@ -294,6 +294,10 @@ export class ReviewState {
         return {
             item,
             subject,
+            analysis_quality: {
+                coverage_available: Boolean(this.model.coverage?.available),
+                warnings: this.model.warnings || [],
+            },
             evidence: Object.fromEntries([...evidenceIds].filter((key) => this.model.evidence?.[key]).map((key) => [key, this.model.evidence[key]])),
             related_edges: relatedEdges.map((candidate) => ({
                 ...candidate,
