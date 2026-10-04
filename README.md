@@ -52,7 +52,8 @@ Copilot actions.
   matched, no-match, and error states
 - Dependency versions and on-demand public risk indicators from PyPI, OSV,
   OpenSSF Scorecard, and PyPI download statistics
-- Responsive layouts for full-width and narrow side-panel Canvas sizes
+- GitHub-style responsive layouts, typography, controls, and graph treatment for
+  full-width and narrow side-panel Canvas sizes
 
 Package lookups send only the public package name/version and public repository
 URL to those services. Repository source and credentials are never sent.

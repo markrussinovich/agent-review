@@ -160,7 +160,7 @@ export function renderGraph(container, nodes, edges, onSelect) {
         });
         const title = svg("title");
         title.textContent = `${displayName(node)}\n${metricText(node)}${node._attention_count ? `\n${node._attention_count} attention findings · highest impact ${node._attention_score}` : ""}`;
-        group.append(title, svg("rect", { x: -96, y: -52, width: 192, height: 104, rx: 10 }));
+        group.append(title, svg("rect", { x: -96, y: -52, width: 192, height: 104, rx: 6 }));
         const kind = svg("text", { x: -80, y: -28, class: "node-kind" });
         kind.textContent = (node.kind || "item").toUpperCase();
         wrapLabel(displayName(node)).forEach((text, index) => {
