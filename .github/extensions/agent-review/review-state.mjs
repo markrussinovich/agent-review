@@ -160,6 +160,8 @@ export class ReviewState {
         this.annotationPromises = new Map();
         this.packageRisks = {};
         this.packageRiskPromises = new Map();
+        this.packageAssessments = new Map();
+        this.packageAssessmentPromises = new Map();
         this.progress = null;
         this.sessionHistories = new Map();
         this.historicalContextPromise = null;
@@ -225,6 +227,7 @@ export class ReviewState {
                 );
                 this.annotations = {};
                 this.packageRisks = {};
+                this.packageAssessments = new Map();
                 this.loading = false;
                 this.progress = { phase: "complete", message: "Analysis complete", percent: 100 };
                 return sessionContextPromise.then(() => {
@@ -654,7 +657,7 @@ export class ReviewState {
         };
     }
 
-    async packageRiskFor(name, requestedVersion = null) {
+    async packageRiskFor(name, requestedVersion = null, { explain = true } = {}) {
         const dependency = this.model?.package_dependencies?.find((item) => item.name === name);
         if (!dependency) throw new Error(`Unknown package dependency: ${name}`);
         const declared = dependency.declared_current?.map((item) => item.specifier).filter(Boolean) || [];
@@ -666,13 +669,15 @@ export class ReviewState {
             throw new Error(`An exact or installed version is required to assess ${name}; declared ${declared.join(", ") || "without a version"}.`);
         }
         const cacheKey = `${name}@${version}`;
+        const assessment = await this.packageAssessmentFor(cacheKey, name, version);
+        if (!explain) return { assessment, explanation: this.packageRisks[cacheKey]?.explanation ?? null };
         if (this.packageRisks[cacheKey]) return this.packageRisks[cacheKey];
         if (this.packageRiskPromises.has(cacheKey)) return this.packageRiskPromises.get(cacheKey);
-        const promise = assessPackageRisk(name, version, { includePopularity: true })
-            .then(async (assessment) => {
-                const explanation = this.generatePackageExplanation
-                    ? await this.generatePackageExplanation({ dependency, assessment })
-                    : null;
+        const promise = Promise.resolve()
+            .then(() => this.generatePackageExplanation
+                ? this.generatePackageExplanation({ dependency, assessment })
+                : null)
+            .then((explanation) => {
                 const result = { assessment, explanation };
                 this.packageRisks[cacheKey] = result;
                 this.broadcast("package-risk");
@@ -683,6 +688,20 @@ export class ReviewState {
         return promise;
     }
 
+    // Public-registry indicators are fast and independent of the slower Copilot explanation.
+    packageAssessmentFor(cacheKey, name, version) {
+        if (this.packageAssessments.has(cacheKey)) return Promise.resolve(this.packageAssessments.get(cacheKey));
+        if (!this.packageAssessmentPromises.has(cacheKey)) {
+            const promise = assessPackageRisk(name, version, { includePopularity: true })
+                .then((assessment) => {
+                    this.packageAssessments.set(cacheKey, assessment);
+                    return assessment;
+                })
+                .finally(() => this.packageAssessmentPromises.delete(cacheKey));
+            this.packageAssessmentPromises.set(cacheKey, promise);
+        }
+        return this.packageAssessmentPromises.get(cacheKey);
+    }
     async sourceFor(id) {
         const context = this.contextFor(id);
         const item = context?.item;

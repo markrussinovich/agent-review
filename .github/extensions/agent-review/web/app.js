@@ -7,7 +7,7 @@ const state = {
     selected: null,
     source: null,
     sourceTab: "diff",
-    packageRisk: new Map(),
+    packageData: new Map(),
     attribution: [],
     attributionStatus: "loading",
     attributionMessage: "",
@@ -17,6 +17,7 @@ const state = {
     query: "",
     detailVisible: true,
     sourceHistory: { entries: [], index: -1, pending: -1 },
+    appliedServerSelection: null,
 };
 const elements = Object.fromEntries([
     "status", "refresh", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
@@ -227,12 +228,19 @@ function renderCards(container, items, emptyText) {
         const heading = el("div", "card-heading");
         heading.append(el("strong", "", item.title || item.name || item.id));
         if (item.impact_score != null) heading.append(el("b", "impact-score", String(item.impact_score)));
-        card.append(heading, el("span", "card-body", item.body || item.reason || packageVersion(item) || item.change || ""));
+        card.append(heading, el("span", "card-body", item.id?.startsWith("package:") ? `${item.change} · ${packageVersionText(item)}` : item.body || item.reason || item.change || ""));
         if (item.impact_factors?.length) card.append(el("small", "factor-line", item.impact_factors.join(" · ")));
+        card.dataset.itemId = item.id;
+        card.classList.toggle("is-selected", state.selected?.id === item.id);
         card.title = [item.title, item.body || item.reason].filter(Boolean).join("\n");
         card.addEventListener("click", () => openReviewItem(item));
         container.append(card);
     }
+}
+
+function markSelectedCards() {
+    document.querySelectorAll(".review-card[data-item-id]").forEach((card) =>
+        card.classList.toggle("is-selected", card.dataset.itemId === state.selected?.id));
 }
 
 function openReviewItem(item) {
@@ -243,8 +251,11 @@ function openReviewItem(item) {
         state.query = "";
         elements.review_search.value = "";
         render();
-    } else if (item.name && item.id?.startsWith("package:")) {
-        selectPackage(item);
+    } else if (item.id?.startsWith("package:") || item.package_id) {
+        const model = state.payload?.model;
+        const target = (model?.package_changes || []).find((entry) => entry.id === (item.package_id || item.id));
+        if (target) openPackage(target);
+        else selectItem(item, false);
     } else {
         selectItem(item, false);
     }
@@ -371,42 +382,57 @@ function renderBreadcrumbs() {
     }
 }
 
+function drillChildren(model, item) {
+    const visible = (node) => !state.changedOnly || node.change !== "unchanged";
+    if (item.kind === "component") {
+        return model.nodes.filter((node) => node.kind === "module" && node.component_id === item.id && visible(node));
+    }
+    return model.nodes.filter((node) =>
+        node.module_id === item.id && ["class", "function", "method"].includes(node.kind) && visible(node));
+}
+
 function maybeDrill(item) {
     if (item.kind === "component" || item.kind === "module") {
+        const model = state.payload?.model;
+        // A module with nothing to drill into (for example a package __init__ that only
+        // re-exports names) opens its diff instead of an empty level.
+        if (model && item.path && drillChildren(model, item).length === 0) {
+            selectItem(item, true);
+            return;
+        }
         state.stack.push(item);
         clearSelection();
         render();
     } else {
         selectItem(item, true);
     }
-
-    function selectAggregateEdge(edge, model) {
-        const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
-        const concrete = model.edges.filter((candidate) => edge.underlying_edge_ids?.includes(candidate.id));
-        const representative = concrete.find((candidate) => candidate.change !== "unchanged") || concrete[0];
-        const source = nodeById.get(edge.source)?.name || edge.source;
-        const target = nodeById.get(edge.target)?.name || edge.target;
-        if (!representative) {
-            renderDetail({
-                ...edge,
-                kind: "edge",
-                name: `${source} → ${target}`,
-                reason: `${edge.added_count || 0} added and ${edge.removed_count || 0} removed ${edge.kind} relationships.`,
-            });
-            return;
-        }
-        selectItem({
-            ...representative,
-            kind: "edge",
-            name: `${source} → ${target}`,
-            added_count: edge.added_count,
-            removed_count: edge.removed_count,
-            underlying_edge_ids: edge.underlying_edge_ids,
-            reason: `${edge.added_count || 0} added and ${edge.removed_count || 0} removed ${edge.kind} relationships. Showing representative source evidence.`,
-        });
-    }
 }
 
+function selectAggregateEdge(edge, model) {
+    const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
+    const concrete = model.edges.filter((candidate) => edge.underlying_edge_ids?.includes(candidate.id));
+    const representative = concrete.find((candidate) => candidate.change !== "unchanged") || concrete[0];
+    const source = nodeById.get(edge.source)?.name || edge.source;
+    const target = nodeById.get(edge.target)?.name || edge.target;
+    if (!representative) {
+        renderDetail({
+            ...edge,
+            kind: "edge",
+            name: `${source} → ${target}`,
+            reason: `${edge.added_count || 0} added and ${edge.removed_count || 0} removed ${edge.kind} relationships.`,
+        });
+        return;
+    }
+    selectItem({
+        ...representative,
+        kind: "edge",
+        name: `${source} → ${target}`,
+        added_count: edge.added_count,
+        removed_count: edge.removed_count,
+        underlying_edge_ids: edge.underlying_edge_ids,
+        reason: `${edge.added_count || 0} added and ${edge.removed_count || 0} removed ${edge.kind} relationships. Showing representative source evidence.`,
+    });
+}
 function field(label, value) {
     if (value === undefined || value === null || value === "") return null;
     const row = el("div", "detail-row");
@@ -520,6 +546,7 @@ async function generateOverview() {
 function clearSelection() {
     state.selectionEpoch += 1;
     state.selected = null;
+    markSelectedCards();
     renderEmptyDetail();
 }
 
@@ -630,6 +657,8 @@ async function selectFile(change) {
 async function selectItem(item, notify = true) {
     const epoch = ++state.selectionEpoch;
     state.selected = item;
+    markSelectedCards();
+    if (notify) state.appliedServerSelection = item.id;
     renderDetail(item);
     if (notify) api("/api/selection", {
         method: "POST",
@@ -1164,7 +1193,7 @@ function renderSource() {
 function collectionTitle(mode) {
     return {
         files: "Changed files", lines: "Lines changed by module", symbols: "Changed symbols",
-        edges: "New relationships", packages: "Package dependencies", findings: "Ranked findings",
+        edges: "New relationships", packages: "Package changes", findings: "Ranked findings",
     }[mode] || "Review details";
 }
 
@@ -1185,12 +1214,16 @@ function collectionItems(model, mode) {
     if (mode === "edges") return model.edges
         .filter((edge) => edge.change === "added")
         .sort((a, b) => (b.count || 1) - (a.count || 1));
-    if (mode === "packages") return model.package_dependencies || [];
+    if (mode === "packages") return model.package_changes || [];
     if (mode === "findings") return groupFindings(model.attention || []);
     return [];
 }
 
 function renderCollection(model) {
+    if (state.mode === "packages") {
+        renderPackageView(model);
+        return;
+    }
     const query = state.query.toLowerCase();
     const items = collectionItems(model, state.mode).filter((item) =>
         !query || `${item.title || ""} ${item.name || ""} ${item.path || ""} ${item.reason || ""}`.toLowerCase().includes(query)
@@ -1211,7 +1244,7 @@ function renderCollection(model) {
         let subtitle;
         if (item.path && item.status) {
             title = item.path;
-            subtitle = `${item.status} · +${item.lines_added} / −${item.lines_removed}${isTestPath(item.path) ? " · test code" : ""}`;
+            subtitle = `+${item.lines_added} / −${item.lines_removed}${isTestPath(item.path) ? " · test code" : ""}`;
             const statusClass = item.status === "added"
                 ? "file-added"
                 : item.status === "deleted" || item.status === "removed"
@@ -1246,6 +1279,10 @@ function renderCollection(model) {
         const copy = el("span", "collection-copy");
         copy.append(el("strong", "", title), el("small", "", subtitle));
         row.append(copy);
+        const statusLabel = item.status || item.change;
+        if (["files", "lines", "symbols"].includes(state.mode) && ["added", "modified", "removed", "deleted"].includes(statusLabel)) {
+            row.append(el("span", `label label-${statusLabel === "deleted" ? "removed" : statusLabel} row-label`, statusLabel === "deleted" ? "removed" : statusLabel));
+        }
         if (["files", "lines", "symbols"].includes(state.mode)) {
             const churn = item.lines_added != null
                 ? item.lines_added + item.lines_removed
@@ -1266,71 +1303,315 @@ function packageVersion(item) {
     return item.resolved_current || declared || "version unspecified";
 }
 
-async function selectPackage(item) {
-    const epoch = ++state.selectionEpoch;
+function packageKey(item) {
+    return `${item.name}@${packageVersion(item)}`;
+}
+
+function packageEntry(item) {
+    const key = packageKey(item);
+    if (!state.packageData.has(key)) state.packageData.set(key, {});
+    return state.packageData.get(key);
+}
+
+function openPackage(item) {
+    state.mode = "packages";
+    state.stack = [];
+    state.query = "";
+    elements.review_search.value = "";
+    state.selected = null;
+    render();
+    selectPackage(item);
+}
+
+function selectPackage(item) {
+    state.selectionEpoch += 1;
     state.selected = item;
-    renderDetail(item);
-    const panel = elements.detail;
-    const loading = el("div", "risk-panel");
-    loading.append(el("p", "eyebrow", "PACKAGE INTELLIGENCE"), el("p", "muted", "Loading PyPI, OSV, popularity, and OpenSSF indicators…"));
-    panel.append(loading);
-    try {
-        let result = state.packageRisk.get(item.name)
-            || Object.values(state.payload?.package_risks || {}).find((candidate) =>
-                candidate.assessment?.name === item.name
-            );
-        if (!result) {
-            result = await api("/api/package-risk", {
-                method: "POST",
-                body: JSON.stringify({ name: item.name, version: item.resolved_current || null }),
-            });
-            state.packageRisk.set(item.name, result);
-        }
-        if (epoch === state.selectionEpoch && state.selected?.id === item.id) renderPackageRisk(panel, result);
-    } catch (error) {
-        if (epoch === state.selectionEpoch) loading.replaceWith(el("p", "annotation-error", error.message));
+    markSelectedCards();
+    document.querySelectorAll(".package-row").forEach((row) =>
+        row.classList.toggle("is-selected", row.dataset.package === item.id));
+    renderPackagePanel();
+    if (item.change !== "removed") loadPackageData(item);
+}
+
+function loadPackageData(item) {
+    const entry = packageEntry(item);
+    const refresh = () => {
+        if (state.selected?.id === item.id) renderPackagePanel();
+    };
+    const request = (explain) => api("/api/package-risk", {
+        method: "POST",
+        body: JSON.stringify({ name: item.name, version: item.resolved_current || null, explain }),
+    });
+    if (!entry.assessment && !entry.assessmentPromise) {
+        entry.assessmentError = null;
+        entry.assessmentPromise = request(false)
+            .then((result) => {
+                entry.assessment = result.assessment;
+                if (result.explanation) entry.explanation = result.explanation;
+            })
+            .catch((error) => { entry.assessmentError = error.message; })
+            .finally(() => { entry.assessmentPromise = null; refresh(); });
+    }
+    if (!entry.explanation && !entry.explainPromise) {
+        entry.explainError = null;
+        entry.explainPromise = request(true)
+            .then((result) => {
+                entry.assessment ??= result.assessment;
+                entry.explanation = result.explanation;
+            })
+            .catch((error) => { entry.explainError = error.message; })
+            .finally(() => { entry.explainPromise = null; refresh(); });
     }
 }
 
-function renderPackageRisk(panel, result) {
-    panel.querySelector(".risk-panel")?.remove();
-    const risk = result.assessment?.risk || {};
-    const indicators = result.assessment?.indicators || {};
-    const section = el("section", `risk-panel risk-${risk.level || "unknown"}`);
-    const heading = el("div", "risk-heading");
-    heading.append(el("p", "eyebrow", "PACKAGE INTELLIGENCE"), el("b", "risk-level", `${risk.level || "unknown"} risk${risk.score != null ? ` · ${risk.score}/100` : ""}`));
-    section.append(heading);
-    const grid = el("div", "risk-grid");
-    grid.append(
-        field("Version", result.assessment?.version || "unknown"),
-        field("Known vulnerabilities", indicators.vulnerability_count ?? "unknown"),
-        field("Vulnerability history", indicators.vulnerability_history_count ?? "unknown"),
-        field("OpenSSF score", indicators.scorecard_score ?? "unknown"),
-        field("Recent downloads", indicators.recent_downloads?.toLocaleString?.() ?? "unknown"),
-        field("Latest release", indicators.latest_version || "unknown"),
-        field("Repository", indicators.repository_url || "unknown"),
+function renderPackageView(model) {
+    const changes = [...(model.package_changes || [])].sort((a, b) =>
+        ["added", "modified", "removed"].indexOf(a.change) - ["added", "modified", "removed"].indexOf(b.change)
+        || a.name.localeCompare(b.name));
+    elements.graph.replaceChildren();
+    if (!changes.length) {
+        elements.graph.append(el("p", "collection-empty", "No packages were added, changed, or removed in this review."));
+        return;
+    }
+    const view = el("div", "package-view");
+    const list = el("div", "package-list");
+    list.append(el("p", "package-list-heading", `${changes.length} package change${changes.length === 1 ? "" : "s"}`));
+    for (const item of changes) {
+        const row = el("button", `package-row${state.selected?.id === item.id ? " is-selected" : ""}`);
+        row.type = "button";
+        row.dataset.package = item.id;
+        const heading = el("div", "package-row-heading");
+        heading.append(el("strong", "", item.name), el("span", `label label-${item.change}`, item.change));
+        const usage = item.usage_locations?.length || 0;
+        row.append(
+            heading,
+            el("small", "", `${packageVersionText(item)}${item.change === "removed" ? "" : usage ? ` · used in ${usage} file${usage === 1 ? "" : "s"}` : " · no usages found"}`),
+        );
+        row.addEventListener("click", () => selectPackage(item));
+        list.append(row);
+    }
+    const panel = el("div", "package-detail");
+    panel.id = "package-detail";
+    view.append(list, panel);
+    elements.graph.append(view);
+    const current = changes.find((item) => item.id === state.selected?.id);
+    if (current) {
+        renderPackagePanel();
+    } else {
+        selectPackage(changes[0]);
+    }
+}
+
+function packageVersionText(item) {
+    const base = (item.declared_base || []).map((entry) => entry.specifier).filter(Boolean).join(", ");
+    const current = item.change === "removed" ? "" : packageVersion(item);
+    if (item.change === "modified" && base) return `${base} → ${current}`;
+    if (item.change === "removed") return base || "removed";
+    return current;
+}
+
+function formatDate(value) {
+    return value ? new Date(value).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : null;
+}
+
+function formatCount(value) {
+    return Number.isFinite(value) ? value.toLocaleString() : null;
+}
+
+function statTile(label, value, detail, tone = "") {
+    const tile = el("div", `stat-tile${tone ? ` stat-${tone}` : ""}`);
+    tile.append(el("span", "stat-label", label), el("strong", "stat-value", value ?? "Unknown"));
+    if (detail) tile.append(el("small", "", detail));
+    return tile;
+}
+
+function externalLink(label, url) {
+    const link = el("a", "external-link", label);
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.title = url;
+    return link;
+}
+
+function definitionRow(label, content) {
+    if (content === null || content === undefined || content === "") return null;
+    const row = el("div", "definition-row");
+    row.append(el("dt", "", label));
+    const value = el("dd", "");
+    if (content instanceof Node) value.append(content);
+    else value.textContent = String(content);
+    row.append(value);
+    return row;
+}
+
+function packageSection(title, ...children) {
+    const section = el("section", "package-section");
+    section.append(el("h3", "", title), ...children.filter(Boolean));
+    return section;
+}
+
+function renderPackagePanel() {
+    const host = document.getElementById("package-detail");
+    if (!host) return;
+    const item = state.selected;
+    if (!item?.id?.startsWith("package:")) {
+        host.replaceChildren(el("p", "muted", "Select a package to review it."));
+        return;
+    }
+    const entry = packageEntry(item);
+    const assessment = entry.assessment;
+    const risk = assessment?.risk;
+    const sections = [];
+
+    const header = el("header", "package-header");
+    const titleRow = el("div", "package-title-row");
+    titleRow.append(el("h2", "", item.name), el("span", `label label-${item.change}`, item.change));
+    const declared = (item.declared_current?.[0] || item.declared_base?.[0]);
+    header.append(
+        titleRow,
+        el("p", "muted", [
+            packageVersionText(item),
+            declared?.source ? `declared in ${declared.source}` : null,
+            declared?.group ? `${declared.group} dependency` : null,
+        ].filter(Boolean).join(" · ")),
     );
-    section.append(grid);
-    if (risk.reasons?.length) {
-        const reasons = el("ul", "risk-reasons");
-        reasons.append(...risk.reasons.map((reason) => el("li", "", reason)));
-        section.append(reasons);
-    }
-    if (result.explanation) {
-        const explanation = el("div", "detail-copy markdown-body");
-        markdownContext.intent = null;
-        renderMarkdown(explanation, result.explanation);
-        const explanationHeading = el("div", "assessment-heading");
-        explanationHeading.append(el("h3", "", "Copilot assessment"), copyButton(result.explanation, "Copy"));
-        section.append(explanationHeading, explanation);
-    }
-    const sourceLine = el("p", "source-status", Object.entries(result.assessment?.sources || {})
-        .map(([name, source]) => `${name}: ${source.status}`)
-        .join(" · "));
-    section.append(sourceLine);
-    panel.append(section);
-}
+    sections.push(header);
 
+    if (item.change === "removed") {
+        sections.push(el("p", "flash flash-attention", "This dependency was removed. Check that nothing in the repository still imports it."));
+        host.replaceChildren(...sections);
+        return;
+    }
+
+    if (risk) {
+        const banner = el("div", `flash flash-${risk.level === "low" ? "success" : risk.level === "unknown" ? "neutral" : risk.level === "medium" ? "attention" : "danger"}`);
+        banner.append(el("strong", "", `${risk.level} risk${risk.score != null ? ` · ${risk.score}/100` : ""}`));
+        if (risk.reasons?.length) {
+            const reasons = el("ul", "");
+            reasons.append(...risk.reasons.map((reason) => el("li", "", reason)));
+            banner.append(reasons);
+        }
+        sections.push(banner);
+    } else if (entry.assessmentError) {
+        sections.push(el("p", "flash flash-danger", entry.assessmentError));
+    } else {
+        sections.push(el("p", "flash flash-neutral", "Checking PyPI, OSV, OpenSSF Scorecard, and download statistics…"));
+    }
+
+    // Copilot explanation
+    const why = el("div", "annotation-body");
+    if (entry.explanation) {
+        markdownContext.intent = null;
+        renderMarkdown(why, entry.explanation);
+    } else if (entry.explainError) {
+        why.append(el("p", "annotation-error", entry.explainError));
+        const retry = el("button", "link-button", "Retry");
+        retry.type = "button";
+        retry.addEventListener("click", () => {
+            entry.explainError = null;
+            loadPackageData(item);
+            renderPackagePanel();
+        });
+        why.append(retry);
+    } else {
+        why.append(el("p", "annotation-loading", "Copilot is explaining why this package was added and what uses it…"));
+    }
+    const whyHeading = el("div", "package-section-heading");
+    whyHeading.append(el("h3", "", "Copilot assessment"));
+    if (entry.explanation) whyHeading.append(copyButton(entry.explanation, "Copy assessment"));
+    const whySection = el("section", "package-section");
+    whySection.append(whyHeading, why);
+    sections.push(whySection);
+
+    // Usage
+    const usage = item.usage_locations || [];
+    const usageList = el("ul", "usage-list");
+    for (const location of usage) {
+        const reference = parseSourceReference(location);
+        const row = el("li", "");
+        row.append(reference ? sourceReferenceButton(location, reference) : el("code", "inline-code", location));
+        usageList.append(row);
+    }
+    sections.push(packageSection(
+        `Used by (${usage.length})`,
+        usage.length ? usageList : el("p", "flash flash-attention", "No import of this package was found in the repository. It may be unused or loaded dynamically."),
+    ));
+
+    if (assessment) {
+        const indicators = assessment.indicators || {};
+        const maintenance = indicators.maintenance || {};
+        const vulns = indicators.known_vulnerabilities || [];
+        const score = indicators.scorecard_score;
+        const tiles = el("div", "stat-grid");
+        tiles.append(
+            statTile("Known vulnerabilities", formatCount(indicators.vulnerability_count),
+                indicators.vulnerability_history_count != null ? `${indicators.vulnerability_history_count} in release history` : null,
+                indicators.vulnerability_count > 0 ? "danger" : indicators.vulnerability_count === 0 ? "success" : ""),
+            statTile("OpenSSF Scorecard", score != null ? `${score}/10` : null, score != null ? null : "No scorecard published",
+                score == null ? "" : score >= 7 ? "success" : score >= 4 ? "attention" : "danger"),
+            statTile("Maintenance", maintenance.status ? maintenance.status : null,
+                `${maintenance.releases_last_12_months ?? 0} releases in 12 months${maintenance.latest_release_date ? ` · latest ${formatDate(maintenance.latest_release_date)}` : ""}`,
+                maintenance.status === "active" ? "success" : maintenance.status === "stale" ? "attention" : maintenance.status === "dormant" ? "danger" : ""),
+            statTile("Downloads (last month)", formatCount(indicators.recent_downloads), null),
+            statTile("Installed version", assessment.version,
+                `${indicators.release_age_days != null ? `${indicators.release_age_days} days old` : "age unknown"}${indicators.latest_version ? ` · latest ${indicators.latest_version}` : ""}${indicators.yanked ? " · YANKED" : ""}`,
+                indicators.yanked ? "danger" : ""),
+        );
+        const scorecardParts = [tiles];
+        if (vulns.length) {
+            const list = el("ul", "vuln-list");
+            for (const vulnerability of vulns.slice(0, 5)) {
+                const row = el("li", "");
+                const id = String(vulnerability.id || "");
+                row.append(/^[A-Za-z0-9._-]{3,60}$/.test(id) ? externalLink(id, `https://osv.dev/vulnerability/${id}`) : document.createTextNode(id));
+                row.append(document.createTextNode(` ${vulnerability.severity ? `· ${vulnerability.severity}` : ""}${vulnerability.summary ? ` · ${vulnerability.summary}` : ""}`));
+                list.append(row);
+            }
+            scorecardParts.push(list);
+        }
+        const weakChecks = (indicators.scorecard_checks || [])
+            .filter((check) => check.score != null && check.score >= 0 && check.score < 5)
+            .sort((a, b) => a.score - b.score)
+            .slice(0, 4);
+        if (weakChecks.length) {
+            const list = el("ul", "check-list");
+            for (const check of weakChecks) list.append(el("li", "", `${check.name}: ${check.score}/10`));
+            scorecardParts.push(el("p", "muted", "Weakest Scorecard checks"), list);
+        }
+        sections.push(packageSection("Security scorecard", ...scorecardParts));
+
+        const provenance = indicators.provenance;
+        if (provenance) {
+            const list = el("dl", "definition-list");
+            const repository = indicators.repository_url ? externalLink(indicators.repository_url.replace(/^https:\/\//, ""), indicators.repository_url) : null;
+            const otherLinks = (provenance.links || []).filter((link) => link.url !== indicators.repository_url);
+            const links = otherLinks.length ? el("span", "link-cluster") : null;
+            otherLinks.forEach((link, index) => {
+                if (index) links.append(document.createTextNode(" · "));
+                links.append(externalLink(link.label, link.url));
+            });
+            for (const row of [
+                definitionRow("Summary", provenance.summary),
+                definitionRow("Author", provenance.author),
+                definitionRow("Maintainer", provenance.maintainer),
+                definitionRow("License", provenance.license),
+                definitionRow("Source repository", repository),
+                definitionRow("Registry", externalLink(provenance.pypi_url.replace(/^https:\/\//, ""), provenance.pypi_url)),
+                definitionRow("Homepage", provenance.homepage ? externalLink(provenance.homepage.replace(/^https?:\/\//, ""), provenance.homepage) : null),
+                definitionRow("Other links", links),
+                definitionRow("First release", formatDate(provenance.first_release_date)),
+                definitionRow("Releases", provenance.release_count ? String(provenance.release_count) : null),
+                definitionRow("Requires Python", provenance.requires_python),
+            ]) if (row) list.append(row);
+            sections.push(packageSection("Provenance", list));
+        }
+        const statuses = Object.entries(assessment.sources || {})
+            .map(([name, source]) => `${name}: ${source.status}`);
+        sections.push(el("p", "source-status", `Public data: ${statuses.join(" · ")}. Only the package name and version are sent.`));
+    }
+    host.replaceChildren(...sections);
+}
 function render() {
     const payload = state.payload;
     const model = payload?.model;
@@ -1372,9 +1653,13 @@ function render() {
         });
         elements.attention.append(viewAll);
     }
-    renderCards(elements.packages, model.package_dependencies || [], "No declared package dependencies.");
+    renderCards(elements.packages, model.package_changes || [], "No package changes.");
+    const hasPackageChanges = (model.package_changes || []).length > 0;
+    elements.packages.classList.toggle("hidden", !hasPackageChanges);
+    elements.packages.previousElementSibling?.classList.toggle("hidden", !hasPackageChanges);
 
     const parent = state.stack.at(-1);
+    document.querySelector(".workspace").classList.toggle("package-mode", state.mode === "packages");
     elements.zoom_out.disabled = state.mode === "graph" && state.stack.length === 0;
     elements.zoom_out.title = state.mode !== "graph" ? "Back to architecture" : parent ? `Back from ${parent.name}` : "Already at architecture level";
     if (state.mode === "graph") {
@@ -1421,7 +1706,9 @@ function render() {
         elements.graph_title.textContent = collectionTitle(state.mode);
         renderCollection(model);
     }
-    if (payload.selection?.id && state.selected?.id !== payload.selection.id) {
+    // Apply a server-side selection (an agent focus_item call) once; re-applying it on every render would override the user's own choice.
+    if (payload.selection?.id && payload.selection.id !== state.appliedServerSelection && state.selected?.id !== payload.selection.id) {
+        state.appliedServerSelection = payload.selection.id;
         const all = [...model.nodes, ...model.edges, ...(model.package_changes || []), ...(model.attention || []), ...(payload.generated_observations || [])];
         const selected = all.find((item) => item.id === payload.selection.id) || { id: payload.selection.id, kind: "evidence" };
         state.selected = selected;

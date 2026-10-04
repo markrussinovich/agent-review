@@ -47,6 +47,69 @@ function daysBetween(later, earlier) {
   return Math.max(0, Math.floor((later.getTime() - earlier.getTime()) / 86_400_000));
 }
 
+function clip(value, limit = 160) {
+  if (typeof value !== "string") return null;
+  const text = value.replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
+function safeLink(value) {
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = new URL(value.trim());
+    if (!["https:", "http:"].includes(parsed.protocol) || parsed.username || parsed.password) return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+// PyPI often lists people only as "Name <email>"; keep the public names and drop the addresses.
+function namesFromEmail(value) {
+  if (typeof value !== "string") return null;
+  const names = value.split(",")
+    .map((part) => part.replace(/<[^>]*>/g, "").replace(/["']/g, "").trim())
+    .filter((part) => part && !part.includes("@"));
+  return clip(names.join(", "), 120);
+}
+
+function licenseFrom(info) {
+  const expression = clip(info?.license_expression, 80);
+  if (expression) return expression;
+  const text = typeof info?.license === "string" ? info.license.split(/\r?\n/)[0] : null;
+  const fromText = clip(text, 80);
+  if (fromText) return fromText;
+  const classifier = (Array.isArray(info?.classifiers) ? info.classifiers : [])
+    .find((item) => typeof item === "string" && item.startsWith("License ::"));
+  return classifier ? clip(classifier.split("::").pop(), 80) : null;
+}
+
+function provenanceFrom(name, info, releases) {
+  const links = Object.entries(info?.project_urls && typeof info.project_urls === "object" ? info.project_urls : {})
+    .slice(0, 8)
+    .map(([label, value]) => ({ label: clip(label, 40) || "Link", url: safeLink(value) }))
+    .filter((item) => item.url);
+  const dates = Object.values(releases && typeof releases === "object" ? releases : {})
+    .flat()
+    .map((file) => parseDate(file?.upload_time_iso_8601 || file?.upload_time))
+    .filter(Boolean);
+  return {
+    summary: clip(info?.summary, 240),
+    author: clip(info?.author, 80) || namesFromEmail(info?.author_email),
+    maintainer: clip(info?.maintainer, 80) || namesFromEmail(info?.maintainer_email),
+    license: licenseFrom(info),
+    requires_python: clip(info?.requires_python, 40),
+    homepage: safeLink(info?.home_page),
+    links,
+    pypi_url: `https://pypi.org/project/${encodeURIComponent(name)}/`,
+    first_release_date: dates.length
+      ? new Date(Math.min(...dates.map((date) => date.getTime()))).toISOString().slice(0, 10)
+      : null,
+    release_count: releases && typeof releases === "object" ? Object.keys(releases).length : 0,
+  };
+}
+
 function githubRepository(projectUrls) {
   let sawUnsafeGitHubUrl = false;
   const urls = projectUrls && typeof projectUrls === "object"
@@ -272,6 +335,7 @@ export async function assessPackageRisk(name, version, options = {}) {
     release_age_days: null,
     yanked: null,
     repository_url: null,
+    provenance: null,
     maintenance: {
       status: "unknown",
       latest_release_date: null,
@@ -342,6 +406,7 @@ export async function assessPackageRisk(name, version, options = {}) {
       ? requestedFiles.every((file) => file?.yanked === true)
       : null;
     indicators.maintenance = maintenanceFrom(pypiData?.releases, now);
+    indicators.provenance = provenanceFrom(packageName, pypiData?.info, pypiData?.releases);
 
     const repository = githubRepository(pypiData?.info?.project_urls);
     indicators.repository_url = repository.url;

@@ -196,3 +196,38 @@ test("request timeout is bounded and reported without rejecting assessment", asy
   assert.equal(result.risk.level, "unknown");
   assert.equal(result.risk.score, null);
 });
+
+test("provenance carries public ownership details without email addresses", async () => {
+  const data = pypi();
+  data.info = {
+    ...data.info,
+    summary: "A healthy example package",
+    author_email: "Ada Lovelace <ada@example.com>, Grace Hopper <grace@example.com>",
+    license_expression: "MIT",
+    requires_python: ">=3.9",
+    home_page: "https://example.com/docs",
+    project_urls: {
+      Source: "https://github.com/example/healthy",
+      Tracker: "javascript:alert(1)",
+      Docs: "https://docs.example.com/",
+    },
+  };
+  const fetchImpl = mockFetch([
+    ["pypi.org", data],
+    ["api.osv.dev", { vulns: [] }],
+    ["securityscorecards.dev", { score: 8, checks: [] }],
+  ]);
+
+  const { indicators } = await assessPackageRisk("healthy", "1.0.0", { fetchImpl, now: NOW });
+  const provenance = indicators.provenance;
+
+  assert.equal(provenance.summary, "A healthy example package");
+  assert.equal(provenance.author, "Ada Lovelace, Grace Hopper");
+  assert.equal(provenance.license, "MIT");
+  assert.equal(provenance.requires_python, ">=3.9");
+  assert.equal(provenance.homepage, "https://example.com/docs");
+  assert.deepEqual(provenance.links.map((link) => link.label), ["Source", "Docs"], "unsafe schemes are dropped");
+  assert.equal(provenance.pypi_url, "https://pypi.org/project/healthy/");
+  assert.equal(provenance.first_release_date, "2026-09-01");
+  assert.ok(!JSON.stringify(provenance).includes("@"), "no email addresses are exposed");
+});

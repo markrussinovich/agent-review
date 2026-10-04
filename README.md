@@ -58,6 +58,7 @@ Copilot actions.
   and a concise Copilot briefing that leads with a risk banner
 - Backticked file paths and symbol names in Copilot text link to the source line, and the stated-intent label opens the originating prompt in the session history
 - Back and forward navigation (buttons, Alt+Left/Right, mouse back/forward) through followed source links
+- Package review: added, changed, and removed dependencies with a Copilot explanation of why each was added and what uses it, a security scorecard (vulnerabilities, OpenSSF Scorecard, maintenance, downloads), and provenance (author, license, source repository, registry)
 - Exact source-range highlighting for findings backed by precise line evidence
 - Cached Copilot explanations generated in isolated, tool-free sessions and
   validated for the required sections: what the code is, usage, behavior
@@ -99,5 +100,6 @@ node --test .github/extensions/agent-review/tests/test-package-risk.mjs
 node --check .github/extensions/agent-review/extension.mjs
 node --check .github/extensions/agent-review/web/app.js
 ```
+
 
 

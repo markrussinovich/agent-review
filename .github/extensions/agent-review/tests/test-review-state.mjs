@@ -66,3 +66,26 @@ test("base ref is re-resolved on every refresh", async () => {
     await state.refresh().catch(() => {});
     assert.equal(state.baseRef, "ref-2");
 });
+
+test("package assessment is available before the Copilot explanation and both are cached", async () => {
+  let explanations = 0;
+  const state = new ReviewState("C:\\repo", {
+    generatePackageExplanation: async () => {
+      explanations += 1;
+      return "## Why it was added\n\n- ok";
+    },
+  });
+  state.model = { package_dependencies: [{ name: "demo", resolved_current: "1.0", declared_current: [] }] };
+  state.packageAssessments.set("demo@1.0", { version: "1.0", risk: { level: "low" } });
+
+  const fast = await state.packageRiskFor("demo", null, { explain: false });
+  assert.equal(fast.assessment.risk.level, "low");
+  assert.equal(fast.explanation, null);
+  assert.equal(explanations, 0, "indicators do not wait for the model");
+
+  const full = await state.packageRiskFor("demo");
+  assert.match(full.explanation, /Why it was added/);
+  await state.packageRiskFor("demo");
+  assert.equal(explanations, 1, "explanation is generated once");
+  assert.match((await state.packageRiskFor("demo", null, { explain: false })).explanation, /Why it was added/);
+});
