@@ -24,10 +24,16 @@ try {
     await git("add", ".");
     await git("commit", "-qm", "base");
     const base = (await git("rev-parse", "HEAD")).stdout.trim();
+    for (let index = 0; index < 32; index += 1) await git("commit", "--allow-empty", "-qm", `History ${index}`);
     await writeFile(join(repo, "main.py"), "def run():\n    return 2\n");
     await git("commit", "-qam", "feature");
     const head = (await git("rev-parse", "HEAD")).stdout.trim();
     await writeFile(join(repo, "main.py"), "def dirty_only():\n    return 999\n");
+    if (process.env.AGENT_REVIEW_LIVE_PR) {
+        const repository = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/\d+$/.exec(process.env.AGENT_REVIEW_LIVE_PR)?.[1];
+        assert.ok(repository, "AGENT_REVIEW_LIVE_PR must be a GitHub PR URL");
+        await git("remote", "add", "origin", `https://github.com/${repository}.git`);
+    }
     const state = new ReviewState(repo, { baseRef: base });
     await state.refresh();
     server = await startReviewServer(state);
@@ -43,7 +49,13 @@ try {
         await page.goto(`${server.url}?scoutTheme=${theme}`);
         await page.waitForFunction(() => document.querySelector("#status").textContent === "Analysis current");
         await page.selectOption("#review-mode", "commit");
-        await page.fill("#review-ref", head);
+        await page.waitForFunction(() => !document.querySelector("#review-ref").disabled);
+        assert.equal(await page.locator("#review-ref option").count(), 30);
+        assert.match(await page.locator("#review-ref option").first().textContent(), /feature.*Test/);
+        await page.selectOption("#review-ref", head);
+        await page.click("#review-more");
+        await page.waitForFunction(() => document.querySelector("#review-ref").options.length === 34);
+        assert.equal(await page.locator("#review-ref").inputValue(), head);
         const response = page.waitForResponse((res) => res.url().endsWith("/api/review-target"));
         await page.click("#review-apply");
         assert.equal((await response).status(), 200);
@@ -60,15 +72,18 @@ try {
         await page.click("#review-apply");
         assert.equal((await worktreeResponse).status(), 200);
         await page.waitForFunction(() => document.querySelector("#review-target-label").textContent === "Worktree");
+        await page.route("**/api/review-targets?mode=pr*", async (route) => {
+            await route.fulfill({ status: 400, contentType: "application/json", body: '{"error":"GitHub authentication required"}' });
+        }, { times: 1 });
         await page.selectOption("#review-mode", "pr");
-        await page.fill("#review-ref", "not-a-pr");
-        const bad = page.waitForResponse((res) => res.url().endsWith("/api/review-target"));
-        await page.click("#review-apply");
-        assert.equal((await bad).status(), 400);
-        await page.waitForFunction(() => !document.querySelector("#error").classList.contains("hidden"));
-        assert.match(await page.locator("#error").textContent(), /Enter a GitHub PR/);
+        await page.waitForFunction(() => document.querySelector("#review-options-status").textContent.includes("GitHub authentication required"));
+        assert.equal(await page.locator("#review-apply").isDisabled(), true);
         if (process.env.AGENT_REVIEW_LIVE_PR) {
-            await page.fill("#review-ref", process.env.AGENT_REVIEW_LIVE_PR);
+            await page.click("#review-more");
+            await page.waitForFunction(() => !document.querySelector("#review-ref").disabled, null, { timeout: 60_000 });
+            const values = await page.locator("#review-ref option").evaluateAll((options) => options.map((option) => option.value));
+            assert.ok(values.length);
+            await page.selectOption("#review-ref", values.includes(process.env.AGENT_REVIEW_LIVE_PR) ? process.env.AGENT_REVIEW_LIVE_PR : values[0]);
             const live = page.waitForResponse((res) => res.url().endsWith("/api/review-target"), { timeout: 180_000 });
             await page.click("#review-apply");
             const result = await live;
@@ -76,13 +91,20 @@ try {
             await page.waitForFunction(() => document.querySelector("#review-target-label").textContent.startsWith("PR #"));
             assert.equal(state.model.metadata.head_sha, state.reviewTarget.currentRef);
             assert.equal(state.model.metadata.base_sha, state.reviewTarget.baseRef);
+        } else {
+            await page.route("**/api/review-targets?mode=pr*", (route) => route.fulfill({
+                contentType: "application/json", body: '{"items":[],"has_more":false,"page":0,"repository":"example/repo"}',
+            }));
+            await page.click("#review-more");
+            await page.waitForFunction(() => document.querySelector("#review-options-status").textContent.includes("No pull requests found"));
+            assert.equal(await page.locator("#review-apply").isDisabled(), true);
         }
         await page.setViewportSize({ width: 760, height: 1000 });
         await page.waitForTimeout(300);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
         assert.deepEqual(errors, []);
         await page.close();
-        console.log(`PASS ${theme}: commit, immutable diff, worktree, PR validation${process.env.AGENT_REVIEW_LIVE_PR ? ", live PR" : ""}, narrow layout, no browser errors`);
+        console.log(`PASS ${theme}: commit list, pagination, immutable diff, worktree, PR list failure and retry${process.env.AGENT_REVIEW_LIVE_PR ? ", live PR list and review" : ", empty PR list"}, narrow layout, no browser errors`);
     }
 } finally {
     await browser?.close();

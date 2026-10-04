@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { listReviewTargets } from "./review-target.mjs";
 
 const webRoot = join(dirname(fileURLToPath(import.meta.url)), "web");
 const staticFiles = new Map([
@@ -9,11 +10,13 @@ const staticFiles = new Map([
     ["/index.html", "index.html"],
     ["/app.js", "app.js"],
     ["/graph.js", "graph.js"],
+    ["/findings.mjs", "findings.mjs"],
     ["/styles.css", "styles.css"],
 ]);
 const contentTypes = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
 };
 
@@ -72,6 +75,13 @@ export function startReviewServer(state, options = {}) {
                 sendJson(res, path
                     ? await state.sourceForPath(path, Number.isInteger(line) && line > 0 ? line : null)
                     : await state.sourceFor(requestUrl.searchParams.get("id")));
+                return;
+            }
+            if (req.method === "GET" && pathname === "/api/review-targets") {
+                sendJson(res, await listReviewTargets(state.repoRoot, {
+                    mode: requestUrl.searchParams.get("mode"),
+                    page: Number(requestUrl.searchParams.get("page") || 0),
+                }));
                 return;
             }
             if (req.method === "GET" && pathname === "/api/attribution") {

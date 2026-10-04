@@ -1402,7 +1402,34 @@ h3 { font-size: 14px; font-weight: 600; }
 }
 .review-target-form button { background: var(--cp-surface-soft); cursor: pointer; }
 .review-target-form button:disabled { opacity: .5; cursor: wait; }
-.review-target-form input { width: 240px; max-width: 100%; }
+.review-target-form #review-ref { width: 380px; max-width: min(100%, 70vw); text-overflow: ellipsis; }
+.review-options-status { max-width: 480px; color: var(--cp-text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.scope-findings { margin: 12px; padding: 12px; border: 1px solid var(--cp-border); border-radius: 6px; background: var(--cp-surface); }
+.scope-findings h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--cp-text-muted); overflow-wrap: anywhere; }
+.scope-finding { display: flex; flex-wrap: wrap; gap: 4px 12px; width: 100%; padding: 6px 0; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.scope-finding strong { font-size: 12px; font-weight: 600; color: var(--cp-link); }
+.scope-finding span { font-size: 12px; color: var(--cp-text-muted); overflow-wrap: anywhere; }
+.scope-finding:hover strong { text-decoration: underline; }
+.change-brief { margin: 0 0 16px; padding: 16px; border: 1px solid var(--cp-border); border-radius: 6px; background: var(--cp-surface); }
+.change-brief .detail-top { margin-bottom: 8px; }
+.change-brief .detail-top h2 { font-size: 16px; }
+.change-brief .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0 24px; }
+.change-brief .brief-origin { margin-top: 12px; max-height: 180px; overflow: auto; }
+.change-brief .brief-origin > summary { font-size: 12px; color: var(--cp-link); cursor: pointer; }
+.change-brief h3 { margin: 12px 0 6px; font-size: 14px; }
+.change-brief .annotation-body { font-size: 14px; }
+.change-brief .brief-ai { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.brief-ai-section { min-width: 0; overflow-wrap: anywhere; }
+.brief-ai-section h2 { margin-top: 0; }
+@media (max-width: 1000px) { .change-brief .brief-ai { grid-template-columns: minmax(0, 1fr); gap: 12px; } }
+.queue-item { position: relative; border-bottom: 1px solid var(--cp-border); }
+.rail .queue-item .review-card { width: 100%; border-bottom: 0; padding-bottom: 28px; }
+.queue-toggle { position: absolute; right: 8px; bottom: 6px; padding: 0; border: 0; background: transparent; color: var(--cp-link); font: inherit; font-size: 12px; cursor: pointer; }
+.queue-toggle:hover { text-decoration: underline; }
+.queue-item.is-closed, .scope-finding.is-closed, .collection-row.is-closed { background: var(--cp-surface-soft); }
+.queue-item.is-closed .review-card, .scope-finding.is-closed strong, .collection-row.is-closed { color: var(--cp-text-soft); }
+.queue-item.is-closed .review-card { opacity: .65; }
+.closed-label { display: inline-block; border: 1px solid var(--cp-border); border-radius: 12px; padding: 0 6px; font-size: 11px; color: var(--cp-text-muted); background: var(--cp-surface-soft); }
 .review-target-label { color: var(--cp-text-muted); font-size: 12px; margin-bottom: 12px; overflow-wrap: anywhere; }
 .top-actions { flex-wrap: wrap; }
 /* Queue entries follow GitHub's neutral list treatment; severity belongs in text, not colored rails. */

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
@@ -153,6 +154,8 @@ export class ReviewState {
         this.selection = null;
         this.listeners = new Set();
         this.refreshPromise = null;
+        this.reviewGeneration = 0;
+        this.reviewInstanceId = randomUUID();
         this.getSessionEvents = options.getSessionEvents || null;
         this.getHistoricalSessionContexts = options.getHistoricalSessionContexts || null;
         this.historicalSessionTimeoutMs = options.historicalSessionTimeoutMs || 40_000;
@@ -183,6 +186,7 @@ export class ReviewState {
             progress: this.progress,
             package_risks: this.packageRisks,
             review_target: this.reviewTarget,
+            review_generation: `${this.reviewInstanceId}:${this.reviewGeneration}`,
         };
     }
 
@@ -206,6 +210,8 @@ export class ReviewState {
 
     async refresh() {
         if (this.refreshPromise) return this.refreshPromise;
+        this.reviewGeneration += 1;
+        this.annotationPromises = new Map();
         this.loading = true;
         this.error = null;
         this.progress = {
@@ -257,8 +263,8 @@ export class ReviewState {
 
     async setReviewTarget(input) {
         if (this.refreshPromise || this.switchingTarget) throw new Error("Wait for the current analysis or review switch to finish.");
-        if (this.annotationPromises.size || this.packageRiskPromises.size || this.packageAssessmentPromises.size) {
-            throw new Error("Wait for the current briefing or package assessment to finish before switching reviews.");
+        if (this.packageRiskPromises.size || this.packageAssessmentPromises.size) {
+            throw new Error("Wait for the current package assessment to finish before switching reviews.");
         }
         this.switchingTarget = true;
         try {
@@ -464,6 +470,7 @@ export class ReviewState {
         if (!this.generateAnnotation) throw new Error("Copilot annotation is unavailable.");
         if (this.annotationPromises.has(id)) return this.annotationPromises.get(id);
         const context = this.contextFor(id);
+        const generation = this.reviewGeneration;
         for (const evidenceId of supplementalEvidenceIds) {
             const evidence = this.model?.evidence?.[evidenceId];
             if (!evidence) throw new Error(`Unknown evidence id: ${evidenceId}`);
@@ -474,8 +481,10 @@ export class ReviewState {
             || Object.values(context.evidence || {}).find((entry) => entry.path)?.path;
         context.session_attribution = this.attributionForPath(attributionPath);
         context.code_context = await this.codeContextFor(context);
+        if (generation !== this.reviewGeneration) throw new Error("The review changed while loading annotation context.");
         const promise = this.generateAnnotation(context)
             .then((body) => {
+                if (generation !== this.reviewGeneration) throw new Error("The review changed while generating this annotation.");
                 const annotation = {
                     id: `annotation:${id}`,
                     item_id: id,
@@ -488,18 +497,23 @@ export class ReviewState {
                 this.broadcast("annotation");
                 return annotation;
             })
-            .finally(() => this.annotationPromises.delete(id));
+            .finally(() => {
+                if (this.annotationPromises.get(id) === promise) this.annotationPromises.delete(id);
+            });
         this.annotationPromises.set(id, promise);
         return promise;
     }
 
     async overviewFor() {
+        if (this.loading) throw new Error("Wait for analysis to complete before generating the summary.");
         if (this.annotations.overview) return this.annotations.overview;
         if (!this.generateAnnotation) throw new Error("Copilot annotation is unavailable.");
         if (!this.model) throw new Error("Analysis is not complete.");
         if (this.annotationPromises.has("overview")) return this.annotationPromises.get("overview");
+        const generation = this.reviewGeneration;
         const promise = this.generateAnnotation(this.overviewContext())
             .then((body) => {
+                if (generation !== this.reviewGeneration) throw new Error("The review changed while generating this summary.");
                 const annotation = {
                     id: "annotation:overview",
                     item_id: "overview",
@@ -512,7 +526,9 @@ export class ReviewState {
                 this.broadcast("annotation");
                 return annotation;
             })
-            .finally(() => this.annotationPromises.delete("overview"));
+            .finally(() => {
+                if (this.annotationPromises.get("overview") === promise) this.annotationPromises.delete("overview");
+            });
         this.annotationPromises.set("overview", promise);
         return promise;
     }

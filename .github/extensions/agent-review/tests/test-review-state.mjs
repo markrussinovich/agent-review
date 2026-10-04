@@ -67,6 +67,17 @@ test("base ref is re-resolved on every refresh", async () => {
     assert.equal(state.baseRef, "ref-2");
 });
 
+test("summary from an older analysis cannot overwrite the current review", async () => {
+    let finish;
+    const state = new ReviewState("C:\\repo", { generateAnnotation: () => new Promise((resolve) => { finish = resolve; }) });
+    state.model = { nodes: [], changes: [], attention: [], warnings: [], coverage: {}, metadata: {}, summary: {} };
+    const pending = state.overviewFor();
+    state.reviewGeneration += 1;
+    finish("## Summary\n\n- Old review.");
+    await assert.rejects(pending, /review changed/i);
+    assert.equal(state.annotations.overview, undefined);
+});
+
 test("package assessment is available before the Copilot explanation and both are cached", async () => {
   let explanations = 0;
   const state = new ReviewState("C:\\repo", {

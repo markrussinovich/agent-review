@@ -48,28 +48,40 @@ Copilot actions.
 The top toolbar's **Review** selector supports:
 
 - **Worktree**: staged, unstaged, and untracked changes against the configured baseline.
-- **Commit**: enter a SHA or Git revision (such as `HEAD`); compare its immutable tree
+- **Commit**: choose from recent commits on the current branch, labeled with SHA,
+  subject, author, and date; compare its immutable tree
   with its first parent. A root commit compares with an empty tree.
-- **Pull request**: enter a GitHub PR number for the current repository, or a full
-  GitHub PR URL. Requires the `gh` CLI and `gh auth login`. The extension fetches
+- **Pull request**: choose from the repository's PRs, labeled with number, title,
+  open/closed/merged status, author, and update date. Requires a GitHub remote,
+  the `gh` CLI and `gh auth login`. The extension fetches
   PR objects and compares the head with the base/head merge base without checking
   out files or modifying your worktree.
 
 Source, diff, graph, dependencies, and AI source context follow the selected
 snapshot. Worktree coverage is deliberately unavailable for commit/PR reviews.
 Refresh re-analyzes the resolved snapshot; submit the PR again to resolve a newly
-pushed head. Invalid revisions, missing authentication, and fetch errors are
-displayed explicitly. Switching waits for active briefings/assessments to finish.
+pushed head. Both lists load 30 entries at a time with **Load more** for older
+items. Empty lists and missing authentication are explicit, with **Retry list**
+for failed requests. Invalid revisions and fetch errors are
+displayed explicitly. Switching waits for package assessments to finish;
+superseded AI summaries and annotations cannot overwrite the new review.
 The selected immutable target is recorded with the Canvas marker so provider
 recovery restores the same review instead of reverting to the worktree.
 
-- A change brief on first load: file mix, source-versus-test churn, a
-  highest-impact shortlist, and an on-demand Copilot summary with a suggested
-  review order and gaps
+- A change brief above the review workspace: file mix, source-versus-test churn,
+  originating prompt, and an automatically generated Copilot summary with a
+  suggested review order and gaps; refresh regenerates the summary
 - Progressive architecture, module, class, and function drilldown with edge
   highlighting on hover for dense graphs
 - Impact-ranked attention findings with caller, complexity, signature, coverage,
   churn, and line-delta evidence; repeated size findings collapse into one card
+- Graph counts include findings on the module/component itself and its descendants;
+  drilldown shows the complete scoped finding list, including module-level findings
+  that have no child-symbol badge
+- Attention queue **Close / Reopen** controls move closed findings below active
+  items and give them muted styling. State is saved in this browser for the
+  repository and comparison; changed evidence reopens a finding. Graph badges
+  count active findings, while scoped lists retain closed findings
 - Clickable summary deltas and compact file, module, relationship, and package
   indexes with proportional churn bars
 - Code-first source and diff view with a side panel for the originating prompt
@@ -129,4 +141,3 @@ node .github\extensions\agent-review\tests\browser\review-target.mjs
 
 Set `AGENT_REVIEW_LIVE_PR` to a GitHub PR URL to also exercise authenticated PR
 resolution, fetching, analysis, and UI switching against GitHub.
-

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { resolveReviewTarget } from "../review-target.mjs";
+import { listReviewTargets, resolveReviewTarget } from "../review-target.mjs";
 import { ReviewState } from "../review-state.mjs";
 
 const exec = promisify(execFile);
@@ -24,6 +24,10 @@ test("commit review uses immutable source, diffs and AI context despite dirty wo
         await writeFile(join(repo, "main.py"), "def run():\n    return 2\n");
         await git("commit", "-qam", "feature");
         const head = (await git("rev-parse", "HEAD")).stdout.trim();
+        const commits = await listReviewTargets(repo, { mode: "commit" });
+        assert.deepEqual(commits.items.map((item) => item.ref), [head, base]);
+        assert.equal(commits.items[0].title, "feature");
+        assert.equal(commits.has_more, false);
         await writeFile(join(repo, "main.py"), "def dirty_only():\n    return 999\n");
         const state = new ReviewState(repo, { baseRef: base });
         await state.setReviewTarget({ mode: "commit", ref: head });
@@ -63,6 +67,7 @@ test("PR resolves GitHub metadata and merge base without checkout", async () => 
         if (command === "gh") return { stdout: JSON.stringify({ number: 12, title: "Feature", url: "https://github.com/example/repo/pull/12", baseRefOid: base, headRefOid: head }) };
         return { stdout: args.includes("merge-base") ? merge : "" };
     });
+
     assert.equal(target.baseRef, merge);
     assert.equal(target.currentRef, head);
     assert.equal(calls.filter(([command]) => command === "git").length, 2);
@@ -70,3 +75,41 @@ test("PR resolves GitHub metadata and merge base without checkout", async () => 
     assert.ok(calls.every(([, args]) => !args.includes("checkout")));
     await assert.rejects(resolveReviewTarget("C:\\repo", { mode: "pr", ref: "https://untrusted.invalid/pull/12" }), /Enter a GitHub PR/);
 });
+
+test("commit list paginates recent history and preserves display metadata", async () => {
+        const result = await listReviewTargets("C:\\repo", { mode: "commit", page: 2 }, async (command, args) => {
+            assert.equal(command, "git");
+            assert.ok(args.includes("--skip=60"));
+            return { stdout: Array.from({ length: 31 }, (_, index) =>
+                [index.toString(16).padStart(40, "0"), `Feature ${index}`, "Author", "2026-10-04T12:00:00Z", ""].join("\0")).join("") };
+        });
+        assert.equal(result.items.length, 30);
+        assert.equal(result.has_more, true);
+        assert.equal(result.items[0].author, "Author");
+        assert.equal(result.page, 2);
+        await assert.rejects(listReviewTargets("C:\\repo", { mode: "commit", page: -1 }), /Invalid review list page/);
+    });
+
+    test("PR list is repository scoped and includes open, closed and merged PRs", async () => {
+        const calls = [];
+        const result = await listReviewTargets("C:\\repo", { mode: "pr", page: 1 }, async (command, args) => {
+            calls.push(args);
+            assert.equal(command, "gh");
+            return { stdout: args[0] === "repo" ? JSON.stringify({ nameWithOwner: "example/repo" })
+                : JSON.stringify([
+                    { number: 42, title: "Merged feature", html_url: "https://github.com/example/repo/pull/42",
+                        state: "closed", merged_at: "2026-10-01", updated_at: "2026-10-02", user: { login: "author" } },
+                    { number: 41, title: "Open feature", html_url: "https://github.com/example/repo/pull/41", state: "open" },
+                    { number: 40, title: "Closed feature", html_url: "https://github.com/example/repo/pull/40", state: "closed" },
+                ]) };
+        });
+        assert.match(calls[1][1], /repos\/example\/repo\/pulls\?state=all.*page=2/);
+        assert.deepEqual(result.items.map((item) => item.status), ["merged", "open", "closed"]);
+        assert.equal(result.items[0].ref, "https://github.com/example/repo/pull/42");
+        assert.equal(result.has_more, false);
+        await assert.rejects(listReviewTargets("C:\\repo", { mode: "pr" }, async () => { throw new Error("Authentication required"); }), /Authentication required/);
+        const empty = await listReviewTargets("C:\\repo", { mode: "pr" }, async (_, args) => ({
+            stdout: args[0] === "repo" ? '{"nameWithOwner":"example/repo"}' : "[]",
+        }));
+        assert.deepEqual(empty.items, []);
+    });

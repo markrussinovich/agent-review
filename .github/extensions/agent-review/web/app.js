@@ -1,4 +1,5 @@
 import { renderGraph } from "/graph.js";
+import { findingsForNode, findingKey, isFindingClosed, orderFindings } from "/findings.mjs";
 
 const state = {
     payload: null,
@@ -15,12 +16,13 @@ const state = {
     selectionEpoch: 0,
     changedOnly: true,
     query: "",
-    detailVisible: true,
+    detailVisible: false,
     sourceHistory: { entries: [], index: -1, pending: -1 },
     appliedServerSelection: null,
+    closedFindingKeys: new Set(),
 };
 const elements = Object.fromEntries([
-    "review-target-form", "review-mode", "review-ref", "review-apply", "review-target-label",
+    "review-target-form", "review-mode", "review-ref", "review-apply", "review-target-label", "review-more", "review-options-status", "change-brief",
     "status", "refresh", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "rail-resize",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail-toggle", "detail", "detail-close", "source-panel", "source-title",
@@ -235,7 +237,54 @@ function renderCards(container, items, emptyText) {
         card.classList.toggle("is-selected", state.selected?.id === item.id);
         card.title = [item.title, item.body || item.reason].filter(Boolean).join("\n");
         card.addEventListener("click", () => openReviewItem(item));
-        container.append(card);
+        if (container === elements.attention) {
+            const closed = isFindingClosed(item, state.closedFindingKeys);
+            const wrapper = el("div", `queue-item${closed ? " is-closed" : ""}`);
+            wrapper.dataset.itemId = item.id;
+            const toggle = el("button", "queue-toggle", closed ? "Reopen" : "Close");
+            toggle.type = "button";
+            toggle.setAttribute("aria-label", `${closed ? "Reopen" : "Close"} ${item.title || item.name}`);
+            toggle.addEventListener("click", () => toggleFinding(item));
+            if (closed) heading.append(el("span", "closed-label", "Closed"));
+            wrapper.append(card, toggle);
+            container.append(wrapper);
+        } else {
+            container.append(card);
+        }
+    }
+}
+
+function loadClosedFindingKeys(model) {
+    const meta = model.metadata || {};
+    const key = `agent-review.closed:${JSON.stringify([meta.repo_root, meta.base_sha, meta.head_sha, state.payload.review_target?.mode])}`;
+    if (state.closedFindingStorageKey === key) return;
+    state.closedFindingStorageKey = key;
+    state.queueError = null;
+    try {
+        const values = JSON.parse(localStorage.getItem(key) || "[]");
+        if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) throw new Error("Invalid saved finding state.");
+        state.closedFindingKeys = new Set(values);
+    } catch (error) {
+        state.closedFindingKeys = new Set();
+        state.queueError = `Unable to restore closed findings: ${error.message}`;
+    }
+}
+
+function toggleFinding(item) {
+    const keys = new Set(state.closedFindingKeys);
+    const closed = isFindingClosed(item, keys);
+    for (const member of item.members || [item]) {
+        if (closed) keys.delete(findingKey(member));
+        else keys.add(findingKey(member));
+    }
+    try {
+        localStorage.setItem(state.closedFindingStorageKey, JSON.stringify([...keys]));
+        state.closedFindingKeys = keys;
+        state.queueError = null;
+        render();
+    } catch (error) {
+        state.queueError = `Unable to save closed findings: ${error.message}`;
+        showError(new Error(state.queueError));
     }
 }
 
@@ -279,6 +328,7 @@ function collapseSizeFindings(items, model) {
         impact_score: sizes[0].impact_score,
         severity: sizes[0].severity,
         collect_mode: "lines",
+        members: sizes,
     };
     const rest = items.filter((item) => !sizes.includes(item));
     const position = rest.findIndex((item) => (item.impact_score || 0) < (group.impact_score || 0));
@@ -302,15 +352,8 @@ function aggregateEdges(model, visible) {
 
 function decoratedNodes(model, nodes, findings) {
     const byId = new Map(nodes.map((node) => [node.id, { ...node, _attention_count: 0, _attention_score: 0 }]));
-    const allNodes = new Map(model.nodes.map((node) => [node.id, node]));
-    for (const finding of findings) {
-        const target = allNodes.get(finding.node_id);
-        if (!target) continue;
-        for (const node of byId.values()) {
-            const applies = node.id === target.id
-                || (node.kind === "module" && target.module_id === node.id)
-                || (node.kind === "component" && target.component_id === node.id);
-            if (!applies) continue;
+    for (const node of byId.values()) {
+        for (const finding of findingsForNode(model, node, findings).filter((item) => !isFindingClosed(item, state.closedFindingKeys))) {
             node._attention_count += 1;
             node._attention_score = Math.max(node._attention_score, finding.impact_score || 0);
             node._attention_severity = finding.severity || node._attention_severity;
@@ -321,6 +364,29 @@ function decoratedNodes(model, nodes, findings) {
         || (b.metrics?.lines_changed || 0) - (a.metrics?.lines_changed || 0)
         || a.name.localeCompare(b.name)
     );
+}
+
+function renderScopeFindings(model, parent, findings) {
+    if (!parent) return;
+    const scoped = findingsForNode(model, parent, findings);
+    if (!scoped.length) return;
+    const section = el("section", "scope-findings");
+    section.setAttribute("aria-label", "Findings in this scope");
+    const closedCount = scoped.filter((item) => isFindingClosed(item, state.closedFindingKeys)).length;
+    section.append(el("h3", "", `${scoped.length - closedCount} active${closedCount ? ` · ${closedCount} closed` : ""} review findings in ${parent.name}`));
+    const nodes = new Map(model.nodes.map((node) => [node.id, node]));
+    for (const finding of scoped) {
+        const target = nodes.get(finding.node_id);
+        const row = el("button", "scope-finding");
+        row.type = "button";
+        row.dataset.findingId = finding.id;
+        row.classList.toggle("is-closed", isFindingClosed(finding, state.closedFindingKeys));
+        row.append(el("strong", "", finding.title || finding.type),
+            el("span", "", target.id === parent.id ? `${parent.kind}-level` : target.display_name || target.name));
+        row.addEventListener("click", () => selectItem(finding, true));
+        section.append(row);
+    }
+    elements.graph.prepend(section);
 }
 
 function groupFindings(items) {
@@ -441,12 +507,12 @@ function field(label, value) {
     return row;
 }
 
-function renderEmptyDetail() {
-    const panel = elements.detail;
+function renderChangeBrief() {
+    const panel = elements.change_brief;
     panel.replaceChildren();
     const model = state.payload?.model;
     const top = el("div", "detail-top");
-    top.append(el("p", "eyebrow", "CHANGE BRIEF"), el("h2", "", "Where to start"));
+    top.append(el("h2", "", "Change brief"));
     panel.append(top);
     if (!model) {
         panel.append(el("p", "detail-copy", "The brief appears when analysis completes."));
@@ -464,29 +530,8 @@ function renderEmptyDetail() {
     );
     panel.append(grid);
     ensureBriefIntent(model);
-    if (state.briefIntent) {
-        panel.append(el("h3", "", "Originating prompt"));
-        const origin = el("div", "brief-origin");
-        origin.append(promptBlock(state.briefIntent));
-        panel.append(origin);
-    }
     if (split.source > 50 && ratio < 0.15) {
         panel.append(el("p", "brief-warning", "Little or no test code changed relative to source."));
-    }
-
-    const findings = collapseSizeFindings(groupFindings(model.attention || []), model).slice(0, 4);
-    if (findings.length) {
-        panel.append(el("h3", "", "Highest-impact areas"));
-        const list = el("div", "brief-list");
-        for (const finding of findings) {
-            const button = el("button", "brief-link");
-            button.type = "button";
-            button.append(el("b", "", String(finding.impact_score ?? "")), el("span", "", finding.title));
-            button.title = finding.body || finding.reason || "";
-            button.addEventListener("click", () => openReviewItem(finding));
-            list.append(button);
-        }
-        panel.append(list);
     }
 
     const annotation = state.payload?.annotations?.overview;
@@ -498,6 +543,16 @@ function renderEmptyDetail() {
         const body = el("div", "annotation-body brief-ai");
         markdownContext.intent = state.briefIntent || null;
         renderMarkdown(body, annotation.body);
+        const sections = [];
+        let section = null;
+        for (const child of [...body.children]) {
+            if (child.tagName === "H2" || !section) {
+                section = el("section", "brief-ai-section");
+                sections.push(section);
+            }
+            section.append(child);
+        }
+        body.replaceChildren(...sections);
         panel.append(body);
     } else if (state.overviewLoading) {
         panel.append(el("p", "annotation-loading", "Copilot is summarizing the whole change…"));
@@ -511,11 +566,20 @@ function renderEmptyDetail() {
             generate,
         );
     }
+    if (state.briefIntent) {
+        const origin = el("details", "brief-origin");
+        origin.append(el("summary", "", "Originating prompt"), promptBlock(state.briefIntent));
+        panel.append(origin);
+    }
+}
+
+function renderEmptyDetail() {
+    elements.detail.replaceChildren(el("p", "detail-copy", "Select a finding or code area to inspect its evidence."));
 }
 
 function ensureBriefIntent(model) {
     const complete = Boolean(state.payload?.session_context?.historical_search_complete);
-    const key = `${model.metadata?.head_sha}|${complete}`;
+    const key = `${state.summaryKey}|${complete}`;
     if (state.briefIntentKey === key) return;
     state.briefIntentKey = key;
     const top = (model.changes || [])
@@ -524,23 +588,29 @@ function ensureBriefIntent(model) {
     if (!top) return;
     api(`/api/attribution?path=${encodeURIComponent(top.path)}`)
         .then((result) => {
+            if (state.briefIntentKey !== key) return;
             state.briefIntent = result.attribution?.[0] || null;
-            if (!state.selected) renderEmptyDetail();
+            renderChangeBrief();
         })
         .catch(() => {});
 }
 
 async function generateOverview() {
+    if (state.overviewLoading) return;
+    const key = state.summaryKey;
     state.overviewLoading = true;
     state.overviewError = null;
-    if (!state.selected) renderEmptyDetail();
+    renderChangeBrief();
     try {
-        await api("/api/overview", { method: "POST", body: "{}" });
+        const result = await api("/api/overview", { method: "POST", body: "{}" });
+        if (state.summaryKey === key) state.payload.annotations.overview = result.annotation;
     } catch (error) {
-        state.overviewError = error.message;
+        if (state.summaryKey === key) state.overviewError = error.message;
     } finally {
-        state.overviewLoading = false;
-        if (!state.selected) renderEmptyDetail();
+        if (state.summaryKey === key) {
+            state.overviewLoading = false;
+            renderChangeBrief();
+        }
     }
 }
 
@@ -1216,7 +1286,7 @@ function collectionItems(model, mode) {
         .filter((edge) => edge.change === "added")
         .sort((a, b) => (b.count || 1) - (a.count || 1));
     if (mode === "packages") return model.package_changes || [];
-    if (mode === "findings") return groupFindings(model.attention || []);
+    if (mode === "findings") return orderFindings(groupFindings(model.attention || []), state.closedFindingKeys);
     return [];
 }
 
@@ -1241,6 +1311,10 @@ function renderCollection(model) {
     for (const item of items) {
         const row = el("button", "collection-row");
         row.type = "button";
+        if (state.mode === "findings" && isFindingClosed(item, state.closedFindingKeys)) {
+            row.classList.add("is-closed");
+            row.append(el("span", "closed-label", "Closed"));
+        }
         let title;
         let subtitle;
         if (item.path && item.status) {
@@ -1620,10 +1694,7 @@ function render() {
         state.reviewTargetKey = targetKey;
         const target = state.payload?.review_target;
         elements.review_mode.value = target?.mode || "worktree";
-        elements.review_ref.value = target?.ref || "";
-        elements.review_ref.classList.toggle("hidden", elements.review_mode.value === "worktree");
-        elements.review_ref.required = elements.review_mode.value !== "worktree";
-        elements.review_ref.placeholder = elements.review_mode.value === "pr" ? "PR number or GitHub URL" : "Commit SHA or ref (e.g. HEAD)";
+        loadReviewOptions({ selectedRef: target?.currentRef && target.mode === "commit" ? target.currentRef : target?.ref });
         state.selectionEpoch += 1;
         state.selected = null;
         state.source = null;
@@ -1645,6 +1716,7 @@ function render() {
         : model ? "Analysis current" : "Waiting";
     elements.status.classList.toggle("working", Boolean(payload?.loading));
     elements.refresh.disabled = Boolean(payload?.loading);
+    updateReviewApply();
     elements.error.classList.toggle("hidden", !payload?.error);
     elements.error.textContent = payload?.error || "";
     elements.analysis_progress.classList.toggle("hidden", !payload?.loading);
@@ -1656,27 +1728,38 @@ function render() {
         elements.progress_bar.style.width = `${percent}%`;
         elements.analysis_progress.querySelector(".progress-track").setAttribute("aria-valuenow", String(percent));
     }
-    if (!model) return;
+    if (!model) {
+        renderChangeBrief();
+        return;
+    }
+    loadClosedFindingKeys(model);
+    if (state.queueError) showError(new Error(state.queueError));
+    if (!payload.loading) {
+        const summaryKey = JSON.stringify([model.metadata?.repo_root, payload.review_generation, payload.review_target]);
+        if (state.summaryKey !== summaryKey) {
+            state.summaryKey = summaryKey;
+            state.overviewLoading = false;
+            state.overviewError = null;
+            state.briefIntent = null;
+            state.briefIntentKey = null;
+            if (!payload.annotations?.overview) generateOverview();
+        }
+    }
+    renderChangeBrief();
     renderSummary(model);
     renderBreadcrumbs();
     const groupedObservations = [
         ...groupFindings(model.attention || []),
         ...(payload.generated_observations || []),
     ].sort((a, b) => (b.impact_score || 0) - (a.impact_score || 0));
-    elements.attention_count.textContent = String(groupedObservations.length);
-    renderCards(elements.attention, collapseSizeFindings(groupedObservations, model).slice(0, 12), "No deterministic attention findings.");
-    if (groupedObservations.length > 12) {
-        const viewAll = el("button", "view-all", `View all ${groupedObservations.length} ranked findings →`);
-        viewAll.type = "button";
-        viewAll.addEventListener("click", () => {
-            state.mode = "findings";
-            state.stack = [];
-            clearSelection();
-            render();
-            elements.graph.scrollIntoView({ behavior: "smooth", block: "start" });
-        });
-        elements.attention.append(viewAll);
-    }
+    const active = groupedObservations.filter((item) => !isFindingClosed(item, state.closedFindingKeys));
+    const closed = groupedObservations.filter((item) => isFindingClosed(item, state.closedFindingKeys));
+    elements.attention_count.textContent = String(active.length);
+    elements.attention_count.title = `${active.length} active · ${closed.length} closed findings`;
+    renderCards(elements.attention, [
+        ...collapseSizeFindings(active, model),
+        ...collapseSizeFindings(closed, model),
+    ], "No deterministic attention findings.");
     renderCards(elements.packages, model.package_changes || [], "No package changes.");
     const hasPackageChanges = (model.package_changes || []).length > 0;
     elements.packages.classList.toggle("hidden", !hasPackageChanges);
@@ -1695,6 +1778,7 @@ function render() {
             && (!query || `${node.name} ${node.path || ""}`.toLowerCase().includes(query))
         );
         renderGraph(elements.graph, decoratedNodes(model, nodes, groupedObservations), aggregateEdges(model, nodes), maybeDrill);
+        renderScopeFindings(model, parent, groupedObservations);
     } else if (state.mode === "edges") {
         elements.level_label.textContent = "CHANGED RELATIONSHIPS";
         elements.graph_title.textContent = "Changed module relationships";
@@ -1897,15 +1981,82 @@ document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click",
     renderSource();
 }));
 
-elements.review_mode.addEventListener("change", () => {
+function updateReviewApply() {
+    elements.review_apply.disabled = Boolean(state.reviewSubmitting || state.payload?.loading || state.reviewOptionsLoading)
+        || (elements.review_mode.value !== "worktree" && !elements.review_ref.value);
+}
+
+async function loadReviewOptions({ append = false, selectedRef = null } = {}) {
+    const epoch = (state.reviewOptionsEpoch || 0) + 1;
+    state.reviewOptionsEpoch = epoch;
     const mode = elements.review_mode.value;
+    const selected = selectedRef || (append ? elements.review_ref.value : null);
     elements.review_ref.classList.toggle("hidden", mode === "worktree");
     elements.review_ref.required = mode !== "worktree";
-    elements.review_ref.placeholder = mode === "pr" ? "PR number or GitHub URL" : "Commit SHA or ref (e.g. HEAD)";
-});
+    elements.review_more.classList.add("hidden");
+    elements.review_options_status.textContent = "";
+    state.reviewOptionsLoading = mode !== "worktree";
+    if (!append) {
+        state.reviewOptionsPage = -1;
+        elements.review_ref.replaceChildren();
+    }
+    elements.review_ref.disabled = mode !== "worktree";
+    updateReviewApply();
+    if (mode === "worktree") return;
+    const page = append ? state.reviewOptionsPage + 1 : 0;
+    elements.review_options_status.textContent = `Loading ${mode === "commit" ? "commits" : "pull requests"}…`;
+    try {
+        const result = await api(`/api/review-targets?mode=${mode}&page=${page}`);
+        if (epoch !== state.reviewOptionsEpoch) return;
+        const existing = new Set([...elements.review_ref.options].map((option) => option.value));
+        for (const item of result.items) {
+            if (existing.has(item.ref)) continue;
+            const date = item.date ? new Date(item.date).toLocaleDateString() : "";
+            const prefix = mode === "commit" ? item.short_sha : `#${item.number} · ${item.status}`;
+            const option = el("option", "", `${prefix} — ${item.title} · ${item.author || "Unknown author"} · ${date}`);
+            option.value = item.ref;
+            elements.review_ref.append(option);
+        }
+        const target = state.payload?.review_target;
+        if (selected && ![...elements.review_ref.options].some((option) => option.value === selected)
+            && target?.mode === mode && (selected === target.ref || selected === target.currentRef)) {
+            const option = el("option", "", `${target.label} (current review)`);
+            option.value = selected;
+            elements.review_ref.prepend(option);
+        }
+        if (selected) elements.review_ref.value = selected;
+        if (!elements.review_ref.value && elements.review_ref.options.length) elements.review_ref.selectedIndex = 0;
+        state.reviewOptionsPage = page;
+        state.reviewOptionsRetryAppend = null;
+        elements.review_ref.disabled = !elements.review_ref.options.length;
+        elements.review_more.textContent = "Load more";
+        elements.review_more.classList.toggle("hidden", !result.has_more);
+        elements.review_options_status.textContent = elements.review_ref.options.length
+            ? `${elements.review_ref.options.length} ${mode === "commit" ? "commits" : "pull requests"}${result.repository ? ` · ${result.repository}` : ""}`
+            : mode === "commit" ? "No commits found." : "No pull requests found for this repository.";
+    } catch (error) {
+        if (epoch !== state.reviewOptionsEpoch) return;
+        state.reviewOptionsRetryAppend = append;
+        elements.review_options_status.textContent = `Unable to load ${mode === "commit" ? "commits" : "pull requests"}: ${error.message}`;
+        elements.review_more.textContent = "Retry list";
+        elements.review_more.classList.remove("hidden");
+        elements.review_ref.disabled = !elements.review_ref.options.length;
+    } finally {
+        if (epoch === state.reviewOptionsEpoch) {
+            state.reviewOptionsLoading = false;
+            updateReviewApply();
+        }
+    }
+}
+
+elements.review_mode.addEventListener("change", () => loadReviewOptions());
+elements.review_ref.addEventListener("change", updateReviewApply);
+elements.review_more.addEventListener("click", () => loadReviewOptions({ append: state.reviewOptionsRetryAppend ?? true }));
 elements.review_target_form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    elements.review_apply.disabled = true;
+    if (elements.review_apply.disabled) return;
+    state.reviewSubmitting = true;
+    updateReviewApply();
     try {
         await api("/api/review-target", {
             method: "POST",
@@ -1927,7 +2078,8 @@ elements.review_target_form.addEventListener("submit", async (event) => {
     } catch (error) {
         showError(error);
     } finally {
-        elements.review_apply.disabled = false;
+        state.reviewSubmitting = false;
+        updateReviewApply();
     }
 });
 

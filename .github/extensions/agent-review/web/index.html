@@ -28,8 +28,10 @@
                     <option value="commit">Commit</option>
                     <option value="pr">Pull request</option>
                 </select>
-                <input id="review-ref" class="hidden" aria-label="Commit or pull request" placeholder="Commit SHA or ref">
+                <select id="review-ref" class="hidden" aria-label="Commit or pull request" disabled></select>
+                <button id="review-more" class="hidden" type="button">Load more</button>
                 <button id="review-apply" type="submit">Review</button>
+                <span id="review-options-status" class="review-options-status" role="status" aria-live="polite"></span>
             </form>
             <span id="status" class="status">Connecting</span>
             <button id="refresh" type="button">Refresh analysis</button>
@@ -50,9 +52,10 @@
                 <div id="progress-bar" class="progress-bar"></div>
             </div>
         </section>
+        <section id="change-brief" class="change-brief" aria-label="Change brief"></section>
         <section id="summary" class="summary" aria-label="Change summary"></section>
         <nav id="breadcrumbs" class="breadcrumbs" aria-label="Review level"></nav>
-        <section class="workspace">
+        <section class="workspace detail-collapsed">
             <aside class="rail">
                 <div class="rail-heading">
                     <div><p class="eyebrow">REVIEW QUEUE</p><h2>Attention</h2></div>
@@ -82,7 +85,7 @@
                     <div class="graph-controls">
                         <label><input id="changed-only" type="checkbox" checked> Changed only</label>
                         <input id="review-search" type="search" placeholder="Filter names…" aria-label="Filter review items">
-                        <button id="detail-toggle" type="button">Hide details</button>
+                        <button id="detail-toggle" type="button" aria-pressed="false">Show details</button>
                     </div>
                 </div>
                 <div id="graph" class="graph" aria-label="Interactive change graph"></div>

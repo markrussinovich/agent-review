@@ -3,6 +3,45 @@ import { promisify } from "node:util";
 
 const execute = promisify(execFile);
 
+export async function listReviewTargets(repoRoot, { mode, page = 0 }, run = execute) {
+    if (!Number.isInteger(page) || page < 0 || page > 10_000) throw new Error("Invalid review list page.");
+    const invoke = async (command, args) => {
+        const result = await run(command, args, { cwd: repoRoot, encoding: "utf8", timeout: 60_000 });
+        return result.stdout;
+    };
+    const pageSize = 30;
+    if (mode === "commit") {
+        const output = await invoke("git", ["-C", repoRoot, "log", `-${pageSize + 1}`, `--skip=${page * pageSize}`,
+            "--format=%H%x00%s%x00%an%x00%cI", "-z", "HEAD"]);
+        const fields = output.split("\0");
+        if (fields.at(-1) === "") fields.pop();
+        const items = [];
+        for (let index = 0; index < fields.length; index += 4) {
+            const [ref, title, author, date] = fields.slice(index, index + 4);
+            if (!/^[a-f0-9]{40,64}$/i.test(ref) || date === undefined) throw new Error("Git returned invalid commit list data.");
+            items.push({ ref, title, author, date, short_sha: ref.slice(0, 7) });
+        }
+        return { items: items.slice(0, pageSize), has_more: items.length > pageSize, page };
+    }
+    if (mode === "pr") {
+        const repository = JSON.parse(await invoke("gh", ["repo", "view", "--json", "nameWithOwner"])).nameWithOwner;
+        if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) throw new Error("Unable to determine this repository's GitHub remote.");
+        const records = JSON.parse(await invoke("gh", ["api",
+            `repos/${repository}/pulls?state=all&sort=updated&direction=desc&per_page=${pageSize}&page=${page + 1}`]));
+        if (!Array.isArray(records)) throw new Error("GitHub returned invalid pull request list data.");
+        const items = records.map((pr) => {
+            if (!Number.isInteger(pr.number) || pr.number < 1
+                || pr.html_url !== `https://github.com/${repository}/pull/${pr.number}`) {
+                throw new Error("GitHub returned invalid pull request list data.");
+            }
+            return { ref: pr.html_url, number: pr.number, title: pr.title, author: pr.user?.login,
+                date: pr.updated_at, status: pr.merged_at ? "merged" : pr.state };
+        });
+        return { items, has_more: items.length === pageSize, page, repository };
+    }
+    throw new Error("Choose Commit or Pull request to list review targets.");
+}
+
 export async function resolveReviewTarget(repoRoot, target, run = execute) {
     const invoke = async (command, args) => {
         const result = await run(command, args, { cwd: repoRoot, encoding: "utf8", timeout: 60_000 });
