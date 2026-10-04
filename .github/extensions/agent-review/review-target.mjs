@@ -24,7 +24,15 @@ export async function listReviewTargets(repoRoot, { mode, page = 0 }, run = exec
         return { items: items.slice(0, pageSize), has_more: items.length > pageSize, page };
     }
     if (mode === "pr") {
-        const repository = JSON.parse(await invoke("gh", ["repo", "view", "--json", "nameWithOwner"])).nameWithOwner;
+        let repository;
+        try {
+            repository = JSON.parse(await invoke("gh", ["repo", "view", "--json", "nameWithOwner"])).nameWithOwner;
+        } catch (error) {
+            if (/none of the git remotes|no git remotes/i.test(error.stderr || error.message)) {
+                throw new Error("No usable GitHub remote was found. Pull request review requires a GitHub remote matching the gh CLI's host configuration.");
+            }
+            throw error;
+        }
         if (!/^[\w.-]+\/[\w.-]+$/.test(repository)) throw new Error("Unable to determine this repository's GitHub remote.");
         const records = JSON.parse(await invoke("gh", ["api",
             `repos/${repository}/pulls?state=all&sort=updated&direction=desc&per_page=${pageSize}&page=${page + 1}`]));

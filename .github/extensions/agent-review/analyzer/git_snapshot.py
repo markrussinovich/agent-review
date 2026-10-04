@@ -19,6 +19,7 @@ DEFAULT_EXCLUDES = (
     ".pytest_cache",
     ".github/extensions/agent-review",
     ".agent-review.json",
+    ".agent-review",
 )
 
 
@@ -144,6 +145,24 @@ class Snapshot:
     base_ref: str | None
     baseline: dict[str, bytes]
     current: dict[str, bytes]
+
+    def source_files(self, changes: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+        result: dict[str, dict[str, object]] = {}
+        for change in changes:
+            path = str(change["path"])
+            before, after = self.baseline.get(path), self.current.get(path)
+            try:
+                base = before.decode("utf-8") if before is not None else ""
+                current = after.decode("utf-8") if after is not None else None
+            except UnicodeDecodeError:
+                result[path] = {"binary": True}
+                continue
+            diff = "".join(difflib.unified_diff(
+                [f"{line}\n" for line in base.splitlines()], [f"{line}\n" for line in (current or "").splitlines()],
+                fromfile=f"a/{path}", tofile=f"b/{path}", n=4,
+            ))
+            result[path] = {"current": current, "diff": diff}
+        return result
 
     def changes(self) -> list[dict[str, object]]:
         records: list[dict[str, object]] = []

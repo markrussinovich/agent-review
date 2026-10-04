@@ -56,6 +56,46 @@ test("overview context summarizes churn split, ranked findings, and prompts dete
     assert.equal(await state.overviewFor(), first, "overview is cached until refresh");
 });
 
+test("automatic summary captures originating history only after the bounded search finishes", async () => {
+    let finishHistory, received;
+    const history = new Promise((resolve) => { finishHistory = resolve; });
+    const state = new ReviewState("C:\\repo", {
+        getHistoricalSessionContexts: () => history,
+        generateAnnotation: async (context) => { received = context; return "## Summary\n\n- Feature.\n\n## Review order\n\n- Source.\n\n## Gaps\n\n- Coverage."; },
+    });
+    state.model = { summary: {}, changes: [], nodes: [], attention: [], coverage: {}, warnings: [] };
+    const request = state.overviewFor();
+    assert.equal(received, undefined);
+    finishHistory({ contexts: [{ session_id: "authoring", turns: [],
+        intent: [{ timestamp: "2026-10-03T10:00:00Z", summary: "Implement YAML configuration importing." }],
+        recent_activity: [], referenced_files: [], event_count: 1 }], failures: [] });
+    await request;
+    assert.deepEqual(received.session_intent, ["Implement YAML configuration importing."]);
+    assert.equal(state.sessionContext.historical_search_complete, true);
+});
+
+test("commit summary intent cannot borrow goals from a newer same-repository feature", () => {
+    const state = new ReviewState("C:\\repo", { reviewTarget: { mode: "commit" } });
+    state.model = { summary: {}, metadata: { generated_at: "2026-10-03T10:00:00Z" },
+        changes: [{ path: "src/app.py", status: "modified", lines_added: 1, lines_removed: 1 }],
+        nodes: [], attention: [], coverage: {}, warnings: [] };
+    const turn = (id, timestamp, prompt) => ({ id, session_id: id, started_at: timestamp, prompt,
+        prompt_event_id: id, referenced_files: ["src/app.py"],
+        agent_activity: [{ timestamp, operation: "write", referenced_files: ["src/app.py"], summary: prompt }] });
+    state.sessionContext = {
+        turns: [turn("old", "2026-10-03T09:00:00Z", "Create cron planning."),
+            turn("new", "2026-10-03T11:00:00Z", "Create YAML importing.")],
+        intent: [{ timestamp: "2026-10-03T09:00:00Z", summary: "Create cron planning." },
+            { timestamp: "2026-10-03T11:00:00Z", summary: "Create YAML importing." }],
+    };
+    assert.deepEqual(state.overviewContext().session_intent, ["Create cron planning."]);
+    assert.equal(state.overviewContext().session_attribution[0].prompt, "Create cron planning.");
+    state.reviewTarget = { mode: "worktree" };
+    assert.equal(state.overviewContext().session_attribution[0].prompt, "Create YAML importing.");
+    state.lastAnalyzedAt = "2026-10-03T10:00:00Z";
+    assert.equal(state.overviewContext().session_attribution[0].prompt, "Create cron planning.", "a saved worktree also excludes edits after its analysis");
+});
+
 test("base ref is re-resolved on every refresh", async () => {
     let calls = 0;
     const state = new ReviewState("C:\\definitely-not-a-repo", {

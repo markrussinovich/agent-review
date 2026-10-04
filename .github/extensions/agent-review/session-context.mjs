@@ -209,19 +209,26 @@ export function buildSessionContext(events, repoRoot) {
     };
 }
 
-export function findSessionAttribution(sessionContext, path) {
+export function findSessionAttribution(sessionContext, path, { before = null } = {}) {
     if (!sessionContext || !path) return [];
+    const cutoff = before === null ? null : Date.parse(before);
+    if (cutoff !== null && !Number.isFinite(cutoff)) throw new Error("Session attribution cutoff must be a valid timestamp.");
+    const visibleTurn = (turn) => cutoff === null || Date.parse(turn.started_at) <= cutoff;
+    const visibleActivity = (turn) => cutoff === null ? turn.agent_activity
+        : turn.agent_activity.filter((item) => Date.parse(item.timestamp) <= cutoff);
     const normalized = path.replaceAll("\\", "/");
     const basename = normalized.split("/").pop()?.toLowerCase();
     const results = [];
     for (const turn of sessionContext.turns || []) {
-        const matchingActivity = turn.agent_activity.filter((item) => item.referenced_files?.includes(normalized));
+        if (!visibleTurn(turn)) continue;
+        const activity = visibleActivity(turn);
+        const matchingActivity = activity.filter((item) => item.referenced_files?.includes(normalized));
         const exact = matchingActivity.length > 0;
         const writes = matchingActivity.filter((item) => item.operation === "write").length;
         const reads = matchingActivity.filter((item) => item.operation === "read").length;
         const searchable = [
             turn.prompt,
-            ...turn.agent_activity.map((item) => item.summary),
+            ...activity.map((item) => item.summary),
         ].join(" ").toLowerCase();
         const mentioned = Boolean(basename && searchable.includes(basename));
         if (!exact && !mentioned) continue;
@@ -230,12 +237,19 @@ export function findSessionAttribution(sessionContext, path) {
             1,
             (writes ? 0.88 : exact ? 0.65 : authoringMention ? 0.72 : 0.38) + promptIntentScore(turn.prompt),
         ));
+        const original = (sessionContext.turns || [])
+            .filter((candidate) => candidate.session_id === turn.session_id && visibleTurn(candidate) && !isReviewPrompt(candidate.prompt)
+                && visibleActivity(candidate).some((item) => item.operation === "write" && item.referenced_files?.includes(normalized)))
+            .sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)))[0];
         results.push({
             turn_id: turn.id,
             session_id: turn.session_id || null,
             session_summary: turn.session_summary || null,
             prompt_event_id: turn.prompt_event_id,
             prompt: turn.prompt,
+            original_prompt: original?.prompt || turn.prompt,
+            original_prompt_event_id: original?.prompt_event_id || turn.prompt_event_id,
+            original_started_at: original?.started_at || turn.started_at,
             started_at: turn.started_at,
             ended_at: turn.ended_at,
             confidence: confidenceScore >= 0.8 ? "likely" : "possible",
@@ -250,8 +264,8 @@ export function findSessionAttribution(sessionContext, path) {
             write_activity_count: writes,
             read_activity_count: reads,
             review_intent: isReviewPrompt(turn.prompt),
-            agent_activity: turn.agent_activity.slice(-12),
-            referenced_files: turn.referenced_files,
+            agent_activity: activity.slice(-12),
+            referenced_files: [...new Set(activity.flatMap((item) => item.referenced_files || []))],
         });
     }
     const authoringCandidates = results.filter((item) => !item.review_intent);

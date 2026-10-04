@@ -30,15 +30,17 @@
                 </select>
                 <select id="review-ref" class="hidden" aria-label="Commit or pull request" disabled></select>
                 <button id="review-more" class="hidden" type="button">Load more</button>
-                <button id="review-apply" type="submit">Review</button>
-                <span id="review-options-status" class="review-options-status" role="status" aria-live="polite"></span>
+                <button id="review-apply" type="submit" title="Open the selected review, reusing its saved results when available">Open review</button>
             </form>
             <span id="status" class="status">Connecting</span>
-            <button id="refresh" type="button">Refresh analysis</button>
+            <button id="refresh" type="button" title="Recompute the current snapshot and regenerate its AI summary">Reanalyze</button>
         </div>
     </header>
     <main>
+        <p id="review-options-status" class="review-options-status" role="status" aria-live="polite"></p>
+        <section id="review-picker-notice" class="review-picker-notice hidden" role="status"></section>
         <p id="review-target-label" class="review-target-label"></p>
+        <p id="repository-identity" class="repository-identity"></p>
         <section id="error" class="error hidden" role="alert"></section>
         <section id="analysis-progress" class="analysis-progress hidden" aria-live="polite">
             <div class="progress-copy">
@@ -53,6 +55,13 @@
             </div>
         </section>
         <section id="change-brief" class="change-brief" aria-label="Change brief"></section>
+        <section id="custom-analyses" class="custom-analyses hidden" aria-label="Custom analyses">
+            <div class="custom-heading">
+                <h2>Custom analyses <span class="muted">· AI-generated checks</span></h2>
+                <button id="custom-manage" type="button">Manage prompts</button>
+            </div>
+            <div id="custom-results"></div>
+        </section>
         <section id="summary" class="summary" aria-label="Change summary"></section>
         <nav id="breadcrumbs" class="breadcrumbs" aria-label="Review level"></nav>
         <section class="workspace detail-collapsed">
@@ -137,6 +146,27 @@
             <div id="session-transcript" class="session-transcript"></div>
         </section>
     </main>
+    <dialog id="prompt-manager" class="prompt-manager" aria-labelledby="prompt-manager-title">
+        <div class="custom-heading">
+            <h2 id="prompt-manager-title">Custom review prompts</h2>
+            <button id="prompt-manager-close" type="button" aria-label="Close prompt manager">Close</button>
+        </div>
+        <p class="muted">Enabled, approved prompts run automatically on each saved review snapshot. Global prompts apply to every repository. Results are separate from deterministic findings; these checks cannot run tools or edit code.</p>
+        <p class="muted">Repository prompts require approval for each revision. Review their instructions before selecting Save and approve.</p>
+        <p id="prompt-manager-error" class="error hidden" role="alert"></p>
+        <div id="prompt-library"></div>
+        <form id="prompt-editor" class="prompt-editor">
+            <h3 id="prompt-editor-title">Add prompt</h3>
+            <label>Scope <select id="prompt-scope"><option value="repository">This repository</option><option value="global">All repositories</option></select></label>
+            <label>Title <input id="prompt-title" maxlength="120" required placeholder="Check error handling"></label>
+            <label>Instructions <textarea id="prompt-text" maxlength="8000" rows="6" required placeholder="Check that changed error paths surface actionable messages."></textarea></label>
+            <label class="prompt-enabled"><input id="prompt-enabled" type="checkbox" checked> Run automatically</label>
+            <div class="custom-heading">
+                <button id="prompt-save" type="submit">Save and approve</button>
+                <button id="prompt-new" type="button">Clear / add new</button>
+            </div>
+        </form>
+    </dialog>
     <script type="module" src="/app.js"></script>
 </body>
 </html>

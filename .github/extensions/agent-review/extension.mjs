@@ -1,5 +1,6 @@
 import { CanvasError, createCanvas, joinSession } from "@github/copilot-sdk/extension";
 import { generateIsolatedExplanation } from "./ai-explainer.mjs";
+import { buildCustomAnalysisPrompt, CUSTOM_ANALYSIS_HEADINGS, validateCustomAnalysis } from "./custom-analysis.mjs";
 import {
     ANNOTATION_HEADINGS,
     buildAnnotationPrompt,
@@ -146,6 +147,13 @@ function createReviewState(requestedPath, input) {
             prompt: buildPackagePrompt(dependency, assessment),
             sourceEvents: await session.getEvents(),
             requiredHeadings: PACKAGE_HEADINGS,
+        }),
+        generateCustomAnalysis: async ({ prompt, context }) => generateIsolatedExplanation({
+            workingDirectory: state.repoRoot,
+            prompt: buildCustomAnalysisPrompt(prompt, context),
+            sourceEvents: await session.getEvents(),
+            requiredHeadings: CUSTOM_ANALYSIS_HEADINGS,
+            validateResponse: (content) => validateCustomAnalysis(content, context),
         }),
     });
     return state;

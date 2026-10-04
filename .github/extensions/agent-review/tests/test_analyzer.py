@@ -103,6 +103,32 @@ class AnalyzerTests(unittest.TestCase):
         self.assertTrue(all(edge["underlying_edge_ids"] for edge in aggregate))
         self.assertTrue(all({"count", "added_count", "removed_count"} <= edge.keys() for edge in aggregate))
 
+    def test_field_source_locations_and_saved_source_diff(self) -> None:
+        self.write("health.py", "class HealthCheck:\n    name: str\n    passed: bool")
+        base = self.commit()
+        text = "class HealthCheck:\n    name: str\n    passed: bool\n    message: str"
+        self.write("health.py", text)
+        self.write(".agent-review/prompts.json", '{"version": 1, "prompts": []}')
+        self.write(".agent-review/prompt-lock/owner", "temporary reviewer state")
+        model = self.analyze(base)
+        klass = next(node for node in model["nodes"] if node["name"] == "HealthCheck")
+        self.assertEqual([{"name": "name", "line": 2}, {"name": "passed", "line": 3},
+                          {"name": "message", "line": 4}], klass["fields"])
+        self.assertEqual(text, model["source_files"]["health.py"]["current"].replace("\r\n", "\n"))
+        self.assertIn("+    message: str\n", model["source_files"]["health.py"]["diff"])
+        self.assertNotIn(".agent-review/prompts.json", model["source_files"])
+        self.assertFalse(any(change["path"].startswith(".agent-review/") for change in model["changes"]))
+
+    def test_pyyaml_distribution_maps_to_actual_yaml_import(self) -> None:
+        self.write("main.py", "print('base')\n")
+        base = self.commit()
+        self.write("requirements.txt", "PyYAML==6.0.3\n")
+        self.write("main.py", "import yaml\nprint(yaml.safe_load('value: 1'))\n")
+        model = self.analyze(base)
+        package = next(item for item in model["package_changes"] if item["name"] == "pyyaml")
+        self.assertEqual(["main.py:1"], package["usage_locations"])
+        self.assertTrue(any(edge["target"] == "package:yaml" for edge in model["edges"]))
+
     def test_package_changes_usage_staged_unstaged_and_exclusion(self) -> None:
         self.write("requirements.txt", "requests==1.0\n")
         self.write("main.py", "print('old')\n")

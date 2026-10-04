@@ -49,6 +49,24 @@ function mockFetch(routes) {
   return fetchImpl;
 }
 
+test("source repository wins over funding and other GitHub project links", async () => {
+  const metadata = pypi();
+  metadata.info.project_urls = {
+    Funding: "https://github.com/sponsors/samuelcolvin",
+    Homepage: "https://github.com/example/documentation",
+    Source: "https://github.com/pydantic/pydantic",
+  };
+  const fetchImpl = mockFetch([
+    ["pypi.org", metadata],
+    ["api.osv.dev", { vulns: [] }],
+    ["securityscorecards.dev", { score: 8, checks: [] }],
+  ]);
+  const result = await assessPackageRisk("pydantic", "1.0.0", { fetchImpl, now: NOW });
+  assert.equal(result.indicators.repository_url, "https://github.com/pydantic/pydantic");
+  assert.ok(fetchImpl.calls.some((call) => call.url.endsWith("/projects/github.com/pydantic/pydantic")));
+  assert.ok(fetchImpl.calls.every((call) => !call.url.includes("/projects/github.com/sponsors/")));
+});
+
 test("healthy package returns low risk and stable public evidence", async () => {
   const fetchImpl = mockFetch([
     ["pypi.org", pypi()],

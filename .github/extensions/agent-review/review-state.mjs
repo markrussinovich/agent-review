@@ -6,6 +6,8 @@ import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:pa
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { assessPackageRisk } from "./package-risk.mjs";
+import { CustomPromptStore } from "./custom-prompts.mjs";
+import { customAnalysisContext, validateCustomAnalysis } from "./custom-analysis.mjs";
 import { resolveReviewTarget } from "./review-target.mjs";
 import { buildSessionContext, findSessionAttribution, mergeSessionContexts } from "./session-context.mjs";
 
@@ -156,12 +158,21 @@ export class ReviewState {
         this.refreshPromise = null;
         this.reviewGeneration = 0;
         this.reviewInstanceId = randomUUID();
+        this.reviewCache = new Map();
+        this.lastAnalyzedAt = null;
+        this.restoredFromCache = false;
         this.getSessionEvents = options.getSessionEvents || null;
         this.getHistoricalSessionContexts = options.getHistoricalSessionContexts || null;
         this.historicalSessionTimeoutMs = options.historicalSessionTimeoutMs || 40_000;
         this.currentSessionId = options.currentSessionId || null;
         this.generateAnnotation = options.generateAnnotation || null;
         this.generatePackageExplanation = options.generatePackageExplanation || null;
+        this.generateCustomAnalysis = options.generateCustomAnalysis || null;
+        this.customAnalysisTimeoutMs = options.customAnalysisTimeoutMs || 120_000;
+        this.customPromptOptions = options.customPromptOptions || {};
+        this.customAnalyses = {};
+        this.customAnalysisPromises = new WeakMap();
+        this.customPromptError = null;
         this.sessionContext = null;
         this.annotations = {};
         this.annotationPromises = new Map();
@@ -187,6 +198,10 @@ export class ReviewState {
             package_risks: this.packageRisks,
             review_target: this.reviewTarget,
             review_generation: `${this.reviewInstanceId}:${this.reviewGeneration}`,
+            analyzed_at: this.lastAnalyzedAt,
+            restored_from_cache: this.restoredFromCache,
+            custom_analyses: this.customAnalyses,
+            custom_prompt_error: this.customPromptError,
         };
     }
 
@@ -241,10 +256,16 @@ export class ReviewState {
                 this.selection = null;
                 this.packageRisks = {};
                 this.packageAssessments = new Map();
+                this.customAnalyses = {};
+                this.customPromptError = null;
                 this.loading = false;
+                this.lastAnalyzedAt = new Date().toISOString();
+                this.restoredFromCache = false;
                 this.progress = { phase: "complete", message: "Analysis complete", percent: 100 };
+                this.saveCurrentReview();
                 return sessionContextPromise.then(() => {
                     this.broadcast("refreshed");
+                    this.startCustomAnalyses();
                     return model;
                 });
             })
@@ -269,14 +290,128 @@ export class ReviewState {
         this.switchingTarget = true;
         try {
             const resolved = await resolveReviewTarget(this.repoRoot, input);
+            this.saveCurrentReview();
             this.reviewTarget = resolved;
-            this.model = null;
             this.selection = null;
+            const cached = this.reviewCache.get(this.reviewCacheKey(resolved));
+            if (cached) {
+                this.reviewGeneration += 1;
+                this.annotationPromises = new Map();
+                this.model = cached.model;
+                this.annotations = cached.annotations;
+                this.packageRisks = cached.packageRisks;
+                this.packageAssessments = cached.packageAssessments;
+                this.generatedObservations = cached.generatedObservations;
+                this.customAnalyses = cached.customAnalyses;
+                this.customPromptError = null;
+                this.lastAnalyzedAt = cached.analyzedAt;
+                this.restoredFromCache = true;
+                this.loading = false;
+                this.error = null;
+                this.progress = { phase: "complete", message: "Saved review restored", percent: 100 };
+                this.broadcast("refreshed");
+                this.startCustomAnalyses();
+                return this.model;
+            }
+            this.model = null;
+            this.annotations = {};
             this.generatedObservations = [];
             return await this.refresh();
         } finally {
             this.switchingTarget = false;
         }
+    }
+
+    reviewCacheKey(target = this.reviewTarget) {
+        return JSON.stringify([target.mode, target.currentRef || null,
+            target.mode === "worktree" ? this.worktreeBaseRef : target.baseRef]);
+    }
+
+    saveCurrentReview() {
+        if (!this.model || this.loading || this.error) return;
+        this.reviewCache.set(this.reviewCacheKey(), {
+            model: this.model,
+            annotations: this.annotations,
+            packageRisks: this.packageRisks,
+            packageAssessments: this.packageAssessments,
+            generatedObservations: this.generatedObservations,
+            analyzedAt: this.lastAnalyzedAt,
+            customAnalyses: this.customAnalyses,
+        });
+    }
+
+    promptStore() {
+        if (!this.customPromptStore || this.customPromptStore.repoRoot !== resolve(this.repoRoot)) {
+            this.customPromptStore = new CustomPromptStore(this.repoRoot, this.customPromptOptions);
+        }
+        return this.customPromptStore;
+    }
+
+    startCustomAnalyses() {
+        const model = this.model;
+        this.runCustomAnalyses().catch((error) => {
+            if (this.model !== model) return;
+            this.customPromptError = error.message;
+            this.broadcast("custom-analysis-error");
+        });
+    }
+
+    async runCustomAnalyses(input = {}) {
+        if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Custom analysis options must be an object.");
+        if (input.force !== undefined && typeof input.force !== "boolean") throw new Error("force must be a boolean.");
+        if (input.id !== undefined && (typeof input.id !== "string" || !input.id || !["global", "repository"].includes(input.scope))) {
+            throw new Error("A prompt id and valid scope are required.");
+        }
+        if (!this.model || this.loading) throw new Error("Wait for the review analysis to finish.");
+        const model = this.model;
+        const results = this.customAnalyses;
+        const prompts = (await this.promptStore().list()).filter((prompt) => prompt.enabled && prompt.trusted);
+        const selected = input.id ? prompts.filter((prompt) => prompt.id === input.id && prompt.scope === input.scope) : prompts;
+        if (input.id && !selected.length) throw new Error("The requested prompt is missing, disabled, or requires approval.");
+        if (selected.length && !this.generateCustomAnalysis) throw new Error("Custom AI analysis is unavailable in this provider.");
+        if (this.model !== model || this.customAnalyses !== results) throw new Error("The review changed before custom analysis could start.");
+        let pending = this.customAnalysisPromises.get(results);
+        if (!pending) {
+            pending = new Map();
+            this.customAnalysisPromises.set(results, pending);
+        }
+        const context = customAnalysisContext(model);
+        let chain = Promise.resolve();
+        const tasks = [];
+        for (const prompt of selected) {
+            const key = `${prompt.scope}:${prompt.id}:${prompt.revision}`;
+            if (pending.has(key)) {
+                tasks.push(pending.get(key));
+                continue;
+            }
+            if (results[key] && !input.force) continue;
+            const result = { id: prompt.id, scope: prompt.scope, revision: prompt.revision, title: prompt.title, status: "queued" };
+            results[key] = result;
+            const task = chain.then(async () => {
+                result.status = "running";
+                if (this.customAnalyses === results) this.broadcast("custom-analysis");
+                try {
+                    result.content = validateCustomAnalysis(await withTimeout(this.generateCustomAnalysis({ prompt, context }),
+                        this.customAnalysisTimeoutMs, "Custom analysis timed out. Retry this check."), context);
+                    result.status = "complete";
+                    result.completed_at = new Date().toISOString();
+                } catch (error) {
+                    result.status = "error";
+                    result.error = error.message;
+                } finally {
+                    pending.delete(key);
+                    if (this.customAnalyses === results) this.broadcast("custom-analysis");
+                }
+                return result;
+            });
+            pending.set(key, task);
+            chain = task;
+            tasks.push(task);
+        }
+        this.customPromptError = null;
+        if (this.customAnalyses === results) this.broadcast("custom-analysis");
+        await Promise.all(tasks);
+        return Object.values(results);
     }
 
     async refreshSessionContext(broadcast = true) {
@@ -313,8 +448,10 @@ export class ReviewState {
     }
 
     refreshHistoricalSessionContexts() {
-        if (!this.getHistoricalSessionContexts || this.historicalContextPromise) return;
-        if (this.sessionHistories.size > 1) return;
+        if (!this.getHistoricalSessionContexts) return null;
+        if (this.historicalContextPromise) return this.historicalContextPromise;
+        if (this.sessionContext?.historical_search_complete) return null;
+        if (!this.sessionContext) this.sessionContext = mergeSessionContexts([...this.sessionHistories.values()]);
         this.historicalContextPromise = withTimeout(
             Promise.resolve().then(() => this.getHistoricalSessionContexts()),
             this.historicalSessionTimeoutMs,
@@ -338,6 +475,7 @@ export class ReviewState {
             .finally(() => {
                 this.historicalContextPromise = null;
             });
+        return this.historicalContextPromise;
     }
 
     sessionHistoryFor(sessionId) {
@@ -476,13 +614,18 @@ export class ReviewState {
             if (!evidence) throw new Error(`Unknown evidence id: ${evidenceId}`);
             context.evidence[evidenceId] = evidence;
         }
-        context.session_intent = (this.sessionContext?.intent || []).slice(-6);
         const attributionPath = context.subject?.path
             || Object.values(context.evidence || {}).find((entry) => entry.path)?.path;
-        context.session_attribution = this.attributionForPath(attributionPath);
-        context.code_context = await this.codeContextFor(context);
-        if (generation !== this.reviewGeneration) throw new Error("The review changed while loading annotation context.");
-        const promise = this.generateAnnotation(context)
+        const promise = (async () => {
+            const history = this.refreshHistoricalSessionContexts();
+            if (history) await history;
+            if (generation !== this.reviewGeneration) throw new Error("The review changed while loading annotation context.");
+            context.session_attribution = this.attributionForPath(attributionPath);
+            context.session_intent = this.intentForReview(context.session_attribution).slice(-6);
+            context.code_context = await this.codeContextFor(context);
+            if (generation !== this.reviewGeneration) throw new Error("The review changed while loading annotation context.");
+            return this.generateAnnotation(context);
+        })()
             .then((body) => {
                 if (generation !== this.reviewGeneration) throw new Error("The review changed while generating this annotation.");
                 const annotation = {
@@ -511,7 +654,12 @@ export class ReviewState {
         if (!this.model) throw new Error("Analysis is not complete.");
         if (this.annotationPromises.has("overview")) return this.annotationPromises.get("overview");
         const generation = this.reviewGeneration;
-        const promise = this.generateAnnotation(this.overviewContext())
+        const promise = (async () => {
+            const history = this.refreshHistoricalSessionContexts();
+            if (history) await history;
+            if (generation !== this.reviewGeneration) throw new Error("The review changed while loading summary context.");
+            return this.generateAnnotation(this.overviewContext());
+        })()
             .then((body) => {
                 if (generation !== this.reviewGeneration) throw new Error("The review changed while generating this summary.");
                 const annotation = {
@@ -575,7 +723,8 @@ export class ReviewState {
             .filter((entry) => entry.match)
             .map(({ file, match }) => ({
                 path: file.path,
-                prompt: String(match.prompt || "").slice(0, 500),
+                prompt: String(match.original_prompt || match.prompt || "").slice(0, 500),
+                latest_file_request: match.original_prompt !== match.prompt ? String(match.prompt || "").slice(0, 500) : null,
                 confidence: match.confidence,
             }));
         return {
@@ -590,11 +739,12 @@ export class ReviewState {
                 change: item.change,
                 version: item.resolved_current || null,
             })),
-            session_intent: (this.sessionContext?.intent || []).slice(-4).map((item) => String(item.summary || "").slice(0, 500)),
+            session_intent: this.intentForReview(attribution).slice(-4).map((item) => String(item.summary || "").slice(0, 500)),
             session_attribution: attribution,
             analysis_quality: {
                 coverage_available: Boolean(model.coverage?.available),
                 warnings: model.warnings || [],
+                session_history_error: this.sessionContext?.history_error || this.sessionContext?.error || null,
             },
         };
     }
@@ -667,7 +817,22 @@ export class ReviewState {
     }
 
     attributionForPath(path) {
-        return findSessionAttribution(this.sessionContext, path);
+        return findSessionAttribution(this.sessionContext, path, { before: this.reviewHistoryCutoff() });
+    }
+
+    reviewHistoryCutoff() {
+        return this.reviewTarget.mode === "worktree" ? this.lastAnalyzedAt : this.model?.metadata?.generated_at || null;
+    }
+
+    intentForReview(attribution = []) {
+        if (attribution.length) {
+            return [...new Set(attribution.map((item) => item.original_prompt || item.prompt).filter(Boolean))]
+                .map((summary) => ({ summary }));
+        }
+        const before = this.reviewHistoryCutoff();
+        const cutoff = before === null ? null : Date.parse(before);
+        if (cutoff !== null && !Number.isFinite(cutoff)) throw new Error("Review history cutoff must be a valid timestamp.");
+        return (this.sessionContext?.intent || []).filter((item) => cutoff === null || Date.parse(item.timestamp) <= cutoff);
     }
 
     attributionStatusForPath(path) {
@@ -682,7 +847,9 @@ export class ReviewState {
         return {
             status: "no_match",
             attribution,
-            message: "No originating prompt was found in Copilot sessions for this repository.",
+            message: this.reviewTarget.mode === "worktree"
+                ? "No originating prompt was found in Copilot sessions for this repository."
+                : "No originating prompt was found in repository sessions at or before this commit.",
         };
     }
 
@@ -766,7 +933,8 @@ export class ReviewState {
         let diffError = null;
         if (baseSha) {
             try {
-                diff = await git(this.repoRoot, ["diff", "--no-ext-diff", "--unified=4", baseSha,
+                const saved = this.model?.source_files?.[path.replaceAll("\\", "/")];
+                diff = saved ? saved.diff || "" : await git(this.repoRoot, ["diff", "--no-ext-diff", "--unified=4", baseSha,
                     ...(this.reviewTarget.currentRef ? [this.reviewTarget.currentRef] : []), "--", path]);
             } catch (error) {
                 diffError = `Unable to load the source diff: ${error.message}`;
@@ -792,6 +960,12 @@ export class ReviewState {
 
     async readCurrentSource(path) {
         const fullPath = safePath(this.repoRoot, path);
+        const saved = this.model?.source_files?.[path.replaceAll("\\", "/")];
+        if (saved) {
+            if (saved.binary) throw new Error(`Cannot display ${path}: the analyzed file is not UTF-8 text.`);
+            return saved.current;
+        }
+        if (this.model?.source_files) return null;
         if (this.reviewTarget.currentRef) {
             const name = path.replaceAll("\\", "/");
             const exists = await git(this.repoRoot, ["ls-tree", "--name-only", this.reviewTarget.currentRef, "--", name]);

@@ -9,7 +9,7 @@ from churn import analyze_churn
 from codeboarding_adapter import load_codeboarding
 from coverage_data import load_coverage
 from git_snapshot import create_snapshot, discover_base, discover_repo, run_git
-from packages import declared_import_names, installed_versions, package_diff, parse_packages
+from packages import declared_import_names, import_name, installed_versions, package_diff, parse_packages
 from python_graph import analyze_python
 from review_model import ReviewModel
 
@@ -56,6 +56,7 @@ def build_review(
     )
     progress("changes", "Computing changed files and line totals", 25)
     model.changes = snapshot.changes()
+    model.source_files = snapshot.source_files(model.changes)
     progress("dependencies", "Comparing package declarations and installed versions", 32)
     baseline_packages = parse_packages(snapshot.baseline, model.warnings)
     current_packages = parse_packages(snapshot.current, model.warnings)
@@ -84,7 +85,7 @@ def build_review(
                 if evidence.get("path"):
                     locations.add(f"{evidence['path']}:{evidence.get('line', 1)}")
     for package in model.packages["current"]:
-        package["used_by"] = sorted(usage.get(package["name"].replace("-", "_"), set()))
+        package["used_by"] = sorted(usage.get(import_name(package["name"]), set()))
     python_paths = sorted(path for path in snapshot.current if path.endswith(".py"))
     progress("coverage", "Loading coverage and changed executable-line data", 76)
     model.coverage = (

@@ -59,7 +59,9 @@ The top toolbar's **Review** selector supports:
 
 Source, diff, graph, dependencies, and AI source context follow the selected
 snapshot. Worktree coverage is deliberately unavailable for commit/PR reviews.
-Refresh re-analyzes the resolved snapshot; submit the PR again to resolve a newly
+**Open review** opens the selection and restores its saved results when available.
+**Reanalyze** recomputes the current snapshot and regenerates its AI summary and
+enabled custom checks. Reanalyze keeps a PR's resolved head; open the PR again to resolve a newly
 pushed head. Both lists load 30 entries at a time with **Load more** for older
 items. Empty lists and missing authentication are explicit, with **Retry list**
 for failed requests. Invalid revisions and fetch errors are
@@ -67,6 +69,12 @@ displayed explicitly. Switching waits for package assessments to finish;
 superseded AI summaries and annotations cannot overwrite the new review.
 The selected immutable target is recorded with the Canvas marker so provider
 recovery restores the same review instead of reverting to the worktree.
+Switching selections resets navigation to the overview and attention queue, and
+hides old panes while choosing the next target. Each target retains its analyzed
+source/diff, summary, package assessments, annotations, and custom results in the
+running provider's memory. Returning does not silently mix saved results with
+later worktree edits. **This result cache does not survive a provider restart**;
+the selected target and browser-local closed findings do.
 
 - A change brief above the review workspace: file mix, source-versus-test churn,
   originating prompt, and an automatically generated Copilot summary with a
@@ -86,7 +94,7 @@ recovery restores the same review instead of reverting to the worktree.
   indexes with proportional churn bars
 - Code-first source and diff view with a side panel for the originating prompt
   and a concise Copilot briefing that leads with a risk banner
-- Backticked file paths and symbol names in Copilot text link to the source line, and the stated-intent label opens the originating prompt in the session history
+- Backticked file paths (including root files and line ranges), symbols, and class fields link to source. Bare fields/methods resolve within the selected class, not an unrelated globally matching member. The stated-intent label opens the originating prompt
 - Back and forward navigation (buttons, Alt+Left/Right, mouse back/forward) through followed source links
 - Package review: added, changed, and removed dependencies with a Copilot explanation of why each was added and what uses it, a security scorecard (vulnerabilities, OpenSSF Scorecard, maintenance, downloads), and provenance (author, license, source repository, registry)
 - Exact source-range highlighting for findings backed by precise line evidence
@@ -95,14 +103,80 @@ recovery restores the same review instead of reverting to the worktree.
   changes, motivation, risk, and review focus
 - Repository-scoped prompt provenance with bounded history search and explicit
   matched, no-match, and error states; transcripts group tool calls and show
-  the files and commands involved
+  the files and commands involved. The original authoring request is separated
+  from later file-specific follow-ups; AI briefings wait for the bounded history
+  search rather than prematurely claiming no intent exists. Commit/PR provenance
+  excludes turns and writes after the reviewed head commit, so a newer same-repository
+  feature cannot supply the historical review's stated goal. Saved worktree
+  provenance similarly stops at that snapshot's analysis time
 - Dependency versions and on-demand public risk indicators from PyPI, OSV,
   OpenSSF Scorecard, and PyPI download statistics
 - GitHub-style responsive layouts, typography, controls, and graph treatment for
   full-width and narrow side-panel Canvas sizes
 
+All UX follows the GitHub/Primer guidelines in [AGENTS.md](./AGENTS.md). Semantic
+light/dark palette values are based on Primer primitives 11.10.0; summary panels
+remain neutral, with semantic color limited to headings, states, and evidence.
+
 Package lookups send only the public package name/version and public repository
 URL to those services. Repository source and credentials are never sent.
+
+### Package labels and evidence
+
+- **Version** / **Reviewed version** identifies the dependency version being
+  assessed; it is not a vulnerability count or proof of the runtime installation.
+- **Priority N/100** ranks deterministic review attention. It is not a security
+  score. The package risk signal aggregate is a separate 0–100 measure, while
+  **OpenSSF Scorecard** is a separate 0–10 score.
+- Manifest additions/version changes are reviewable even without mapped Python
+  imports. The panel links the declaration and explains this distinction.
+- Import locations link to actual source lines. PyYAML's distribution name maps
+  to its `yaml` import; other unsupported aliases or dynamic imports can remain
+  unresolved.
+- Scorecard, weak checks, registry, vulnerability queries, release history, and
+  download evidence are links. Lookup failures display their errors instead of
+  presenting missing evidence as a reassuring result.
+
+### Custom analyses
+
+Choose **Manage prompts** beneath the change brief to add, edit, disable, or
+delete checks. Select **This repository** or **All repositories** when adding a
+prompt. Enabled, approved checks run automatically after analysis; **Run again**
+repeats one check against the saved snapshot, without reanalyzing live files.
+Results are labeled AI-generated, kept separate from deterministic findings,
+and saved with each review and prompt revision. They have explicit running,
+failure, timeout, and retry states.
+
+Configuration is versioned JSON:
+
+```json
+{
+  "version": 1,
+  "prompts": [
+    {
+      "id": "error-handling",
+      "title": "Check error handling",
+      "prompt": "Review changed error paths for silent failures and actionable messages.",
+      "enabled": true
+    }
+  ]
+}
+```
+
+- Repository prompts: `.agent-review/prompts.json` (the `.agent-review` configuration/
+  lock directory is excluded from review changes).
+- Global prompts: `~/.copilot/agent-review/prompts.json`.
+- Repository approvals: `~/.copilot/agent-review/prompt-approvals.json`, scoped to
+  the canonical repository and exact prompt revision. Discovered/changed
+  repository instructions **never run automatically until Save and approve**.
+  Global configuration is trusted as user-owned configuration.
+- Maximum 50 prompts per scope, title 120 characters, instructions 8,000 characters.
+
+Checks use isolated, tool-free Copilot sessions and bounded saved source/diff
+evidence, not a live worktree or an entire-repository scan. Results must contain
+**Findings** and **Verification**, stay within 250 words, and use valid supplied
+file paths and line citations. Evidence truncation is disclosed. Verify AI
+claims; a successful check is not a guarantee of correctness.
 
 ## Copilot actions
 
@@ -126,7 +200,7 @@ components remain available.
 
 ```text
 python -m unittest discover -s .github/extensions/agent-review/tests -p test_analyzer.py -v
-node --test .github/extensions/agent-review/tests/test-package-risk.mjs
+node --test .github/extensions/agent-review/tests/test-*.mjs
 node --check .github/extensions/agent-review/extension.mjs
 node --check .github/extensions/agent-review/web/app.js
 ```
@@ -137,7 +211,17 @@ on Windows, or `AGENT_REVIEW_BROWSER_EXECUTABLE`):
 ```powershell
 $env:AGENT_REVIEW_BROWSER_PACKAGE = 'C:\path\to\project\package.json'
 node .github\extensions\agent-review\tests\browser\review-target.mjs
+node .github\extensions\agent-review\tests\browser\presentation.mjs
+node .github\extensions\agent-review\tests\browser\custom-prompts.mjs
 ```
 
 Set `AGENT_REVIEW_LIVE_PR` to a GitHub PR URL to also exercise authenticated PR
 resolution, fetching, analysis, and UI switching against GitHub.
+
+`tests/browser/sample-feature.mjs` verifies both added dependencies and genuine
+SDK session provenance in the two-import sample. Override
+`AGENT_REVIEW_SAMPLE_REPO` and `AGENT_REVIEW_SAMPLE_SESSION` for another fixture.
+Historical-session and opt-in real AI tests require the SDK supplied by the
+Copilot extension host, or an existing SDK installation on Node's module path.
+Set `AGENT_REVIEW_AI_SMOKE_REPO` before running `tests/smoke-custom-analysis.mjs`
+to validate an actual isolated custom check (uses the authenticated Copilot account).

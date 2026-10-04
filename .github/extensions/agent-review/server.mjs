@@ -11,6 +11,9 @@ const staticFiles = new Map([
     ["/app.js", "app.js"],
     ["/graph.js", "graph.js"],
     ["/findings.mjs", "findings.mjs"],
+    ["/symbol-links.mjs", "symbol-links.mjs"],
+    ["/package-presentation.mjs", "package-presentation.mjs"],
+    ["/source-references.mjs", "source-references.mjs"],
     ["/styles.css", "styles.css"],
 ]);
 const contentTypes = {
@@ -52,6 +55,13 @@ export function startReviewServer(state, options = {}) {
         const requestUrl = new URL(req.url || "/", "http://127.0.0.1");
         const pathname = requestUrl.pathname;
         try {
+            if (["POST", "DELETE"].includes(req.method) && req.headers.origin) {
+                const port = server.address().port;
+                if (![ `http://127.0.0.1:${port}`, `http://localhost:${port}` ].includes(req.headers.origin)) {
+                    sendJson(res, { error: "Cross-origin mutations are not allowed." }, 403);
+                    return;
+                }
+            }
             if (req.method === "GET" && staticFiles.has(pathname)) {
                 const filename = staticFiles.get(pathname);
                 const body = await readFile(join(webRoot, filename));
@@ -82,6 +92,23 @@ export function startReviewServer(state, options = {}) {
                     mode: requestUrl.searchParams.get("mode"),
                     page: Number(requestUrl.searchParams.get("page") || 0),
                 }));
+                return;
+            }
+            if (req.method === "GET" && pathname === "/api/custom-prompts") {
+                sendJson(res, { prompts: await state.promptStore().list() });
+                return;
+            }
+            if (req.method === "POST" && pathname === "/api/custom-prompts") {
+                sendJson(res, { prompt: await state.promptStore().save(await readJson(req)) });
+                return;
+            }
+            if (req.method === "DELETE" && pathname === "/api/custom-prompts") {
+                const input = await readJson(req);
+                sendJson(res, { removed: await state.promptStore().remove(input.scope, input.id) });
+                return;
+            }
+            if (req.method === "POST" && pathname === "/api/custom-analyses") {
+                sendJson(res, { results: await state.runCustomAnalyses(await readJson(req)) });
                 return;
             }
             if (req.method === "GET" && pathname === "/api/attribution") {
@@ -146,7 +173,7 @@ export function startReviewServer(state, options = {}) {
             }
             sendJson(res, { error: "not_found" }, 404);
         } catch (error) {
-            sendJson(res, { error: error.message }, 400);
+            sendJson(res, { error: error.message }, error.statusCode || 400);
         }
     });
 

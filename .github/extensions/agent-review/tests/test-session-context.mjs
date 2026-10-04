@@ -52,6 +52,42 @@ test("maps a changed file to the user turn whose tool activity referenced it", (
     assert.deepEqual(matches[0].referenced_files, ["src/workflow_service/scheduling.py"]);
 });
 
+test("follow-up edits retain the original request within the matching session", () => {
+    const turn = (id, session, timestamp, prompt, operation) => ({
+        id, session_id: session, prompt_event_id: id, started_at: timestamp, prompt,
+        agent_activity: [{ operation, referenced_files: ["src/app.py"], summary: "src/app.py" }],
+        referenced_files: ["src/app.py"],
+    });
+    const context = { turns: [
+        turn("original", "authoring", "2026-10-03T09:00:00Z", "Create YAML configuration importing.", "write"),
+        turn("follow-up", "authoring", "2026-10-03T10:00:00Z", "Fix overflow in configuration validation.", "write"),
+        turn("another-task", "another", "2026-10-03T11:00:00Z", "Create another API in app.py.", "write"),
+    ] };
+    const matches = findSessionAttribution(context, "src/app.py");
+    const followUp = matches.find((item) => item.turn_id === "follow-up");
+    assert.equal(followUp.prompt, "Fix overflow in configuration validation.");
+    assert.equal(followUp.original_prompt, "Create YAML configuration importing.");
+    assert.equal(followUp.original_prompt_event_id, "original");
+    assert.equal(matches.find((item) => item.turn_id === "another-task").original_prompt, "Create another API in app.py.");
+});
+
+test("historical attribution excludes later turns and post-commit writes within an older turn", () => {
+    const turn = (id, start, edit, prompt) => ({
+        id, session_id: id, prompt_event_id: id, started_at: start, prompt,
+        agent_activity: [{ timestamp: edit, operation: "write", referenced_files: ["src/app.py"], summary: "src/app.py" }],
+        referenced_files: ["src/app.py"],
+    });
+    const context = { turns: [
+        turn("old", "2026-10-03T09:00:00Z", "2026-10-03T09:01:00Z", "Create cron planning."),
+        turn("spanning", "2026-10-03T09:30:00Z", "2026-10-03T10:30:00Z", "Prepare export updates."),
+        turn("future", "2026-10-03T11:00:00Z", "2026-10-03T11:01:00Z", "Create YAML importing."),
+    ] };
+    assert.equal(findSessionAttribution(context, "src/app.py").length, 3);
+    const historical = findSessionAttribution(context, "src/app.py", { before: "2026-10-03T10:00:00Z" });
+    assert.equal(historical.length, 1);
+    assert.equal(historical[0].prompt, "Create cron planning.");
+});
+
 test("uses filename mentions as possible attribution without claiming authorship", () => {
     const context = buildSessionContext([
         {

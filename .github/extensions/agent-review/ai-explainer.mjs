@@ -15,6 +15,7 @@ async function generateOnce({
     sourceEvents = [],
     timeoutMs = 120_000,
     requiredHeadings = [],
+    validateResponse = null,
 }) {
     const cliPath = await managedCopilotPath();
     const client = new CopilotClient({
@@ -42,7 +43,8 @@ async function generateOnce({
         if (response?.data?.toolRequests?.length) {
             throw new ExplanationValidationError("Copilot attempted to call a tool from an explanation-only session.");
         }
-        return validateExplanation(response?.data?.content, requiredHeadings);
+        const content = validateExplanation(response?.data?.content, requiredHeadings);
+        return validateResponse ? validateResponse(content) : content;
     } finally {
         try {
             if (isolated) await isolated.disconnect();
@@ -60,12 +62,14 @@ async function generateOnce({
 
 export async function generateIsolatedExplanation(options) {
     let lastError;
+    let request = options;
     for (let attempt = 0; attempt < 2; attempt += 1) {
         try {
-            return await generateOnce(options);
+            return await generateOnce(request);
         } catch (error) {
             lastError = error;
             if (!(error instanceof ExplanationValidationError)) throw error;
+            request = { ...options, prompt: `${options.prompt}\n\nThe previous response failed validation: ${error.message}\nReturn a corrected response that satisfies the original format and evidence constraints.` };
         }
     }
     throw new Error(

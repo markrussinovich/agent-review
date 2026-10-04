@@ -1,0 +1,14 @@
+export function packageEvidenceLinks(name, version, repositoryUrl) {
+    const packageName = encodeURIComponent(name);
+    const links = {
+        registry: `https://pypi.org/project/${packageName}/`,
+        release: `https://pypi.org/project/${packageName}/${encodeURIComponent(version)}/`,
+        maintenance: `https://pypi.org/project/${packageName}/#history`,
+        vulnerabilities: `https://osv.dev/list?q=${packageName}&ecosystem=PyPI`,
+        downloads: `https://pypistats.org/packages/${packageName}`,
+        scorecard: null,
+    };
+    const repository = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/?$/.exec(repositoryUrl || "");
+    if (repository) links.scorecard = `https://securityscorecards.dev/viewer/?uri=${encodeURIComponent(`github.com/${repository[1]}`)}`;
+    return links;
+}

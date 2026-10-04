@@ -1,5 +1,8 @@
 import { renderGraph } from "/graph.js";
 import { findingsForNode, findingKey, isFindingClosed, orderFindings } from "/findings.mjs";
+import { resolveSymbolReference } from "/symbol-links.mjs";
+import { packageEvidenceLinks } from "/package-presentation.mjs";
+import { resolveSourceReference } from "/source-references.mjs";
 
 const state = {
     payload: null,
@@ -20,14 +23,18 @@ const state = {
     sourceHistory: { entries: [], index: -1, pending: -1 },
     appliedServerSelection: null,
     closedFindingKeys: new Set(),
+    customOpenKeys: new Set(),
 };
 const elements = Object.fromEntries([
-    "review-target-form", "review-mode", "review-ref", "review-apply", "review-target-label", "review-more", "review-options-status", "change-brief",
+    "review-target-form", "review-mode", "review-ref", "review-apply", "review-target-label", "repository-identity", "review-more", "review-options-status", "review-picker-notice", "change-brief",
     "status", "refresh", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "rail-resize",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail-toggle", "detail", "detail-close", "source-panel", "source-title",
     "source-provenance", "source-annotation", "source-close", "source", "source-back", "source-forward",
     "session-history-panel", "session-history-title", "session-history-meta", "session-history-close", "session-transcript",
+    "custom-analyses", "custom-results", "custom-manage", "prompt-manager", "prompt-manager-close",
+    "prompt-manager-error", "prompt-library", "prompt-editor", "prompt-editor-title", "prompt-scope",
+    "prompt-title", "prompt-text", "prompt-enabled", "prompt-save", "prompt-new",
 ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
 
 function el(tag, className, text) {
@@ -230,8 +237,12 @@ function renderCards(container, items, emptyText) {
         card.type = "button";
         const heading = el("div", "card-heading");
         heading.append(el("strong", "", item.title || item.name || item.id));
-        if (item.impact_score != null) heading.append(el("b", "impact-score", String(item.impact_score)));
-        card.append(heading, el("span", "card-body", item.id?.startsWith("package:") ? `${item.change} · ${packageVersionText(item)}` : item.body || item.reason || item.change || ""));
+        if (item.impact_score != null) {
+            const priority = el("b", "impact-score", `Priority ${item.impact_score}/100`);
+            priority.title = "Review priority based on change impact. This is not a vulnerability count or package security score.";
+            heading.append(priority);
+        }
+        card.append(heading, el("span", "card-body", item.id?.startsWith("package:") ? `${item.change} · Version ${packageVersionText(item)}` : item.body || item.reason || item.change || ""));
         if (item.impact_factors?.length) card.append(el("small", "factor-line", item.impact_factors.join(" · ")));
         card.dataset.itemId = item.id;
         card.classList.toggle("is-selected", state.selected?.id === item.id);
@@ -503,7 +514,10 @@ function selectAggregateEdge(edge, model) {
 function field(label, value) {
     if (value === undefined || value === null || value === "") return null;
     const row = el("div", "detail-row");
-    row.append(el("span", "", label), el("strong", "", String(value)));
+    const content = el("strong", "");
+    if (value instanceof Node) content.append(value);
+    else content.textContent = String(value);
+    row.append(el("span", "", label), content);
     return row;
 }
 
@@ -522,8 +536,16 @@ function renderChangeBrief() {
     const split = sourceTestChurn(model);
     const ratio = split.source ? split.tests / split.source : 0;
     const grid = el("div", "detail-grid");
+    const fileCounts = el("span", "brief-file-counts");
+    fileCounts.append(
+        el("span", "change-added", `${summary.files_added || 0} added`),
+        document.createTextNode(" · "),
+        el("span", "change-modified", `${summary.files_modified || 0} modified`),
+        document.createTextNode(" · "),
+        el("span", "change-removed", `${summary.files_removed || 0} deleted`),
+    );
     grid.append(
-        field("Files", `${summary.files_added || 0} added · ${summary.files_modified || 0} modified · ${summary.files_removed || 0} deleted`),
+        field("Files", fileCounts),
         field("Source lines", split.source.toLocaleString()),
         field("Test lines", `${split.tests.toLocaleString()} (${ratio.toFixed(2)} per source line)`),
         field("Coverage", model.coverage?.available ? "measured" : "unknown"),
@@ -542,6 +564,7 @@ function renderChangeBrief() {
     if (annotation?.body) {
         const body = el("div", "annotation-body brief-ai");
         markdownContext.intent = state.briefIntent || null;
+        markdownContext.subject = null;
         renderMarkdown(body, annotation.body);
         const sections = [];
         let section = null;
@@ -773,7 +796,10 @@ function ensureAnnotation(item, epoch = state.selectionEpoch) {
         });
 }
 
-function promptBlock(attribution) {
+function promptBlock(attribution, useOriginal = true) {
+    if (useOriginal && attribution.original_prompt) {
+        attribution = { ...attribution, prompt: attribution.original_prompt, prompt_event_id: attribution.original_prompt_event_id };
+    }
     const fragment = document.createDocumentFragment();
     const prompt = el("p", "provenance-prompt clamped", attribution.prompt);
     fragment.append(prompt);
@@ -811,8 +837,8 @@ function renderProvenance() {
         return;
     }
     if (!state.attribution.length && state.attributionStatus === "no_match") {
-        note("No originating prompt found in this repository's Copilot sessions.");
-        panel.title = "Only Copilot sessions belonging to this Git repository are searched.";
+        note(state.attributionMessage || "No originating prompt found in this repository's Copilot sessions.");
+        panel.title = "Only this repository's sessions are searched; historical reviews exclude activity after the selected commit.";
         return;
     }
     if (!state.attribution.length && state.attributionStatus === "error") {
@@ -832,6 +858,11 @@ function renderProvenance() {
         el("b", `confidence confidence-${primary.confidence}`, `${primary.confidence} match`),
     );
     panel.append(heading, promptBlock(primary), el("p", "source-status", primary.reason));
+    if (primary.original_prompt && primary.original_prompt !== primary.prompt) {
+        const latest = el("details", "brief-origin");
+        latest.append(el("summary", "", "Latest file-specific request"), promptBlock(primary, false));
+        panel.append(latest);
+    }
 }
 
 async function openSessionHistory(attribution) {
@@ -887,6 +918,7 @@ async function openSessionHistory(attribution) {
             );
             row.append(heading);
             const body = el("div", "history-row-body");
+            markdownContext.subject = null;
             renderMarkdown(body, event.summary);
             row.append(body);
             fragment.append(row);
@@ -919,7 +951,7 @@ function appendInlineMarkdown(container, text) {
         } else {
             const value = token.slice(1, -1);
             const reference = parseSourceReference(value);
-            const symbol = reference ? null : resolveSymbol(value);
+            const symbol = reference ? null : resolveSymbolReference(state.payload?.model, value, markdownContext.subject);
             if (reference) {
                 container.append(sourceReferenceButton(value, reference));
             } else if (symbol) {
@@ -937,43 +969,17 @@ function appendInlineMarkdown(container, text) {
 }
 
 function parseSourceReference(value) {
-    const match = /^((?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+\.(?:py|toml|txt|json|ya?ml|md|mjs|js|css|html))(?::(\d+(?:,\d+)*))?$/.exec(value.trim());
-    if (!match) return null;
-    return {
-        path: match[1].replaceAll("\\", "/"),
-        lines: match[2] ? match[2].split(",").map(Number).filter(Number.isFinite) : [],
-    };
+    return resolveSourceReference(value, state.payload?.model);
 }
 
-const markdownContext = { intent: null };
-let symbolIndex = { model: null, byName: new Map() };
-
-function resolveSymbol(value) {
-    const model = state.payload?.model;
-    if (!model) return null;
-    if (symbolIndex.model !== model) {
-        const byName = new Map();
-        for (const node of model.nodes) {
-            if (!["class", "function", "method"].includes(node.kind) || !node.path || !node.start_line) continue;
-            for (const key of new Set([node.display_name, node.name, node.qualified_name].filter(Boolean))) {
-                if (!byName.has(key)) byName.set(key, []);
-                byName.get(key).push(node);
-            }
-        }
-        symbolIndex = { model, byName };
-    }
-    const key = value.trim().replace(/\(.*\)$/, "");
-    const candidates = symbolIndex.byName.get(key) || [];
-    if (candidates.length === 1) return candidates[0];
-    const changed = candidates.filter((node) => node.change !== "unchanged");
-    return changed.length === 1 ? changed[0] : null;
-}
+const markdownContext = { intent: null, subject: null };
 
 function intentLink(label, attribution) {
     const button = el("button", "intent-link", label);
     button.type = "button";
     button.title = "Open the originating prompt in the session history";
-    button.addEventListener("click", () => openSessionHistory(attribution));
+    button.addEventListener("click", () => openSessionHistory(attribution.original_prompt_event_id
+        ? { ...attribution, prompt_event_id: attribution.original_prompt_event_id } : attribution));
     return button;
 }
 
@@ -997,7 +1003,7 @@ function sourceReferenceButton(label, reference, title = null) {
 }
 
 function appendTextWithSourceReferences(container, text) {
-    const pattern = /((?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+\.(?:py|toml|txt|json|ya?ml|md|mjs|js|css|html)(?::\d+(?:,\d+)*)?)/g;
+    const pattern = /((?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:py|toml|txt|json|ya?ml|md|mjs|js|css|html)(?::\d+(?:-\d+)?(?:,\d+(?:-\d+)*)*)?)/g;
     let offset = 0;
     for (const match of text.matchAll(pattern)) {
         if (match.index > offset) container.append(document.createTextNode(text.slice(offset, match.index)));
@@ -1096,6 +1102,7 @@ function renderAnnotation(item, annotation, loading = false) {
     }
     const body = el("div", "annotation-body");
     markdownContext.intent = state.attribution?.[0] || null;
+    markdownContext.subject = state.payload?.model?.nodes.find((node) => node.id === (item.node_id || item.id)) || null;
     renderMarkdown(body, risk ? risk.body : annotation.body);
     panel.append(body);
     if (annotation.evidence_ids?.length) {
@@ -1493,9 +1500,13 @@ function formatCount(value) {
     return Number.isFinite(value) ? value.toLocaleString() : null;
 }
 
-function statTile(label, value, detail, tone = "") {
+function statTile(label, value, detail, tone = "", href = null) {
     const tile = el("div", `stat-tile${tone ? ` stat-${tone}` : ""}`);
-    tile.append(el("span", "stat-label", label), el("strong", "stat-value", value ?? "Unknown"));
+    const heading = el("span", "stat-label");
+    heading.append(href ? externalLink(label, href) : document.createTextNode(label));
+    const number = el("strong", "stat-value");
+    number.append(href && value != null ? externalLink(value, href) : document.createTextNode(value ?? "Unknown"));
+    tile.append(heading, number);
     if (detail) tile.append(el("small", "", detail));
     return tile;
 }
@@ -1546,12 +1557,18 @@ function renderPackagePanel() {
     header.append(
         titleRow,
         el("p", "muted", [
-            packageVersionText(item),
+            `Version ${packageVersionText(item)}`,
             declared?.source ? `declared in ${declared.source}` : null,
             declared?.group ? `${declared.group} dependency` : null,
         ].filter(Boolean).join(" · ")),
     );
     sections.push(header);
+    const declaration = el("p", "package-declaration-note");
+    declaration.append(document.createTextNode(`Reported because a dependency declaration was ${item.change} in `));
+    if (declared?.source) declaration.append(sourceReferenceButton(declared.source, { path: declared.source, lines: [] }));
+    else declaration.append(document.createTextNode("the package manifest"));
+    declaration.append(document.createTextNode(". Manifest changes are reviewed even when no Python import is found."));
+    sections.push(declaration);
 
     if (item.change === "removed") {
         sections.push(el("p", "flash flash-attention", "This dependency was removed. Check that nothing in the repository still imports it."));
@@ -1561,7 +1578,7 @@ function renderPackagePanel() {
 
     if (risk) {
         const banner = el("div", `flash flash-${risk.level === "low" ? "success" : risk.level === "unknown" ? "neutral" : risk.level === "medium" ? "attention" : "danger"}`);
-        banner.append(el("strong", "", `${risk.level} risk${risk.score != null ? ` · ${risk.score}/100` : ""}`));
+        banner.append(el("strong", "", `Dependency risk: ${risk.level}${risk.score != null ? ` · risk score ${risk.score}/100` : ""}`));
         if (risk.reasons?.length) {
             const reasons = el("ul", "");
             reasons.append(...risk.reasons.map((reason) => el("li", "", reason)));
@@ -1578,6 +1595,7 @@ function renderPackagePanel() {
     const why = el("div", "annotation-body");
     if (entry.explanation) {
         markdownContext.intent = null;
+        markdownContext.subject = null;
         renderMarkdown(why, entry.explanation);
     } else if (entry.explainError) {
         why.append(el("p", "annotation-error", entry.explainError));
@@ -1609,8 +1627,8 @@ function renderPackagePanel() {
         usageList.append(row);
     }
     sections.push(packageSection(
-        `Used by (${usage.length})`,
-        usage.length ? usageList : el("p", "flash flash-attention", "No import of this package was found in the repository. It may be unused or loaded dynamically."),
+        `Python import locations (${usage.length})`,
+        usage.length ? usageList : el("p", "flash flash-attention", "No Python import was mapped to this declaration. This is a manifest change, not an observed import. Verify why the dependency is needed: it may support tooling, dynamic loading, use a different import name, or be unused."),
     ));
 
     if (assessment) {
@@ -1618,20 +1636,21 @@ function renderPackagePanel() {
         const maintenance = indicators.maintenance || {};
         const vulns = indicators.known_vulnerabilities || [];
         const score = indicators.scorecard_score;
+        const links = packageEvidenceLinks(item.name, assessment.version, indicators.repository_url);
         const tiles = el("div", "stat-grid");
         tiles.append(
             statTile("Known vulnerabilities", formatCount(indicators.vulnerability_count),
                 indicators.vulnerability_history_count != null ? `${indicators.vulnerability_history_count} in release history` : null,
-                indicators.vulnerability_count > 0 ? "danger" : indicators.vulnerability_count === 0 ? "success" : ""),
+                indicators.vulnerability_count > 0 ? "danger" : indicators.vulnerability_count === 0 ? "success" : "", links.vulnerabilities),
             statTile("OpenSSF Scorecard", score != null ? `${score}/10` : null, score != null ? null : "No scorecard published",
-                score == null ? "" : score >= 7 ? "success" : score >= 4 ? "attention" : "danger"),
+                score == null ? "" : score >= 7 ? "success" : score >= 4 ? "attention" : "danger", links.scorecard),
             statTile("Maintenance", maintenance.status ? maintenance.status : null,
                 `${maintenance.releases_last_12_months ?? 0} releases in 12 months${maintenance.latest_release_date ? ` · latest ${formatDate(maintenance.latest_release_date)}` : ""}`,
-                maintenance.status === "active" ? "success" : maintenance.status === "stale" ? "attention" : maintenance.status === "dormant" ? "danger" : ""),
-            statTile("Downloads (last month)", formatCount(indicators.recent_downloads), null),
-            statTile("Installed version", assessment.version,
+                maintenance.status === "active" ? "success" : maintenance.status === "stale" ? "attention" : maintenance.status === "dormant" ? "danger" : "", links.maintenance),
+            statTile("Downloads (last month)", formatCount(indicators.recent_downloads), null, "", links.downloads),
+            statTile("Reviewed version", assessment.version,
                 `${indicators.release_age_days != null ? `${indicators.release_age_days} days old` : "age unknown"}${indicators.latest_version ? ` · latest ${indicators.latest_version}` : ""}${indicators.yanked ? " · YANKED" : ""}`,
-                indicators.yanked ? "danger" : ""),
+                indicators.yanked ? "danger" : "", links.release),
         );
         const scorecardParts = [tiles];
         if (vulns.length) {
@@ -1651,7 +1670,12 @@ function renderPackagePanel() {
             .slice(0, 4);
         if (weakChecks.length) {
             const list = el("ul", "check-list");
-            for (const check of weakChecks) list.append(el("li", "", `${check.name}: ${check.score}/10`));
+            for (const check of weakChecks) {
+                const row = el("li", "");
+                row.append(externalLink(check.name, `https://github.com/ossf/scorecard/blob/main/docs/checks.md#${encodeURIComponent(check.name.toLowerCase())}`),
+                    document.createTextNode(`: ${check.score}/10`));
+                list.append(row);
+            }
             scorecardParts.push(el("p", "muted", "Weakest Scorecard checks"), list);
         }
         sections.push(packageSection("Security scorecard", ...scorecardParts));
@@ -1681,41 +1705,156 @@ function renderPackagePanel() {
             ]) if (row) list.append(row);
             sections.push(packageSection("Provenance", list));
         }
-        const statuses = Object.entries(assessment.sources || {})
-            .map(([name, source]) => `${name}: ${source.status}`);
-        sections.push(el("p", "source-status", `Public data: ${statuses.join(" · ")}. Only the package name and version are sent.`));
+        const statuses = el("ul", "source-status evidence-sources");
+        const sourceUrls = { pypi: links.registry, osv: links.vulnerabilities, osv_history: links.vulnerabilities,
+            scorecard: links.scorecard, pypistats: links.downloads };
+        for (const [name, source] of Object.entries(assessment.sources || {})) {
+            const row = el("li", `source-${source.status}`);
+            row.append(sourceUrls[name] ? externalLink(name, sourceUrls[name]) : document.createTextNode(name),
+                document.createTextNode(`: ${source.status}${source.error ? ` — ${source.error}` : ""}`));
+            statuses.append(row);
+        }
+        sections.push(statuses, el("p", "source-status", "Public lookups send only the package name/version and its public repository URL."));
     }
     host.replaceChildren(...sections);
 }
+function renderCustomAnalyses() {
+    elements.custom_analyses.classList.toggle("hidden", !state.payload?.model || state.reviewPickerPending);
+    const records = state.customPrompts || [];
+    const children = [];
+    const error = state.customLibraryError || state.payload?.custom_prompt_error;
+    if (error) children.push(el("p", "error", error));
+    for (const prompt of records.filter((record) => record.enabled)) {
+        const key = `${prompt.scope}:${prompt.id}:${prompt.revision}`;
+        const result = state.payload?.custom_analyses?.[key];
+        const details = el("details", "custom-result");
+        details.open = state.customOpenKeys.has(key);
+        details.addEventListener("toggle", () => {
+            if (!details.isConnected) return;
+            if (details.open) state.customOpenKeys.add(key);
+            else state.customOpenKeys.delete(key);
+        });
+        const summary = el("summary", "");
+        summary.append(el("strong", "", prompt.title), el("span", `custom-status custom-${result?.status || "waiting"}`,
+            !prompt.trusted ? "Approval required" : result?.status || "Waiting"));
+        details.append(summary, el("p", "muted", `${prompt.scope === "global" ? "All repositories" : "This repository"} · Saved snapshot · AI-generated, verify claims`));
+        if (result?.content) {
+            markdownContext.subject = null;
+            markdownContext.intent = null;
+            const body = el("div", "annotation-body");
+            renderMarkdown(body, result.content);
+            details.append(body);
+        }
+        if (result?.error) details.append(el("p", "error", result.error));
+        const rerun = el("button", "", result ? "Run again" : "Run now");
+        rerun.type = "button";
+        rerun.disabled = !prompt.trusted || state.payload.loading || ["queued", "running"].includes(result?.status);
+        rerun.addEventListener("click", () => runCustomAnalyses({ scope: prompt.scope, id: prompt.id, force: true }));
+        details.append(rerun);
+        children.push(details);
+    }
+    if (!children.length) children.push(el("p", "muted custom-empty", records.length
+        ? "All custom prompts are disabled." : "Add repository-specific or global checks with Manage prompts."));
+    elements.custom_results.replaceChildren(...children);
+}
+
+async function loadCustomPrompts() {
+    try {
+        state.customPrompts = (await api("/api/custom-prompts")).prompts;
+        state.customLibraryError = null;
+        promptManagerError(null);
+        renderPromptLibrary();
+        renderCustomAnalyses();
+    } catch (error) {
+        state.customLibraryError = error.message;
+        promptManagerError(error);
+        renderCustomAnalyses();
+    }
+}
+
+function promptManagerError(error) {
+    elements.prompt_manager_error.textContent = error?.message || "";
+    elements.prompt_manager_error.classList.toggle("hidden", !error);
+}
+
+function editCustomPrompt(prompt = null) {
+    state.customEditing = prompt;
+    elements.prompt_editor_title.textContent = prompt ? "Edit prompt" : "Add prompt";
+    elements.prompt_scope.value = prompt?.scope || "repository";
+    elements.prompt_scope.disabled = Boolean(prompt);
+    elements.prompt_title.value = prompt?.title || "";
+    elements.prompt_text.value = prompt?.prompt || "";
+    elements.prompt_enabled.checked = prompt?.enabled ?? true;
+    elements.prompt_save.textContent = elements.prompt_scope.value === "repository" ? "Save and approve" : "Save prompt";
+}
+
+function renderPromptLibrary() {
+    const children = [];
+    for (const prompt of state.customPrompts || []) {
+        const row = el("div", "prompt-record");
+        const copy = el("div", "");
+        copy.append(el("strong", "", prompt.title), el("p", "muted", [
+            prompt.scope === "global" ? "All repositories" : "This repository",
+            prompt.enabled ? "Enabled" : "Disabled", prompt.trusted ? "Approved" : "Approval required",
+        ].join(" · ")));
+        const edit = el("button", "", prompt.trusted ? "Edit" : "Review / approve");
+        edit.type = "button";
+        edit.addEventListener("click", () => { editCustomPrompt(prompt); elements.prompt_text.focus(); });
+        const remove = el("button", "", "Delete");
+        remove.type = "button";
+        remove.addEventListener("click", async () => {
+            remove.disabled = true;
+            try {
+                await api("/api/custom-prompts", { method: "DELETE", body: JSON.stringify({ scope: prompt.scope, id: prompt.id }) });
+                if (state.customEditing?.id === prompt.id && state.customEditing?.scope === prompt.scope) editCustomPrompt();
+                await loadCustomPrompts();
+            } catch (error) {
+                promptManagerError(error);
+                remove.disabled = false;
+            }
+        });
+        row.append(copy, edit, remove);
+        children.push(row);
+    }
+    elements.prompt_library.replaceChildren(...children);
+}
+
+async function runCustomAnalyses(input = {}) {
+    try {
+        await api("/api/custom-analyses", { method: "POST", body: JSON.stringify(input) });
+        state.payload = await api("/api/state");
+        state.customLibraryError = null;
+        promptManagerError(null);
+        renderCustomAnalyses();
+    } catch (error) {
+        state.customLibraryError = error.message;
+        promptManagerError(error);
+        renderCustomAnalyses();
+    }
+}
+
 function render() {
     elements.review_target_label.textContent = state.payload?.review_target?.label || "Worktree";
     const targetKey = JSON.stringify(state.payload?.review_target || {});
     if (state.reviewTargetKey !== targetKey) {
         state.reviewTargetKey = targetKey;
         const target = state.payload?.review_target;
+        state.reviewPickerPending = false;
         elements.review_mode.value = target?.mode || "worktree";
         loadReviewOptions({ selectedRef: target?.currentRef && target.mode === "commit" ? target.currentRef : target?.ref });
-        state.selectionEpoch += 1;
-        state.selected = null;
-        state.source = null;
-        state.stack = [];
-        state.mode = "graph";
-        state.appliedServerSelection = null;
-        state.sourceHistory = { entries: [], index: -1, pending: -1 };
-        state.packageData.clear();
-        state.query = "";
-        elements.review_search.value = "";
-        elements.source_panel.classList.add("hidden");
-        elements.session_history_panel.classList.add("hidden");
+        resetReviewNavigation();
     }
     const payload = state.payload;
     const model = payload?.model;
+    elements.repository_identity.textContent = model?.metadata?.repo_root
+        ? `${model.metadata.repo_root} · ${state.reviewPickerPending ? "Choose a comparison" : `Base ${model.metadata.base_sha?.slice(0, 8) || "empty tree"}`}` : "";
     const progress = payload?.progress;
-    elements.status.textContent = payload?.loading
-        ? `${progress?.message || "Analyzing…"} · ${progress?.percent || 0}%`
-        : model ? "Analysis current" : "Waiting";
+    elements.status.textContent = payload?.loading ? `Analyzing ${progress?.percent || 0}%`
+        : model ? payload.restored_from_cache ? "Saved review" : "Analysis current" : "Waiting";
+    elements.status.title = payload.loading ? progress?.message || "Analyzing repository"
+        : payload.analyzed_at ? `Analyzed ${new Date(payload.analyzed_at).toLocaleString()}${payload.restored_from_cache ? ". Reanalyze to update." : ""}` : "";
     elements.status.classList.toggle("working", Boolean(payload?.loading));
-    elements.refresh.disabled = Boolean(payload?.loading);
+    elements.refresh.disabled = Boolean(payload?.loading || state.reviewPickerPending);
     updateReviewApply();
     elements.error.classList.toggle("hidden", !payload?.error);
     elements.error.textContent = payload?.error || "";
@@ -1728,6 +1867,9 @@ function render() {
         elements.progress_bar.style.width = `${percent}%`;
         elements.analysis_progress.querySelector(".progress-track").setAttribute("aria-valuenow", String(percent));
     }
+    renderReviewPickerNotice();
+    renderCustomAnalyses();
+    if (state.reviewPickerPending) return;
     if (!model) {
         renderChangeBrief();
         return;
@@ -1986,12 +2128,49 @@ function updateReviewApply() {
         || (elements.review_mode.value !== "worktree" && !elements.review_ref.value);
 }
 
+function resetReviewNavigation() {
+    state.selectionEpoch += 1;
+    state.customOpenKeys.clear();
+    state.selected = null;
+    state.source = null;
+    state.stack = [];
+    state.mode = "graph";
+    state.appliedServerSelection = null;
+    state.sourceHistory = { entries: [], index: -1, pending: -1 };
+    state.packageData.clear();
+    state.query = "";
+    state.changedOnly = true;
+    elements.changed_only.checked = true;
+    state.sourceTab = "diff";
+    elements.review_search.value = "";
+    elements.source_panel.classList.add("hidden");
+    elements.session_history_panel.classList.add("hidden");
+    setDetailVisible(false);
+    elements.graph.scrollTop = 0;
+    document.querySelector(".rail").scrollTop = 0;
+}
+
+function renderReviewPickerNotice() {
+    const pending = Boolean(state.reviewPickerPending);
+    for (const element of [elements.change_brief, elements.summary, elements.breadcrumbs, document.querySelector(".workspace")]) {
+        element.classList.toggle("hidden", pending);
+    }
+    elements.review_picker_notice.classList.toggle("hidden", !pending);
+    if (pending) {
+        elements.review_target_label.textContent = "Choose a review target";
+        elements.status.textContent = "Choose review";
+        elements.review_picker_notice.textContent = elements.review_mode.value === "worktree"
+            ? "Open the worktree review. Its saved results will be restored if available."
+            : `Select ${elements.review_mode.value === "pr" ? "a pull request" : "a commit"} and choose Open review. Previous results are saved; they are not shown as results for this new selection.`;
+    }
+}
+
 async function loadReviewOptions({ append = false, selectedRef = null } = {}) {
     const epoch = (state.reviewOptionsEpoch || 0) + 1;
     state.reviewOptionsEpoch = epoch;
     const mode = elements.review_mode.value;
     const selected = selectedRef || (append ? elements.review_ref.value : null);
-    elements.review_ref.classList.toggle("hidden", mode === "worktree");
+    elements.review_ref.classList.remove("hidden");
     elements.review_ref.required = mode !== "worktree";
     elements.review_more.classList.add("hidden");
     elements.review_options_status.textContent = "";
@@ -2000,9 +2179,13 @@ async function loadReviewOptions({ append = false, selectedRef = null } = {}) {
         state.reviewOptionsPage = -1;
         elements.review_ref.replaceChildren();
     }
-    elements.review_ref.disabled = mode !== "worktree";
+    elements.review_ref.disabled = true;
     updateReviewApply();
-    if (mode === "worktree") return;
+    if (mode === "worktree") {
+        elements.review_ref.append(el("option", "", "Working tree snapshot"));
+        renderReviewPickerNotice();
+        return;
+    }
     const page = append ? state.reviewOptionsPage + 1 : 0;
     elements.review_options_status.textContent = `Loading ${mode === "commit" ? "commits" : "pull requests"}…`;
     try {
@@ -2045,12 +2228,23 @@ async function loadReviewOptions({ append = false, selectedRef = null } = {}) {
         if (epoch === state.reviewOptionsEpoch) {
             state.reviewOptionsLoading = false;
             updateReviewApply();
+            renderReviewPickerNotice();
         }
     }
 }
 
-elements.review_mode.addEventListener("change", () => loadReviewOptions());
-elements.review_ref.addEventListener("change", updateReviewApply);
+elements.review_mode.addEventListener("change", () => {
+    state.reviewPickerPending = true;
+    resetReviewNavigation();
+    loadReviewOptions();
+    render();
+});
+elements.review_ref.addEventListener("change", () => {
+    state.reviewPickerPending = true;
+    resetReviewNavigation();
+    updateReviewApply();
+    render();
+});
 elements.review_more.addEventListener("click", () => loadReviewOptions({ append: state.reviewOptionsRetryAppend ?? true }));
 elements.review_target_form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -2062,12 +2256,8 @@ elements.review_target_form.addEventListener("submit", async (event) => {
             method: "POST",
             body: JSON.stringify({ mode: elements.review_mode.value, ref: elements.review_ref.value }),
         });
-        state.selectionEpoch += 1;
-        state.selected = null;
-        state.source = null;
-        state.stack = [];
-        state.mode = "graph";
-        state.packageData.clear();
+        state.reviewPickerPending = false;
+        resetReviewNavigation();
         state.briefIntent = null;
         state.briefIntentKey = null;
         elements.source_panel.classList.add("hidden");
@@ -2075,6 +2265,7 @@ elements.review_target_form.addEventListener("submit", async (event) => {
         state.payload = await api("/api/state");
         elements.error.classList.add("hidden");
         render();
+        window.scrollTo({ top: 0, behavior: "instant" });
     } catch (error) {
         showError(error);
     } finally {
@@ -2083,6 +2274,38 @@ elements.review_target_form.addEventListener("submit", async (event) => {
     }
 });
 
+elements.custom_manage.addEventListener("click", () => {
+    promptManagerError(null);
+    editCustomPrompt();
+    elements.prompt_manager.showModal();
+    loadCustomPrompts();
+});
+elements.prompt_manager_close.addEventListener("click", () => elements.prompt_manager.close());
+elements.prompt_new.addEventListener("click", () => editCustomPrompt());
+elements.prompt_scope.addEventListener("change", () => {
+    elements.prompt_save.textContent = elements.prompt_scope.value === "repository" ? "Save and approve" : "Save prompt";
+});
+elements.prompt_editor.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    elements.prompt_save.disabled = true;
+    promptManagerError(null);
+    try {
+        await api("/api/custom-prompts", { method: "POST", body: JSON.stringify({
+            scope: elements.prompt_scope.value, id: state.customEditing?.id,
+            title: elements.prompt_title.value, prompt: elements.prompt_text.value,
+            enabled: elements.prompt_enabled.checked,
+        }) });
+        editCustomPrompt();
+        await loadCustomPrompts();
+        runCustomAnalyses();
+    } catch (error) {
+        promptManagerError(error);
+    } finally {
+        elements.prompt_save.disabled = false;
+    }
+});
+
+loadCustomPrompts();
 api("/api/state").then((payload) => {
     state.payload = payload;
     render();
@@ -2091,6 +2314,7 @@ function connectEvents() {
     const events = new EventSource("/events");
     events.addEventListener("state", (event) => {
         state.payload = JSON.parse(event.data);
+        if (["connected", "refreshed"].includes(state.payload.type)) loadCustomPrompts();
         render();
         if (state.payload.type === "session-history" && state.source?.path) {
             const epoch = state.selectionEpoch;

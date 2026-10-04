@@ -47,7 +47,7 @@ try {
         const errors = [];
         page.on("pageerror", (error) => errors.push(error.message));
         await page.goto(`${server.url}?scoutTheme=${theme}`);
-        await page.waitForFunction(() => document.querySelector("#status").textContent === "Analysis current");
+        await page.waitForFunction(() => /^(Analysis current|Saved review)$/.test(document.querySelector("#status").textContent));
         await page.selectOption("#review-mode", "commit");
         await page.waitForFunction(() => !document.querySelector("#review-ref").disabled);
         assert.equal(await page.locator("#review-ref option").count(), 30);
@@ -109,5 +109,5 @@ try {
 } finally {
     await browser?.close();
     await server?.close();
-    await rm(repo, { recursive: true, force: true });
+    await rm(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 }

@@ -112,6 +112,16 @@ class SymbolCollector(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._add(node, node.name, "class")
+        fields = []
+        for child in node.body:
+            targets = (
+                [child.target] if isinstance(child, ast.AnnAssign)
+                else child.targets if isinstance(child, ast.Assign) else []
+            )
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    fields.append({"name": target.id, "line": target.lineno})
+        self.module.symbols[-1]["fields"] = fields
         self.scope.append((node.name, "class"))
         for child in node.body:
             self.visit(child)

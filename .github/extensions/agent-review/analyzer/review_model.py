@@ -15,6 +15,7 @@ def stable_id(kind: str, *parts: object) -> str:
 class ReviewModel:
     repository: dict[str, Any]
     changes: list[dict[str, Any]] = field(default_factory=list)
+    source_files: dict[str, dict[str, object]] = field(default_factory=dict)
     symbols: list[dict[str, Any]] = field(default_factory=list)
     edges: list[dict[str, Any]] = field(default_factory=list)
     aggregates: dict[str, list[dict[str, Any]]] = field(
@@ -109,6 +110,7 @@ class ReviewModel:
             for item in sorted(self.evidence, key=lambda item: item["id"])
         }
         return {
+            "source_files": self.source_files,
             "metadata": {
                 "schema_version": 1,
                 "repo_root": self.repository.get("root"),
@@ -307,6 +309,7 @@ class ReviewModel:
                 "start_line": symbol["range"]["start_line"],
                 "end_line": symbol["range"]["end_line"],
                 "change": symbol["classification"], "metrics": value_metrics,
+                "fields": symbol.get("fields", []),
                 "signatures": {
                     "base": symbol.get("signature_base"),
                     "current": symbol.get("signature_current"),

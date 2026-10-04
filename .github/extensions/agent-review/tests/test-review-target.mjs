@@ -47,6 +47,7 @@ test("commit review uses immutable source, diffs and AI context despite dirty wo
         assert.match((await state.sourceForPath("main.py")).current, /dirty_only/);
         assert.equal(state.model.metadata.base_sha, base);
         await writeFile(join(repo, "untracked.py"), "import croniter\n");
+        await state.refresh();
         assert.match((await state.sourceForPath("untracked.py")).diff, /\+import croniter/);
         await state.setReviewTarget({ mode: "commit", ref: base });
         assert.equal(state.model.metadata.base_sha, null, "root commit compares against empty tree");

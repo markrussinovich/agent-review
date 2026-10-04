@@ -113,7 +113,10 @@ function provenanceFrom(name, info, releases) {
 function githubRepository(projectUrls) {
   let sawUnsafeGitHubUrl = false;
   const urls = projectUrls && typeof projectUrls === "object"
-    ? Object.values(projectUrls)
+    ? Object.entries(projectUrls).sort(([a], [b]) => {
+      const rank = (label) => /^(?:source(?: code)?|(?:code )?repository|repo)$/i.test(label.trim()) ? 0 : /^home\s?page$/i.test(label.trim()) ? 1 : 2;
+      return rank(a) - rank(b);
+    }).map(([, value]) => value)
     : [];
 
   for (const value of urls) {
@@ -139,6 +142,7 @@ function githubRepository(projectUrls) {
         continue;
       }
       const owner = segments[0];
+      if (owner.toLowerCase() === "sponsors") continue;
       const repository = segments[1].replace(/\.git$/i, "");
       const validOwner = /^(?!-)[A-Za-z0-9-]{1,39}(?<!-)$/.test(owner);
       const validRepository = /^(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/.test(repository);

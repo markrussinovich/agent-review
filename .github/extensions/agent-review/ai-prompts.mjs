@@ -43,6 +43,7 @@ export function buildAnnotationPrompt(context) {
         "For new code describe observable behavior (inputs, outputs, failure modes) instead of saying it is new.",
         "## Why it changed",
         "1-2 bullets. If session_attribution or session_intent states the goal, start with **Stated intent:** and quote at most 15 words of it.",
+        "Prefer original_prompt for the requested feature goal; distinguish later file-specific correction requests from that original goal.",
         "Otherwise start with **Likely motivation (inferred, <low|medium|high> confidence):** naming one of: new feature, bug fix, refactor, optimization, reliability, security, maintainability, dependency change, testability — and cite the signal.",
         "Never claim access to hidden reasoning; only visible prompts, assistant messages, and tool activity.",
         "## Risk and review focus",

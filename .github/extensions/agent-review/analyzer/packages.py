@@ -8,6 +8,7 @@ from typing import Any
 
 
 NAME = re.compile(r"^\s*([A-Za-z0-9_.-]+)")
+DISTRIBUTION_IMPORT_ALIASES = {"pyyaml": "yaml"}
 
 
 def normalize(name: str) -> str:
@@ -15,7 +16,8 @@ def normalize(name: str) -> str:
 
 
 def import_name(name: str) -> str:
-    return normalize(name).replace("-", "_")
+    canonical = normalize(name)
+    return DISTRIBUTION_IMPORT_ALIASES.get(canonical, canonical.replace("-", "_"))
 
 
 def _requirement(value: str, source: str, group: str = "runtime") -> dict[str, str] | None:
