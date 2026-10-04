@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:pa
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { assessPackageRisk } from "./package-risk.mjs";
-import { buildSessionContext } from "./session-context.mjs";
+import { buildSessionContext, findSessionAttribution } from "./session-context.mjs";
 
 const execFileAsync = promisify(execFile);
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
@@ -339,6 +339,9 @@ export class ReviewState {
             context.evidence[evidenceId] = evidence;
         }
         context.session_intent = (this.sessionContext?.intent || []).slice(-6);
+        const attributionPath = context.subject?.path
+            || Object.values(context.evidence || {}).find((entry) => entry.path)?.path;
+        context.session_attribution = this.attributionForPath(attributionPath);
         context.code_context = await this.codeContextFor(context);
         const promise = this.generateAnnotation(context)
             .then((body) => {
@@ -372,6 +375,7 @@ export class ReviewState {
             if (error.code === "ENOENT") return { path, unavailable: "File is removed in the current snapshot." };
             throw error;
         }
+
         const lines = source.split(/\r?\n/);
         const evidenceLine = Number(evidenceWithPath?.line || subject.start_line || 1);
         const start = subject.kind === "module"
@@ -435,6 +439,10 @@ export class ReviewState {
             diff_error: diffError,
             usages,
         };
+    }
+
+    attributionForPath(path) {
+        return findSessionAttribution(this.sessionContext, path);
     }
 
     async packageRiskFor(name, requestedVersion = null) {

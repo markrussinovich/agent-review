@@ -73,6 +73,10 @@ export function startReviewServer(state) {
                     : await state.sourceFor(requestUrl.searchParams.get("id")));
                 return;
             }
+            if (req.method === "GET" && pathname === "/api/attribution") {
+                sendJson(res, { attribution: state.attributionForPath(requestUrl.searchParams.get("path")) });
+                return;
+            }
             if (req.method === "GET" && pathname === "/events") {
                 res.writeHead(200, {
                     "Content-Type": "text/event-stream",

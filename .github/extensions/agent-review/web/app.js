@@ -8,6 +8,7 @@ const state = {
     source: null,
     sourceTab: "diff",
     packageRisk: new Map(),
+    attribution: [],
     changedOnly: true,
     query: "",
 };
@@ -15,7 +16,7 @@ const elements = Object.fromEntries([
     "status", "refresh", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "session-intent",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail", "source-panel", "source-title",
-    "source-annotation", "source-close", "source",
+    "source-provenance", "source-annotation", "source-close", "source",
 ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
 
 function el(tag, className, text) {
@@ -81,37 +82,26 @@ function renderSummary(model) {
     const changedFiles = model.changes
         .filter((item) => item.status !== "unchanged")
         .sort((a, b) => (b.lines_added + b.lines_removed) - (a.lines_added + a.lines_removed));
-    const changedSymbols = model.nodes
-        .filter((node) => ["class", "function", "method"].includes(node.kind) && node.change !== "unchanged")
-        .sort((a, b) => (b.metrics?.lines_changed || 0) - (a.metrics?.lines_changed || 0));
     const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
     const changedEdges = model.edges
         .filter((edge) => edge.change === "added")
         .sort((a, b) => (b.count || 1) - (a.count || 1));
     const topFile = changedFiles[0];
-    const topSymbol = changedSymbols[0];
     const topEdge = changedEdges[0];
     const packageDetail = (model.package_changes || []).slice(0, 2).map((item) =>
         `${item.name} ${item.resolved_current || item.declared_current?.map((entry) => entry.specifier).filter(Boolean).join(", ") || item.change}`
     ).join(" · ") || "No dependency changes";
-    const topFinding = groupFindings(model.attention || [])[0];
     elements.summary.replaceChildren(
         deltaMetric("Files", summary.files_added, summary.files_removed, topFile
             ? `${topFile.path} · +${topFile.lines_added}/−${topFile.lines_removed}`
             : `${summary.files_modified} modified`, "files"),
         deltaMetric("Lines", summary.lines_added, summary.lines_removed, topFile
-            ? `Largest: ${topFile.path}`
+            ? `Modules ranked by change churn`
             : "No line changes", "lines"),
-        deltaMetric("Symbols", summary.symbols_added, summary.symbols_removed, topSymbol
-            ? `${topSymbol.name} · +${topSymbol.metrics?.lines_added || 0}/−${topSymbol.metrics?.lines_removed || 0}`
-            : `${summary.symbols_modified} modified`, "symbols"),
         deltaMetric("Architecture edges", summary.new_arch_edges, summary.arch_edges_removed, topEdge
             ? `${nodeById.get(topEdge.source)?.name || topEdge.source} → ${nodeById.get(topEdge.target)?.name || topEdge.target}`
             : "No relationship changes", "edges"),
         deltaMetric("Packages", summary.new_packages, summary.packages_removed, packageDetail, "packages"),
-        metric("Review findings", groupFindings(model.attention || []).length, topFinding
-            ? `Top: ${topFinding.title} · ${topFinding.impact_score}`
-            : "No findings", "findings"),
     );
     const qualityIssues = [];
     if (!model.coverage?.available) qualityIssues.push("Coverage data unavailable; uncovered changed logic cannot be assessed.");
@@ -288,6 +278,32 @@ function maybeDrill(item) {
     } else {
         selectItem(item, true);
     }
+
+    function selectAggregateEdge(edge, model) {
+        const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
+        const concrete = model.edges.filter((candidate) => edge.underlying_edge_ids?.includes(candidate.id));
+        const representative = concrete.find((candidate) => candidate.change !== "unchanged") || concrete[0];
+        const source = nodeById.get(edge.source)?.name || edge.source;
+        const target = nodeById.get(edge.target)?.name || edge.target;
+        if (!representative) {
+            renderDetail({
+                ...edge,
+                kind: "edge",
+                name: `${source} → ${target}`,
+                reason: `${edge.added_count || 0} added and ${edge.removed_count || 0} removed ${edge.kind} relationships.`,
+            });
+            return;
+        }
+        selectItem({
+            ...representative,
+            kind: "edge",
+            name: `${source} → ${target}`,
+            added_count: edge.added_count,
+            removed_count: edge.removed_count,
+            underlying_edge_ids: edge.underlying_edge_ids,
+            reason: `${edge.added_count || 0} added and ${edge.removed_count || 0} removed ${edge.kind} relationships. Showing representative source evidence.`,
+        });
+    }
 }
 
 function field(label, value) {
@@ -299,6 +315,8 @@ function field(label, value) {
 
 async function loadSource(query) {
     state.source = await api(`/api/source?${query}`);
+    const provenance = await api(`/api/attribution?path=${encodeURIComponent(state.source.path)}`);
+    state.attribution = provenance.attribution || [];
     state.sourceTab = state.source.diff ? "diff" : "current";
     renderSource();
 }
@@ -360,6 +378,39 @@ function renderAnnotation(item, annotation, loading = false) {
     if (!item || (!loading && !annotation)) {
         panel.classList.add("hidden");
         return;
+    }
+
+    function renderProvenance() {
+        const panel = elements.source_provenance;
+        panel.replaceChildren();
+        if (!state.attribution.length) {
+            panel.classList.add("hidden");
+            return;
+        }
+        panel.classList.remove("hidden");
+        const primary = state.attribution[0];
+        const heading = el("div", "provenance-heading");
+        heading.append(
+            el("span", "provenance-mark", "SESSION"),
+            el("strong", "", "Likely originating prompt"),
+            el("b", `confidence confidence-${primary.confidence}`, `${primary.confidence} match`),
+        );
+        panel.append(heading, el("p", "provenance-prompt", primary.prompt), el("p", "source-status", primary.reason));
+        const activity = primary.agent_activity.filter((item) => item.role === "assistant" || item.role === "tool").slice(-5);
+        if (activity.length) {
+            const details = el("details", "provenance-activity");
+            const summary = el("summary", "", `Visible agent activity (${activity.length})`);
+            const list = el("ul", "");
+            for (const item of activity) {
+                const label = item.role === "tool" ? item.tool_name || "tool" : "assistant";
+                const row = el("li", "");
+                row.append(el("strong", "", `${label}: `), document.createTextNode(item.summary));
+                list.append(row);
+            }
+            details.append(summary, list);
+            panel.append(details);
+        }
+        panel.append(el("p", "provenance-disclaimer", "Correlation uses visible prompts and file/tool activity. It does not expose hidden model reasoning or prove line-level authorship."));
     }
     panel.classList.remove("hidden");
     const heading = el("div", "annotation-heading");
@@ -463,6 +514,8 @@ function renderDetail(item) {
         field("Line delta", metrics.lines_changed != null ? `+${metrics.lines_added || 0} / -${metrics.lines_removed || 0}` : null),
         field("Confidence", item.confidence),
         field("Relationships", item.count),
+        field("Edges added", item.added_count),
+        field("Edges removed", item.removed_count),
         field("Complexity", metrics.complexity_current),
         field("Complexity Δ", metrics.complexity_base != null ? `${metrics.complexity_base} → ${metrics.complexity_current}` : null),
         field("Coverage", metrics.coverage_percent != null ? `${metrics.coverage_percent}%` : null),
@@ -577,23 +630,28 @@ function renderSource() {
     }
     const annotation = state.payload?.annotations?.[state.selected?.id];
     if (annotation) renderAnnotation(state.selected, annotation);
+    renderProvenance();
     document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === state.sourceTab));
 }
 
 function collectionTitle(mode) {
     return {
-        files: "Changed files", lines: "Largest line changes", symbols: "Changed symbols",
+        files: "Changed files", lines: "Lines changed by module", symbols: "Changed symbols",
         edges: "New relationships", packages: "Package dependencies", findings: "Ranked findings",
     }[mode] || "Review details";
 }
 
 function collectionItems(model, mode) {
-    if (mode === "files" || mode === "lines") {
+    if (mode === "files") {
         const files = model.changes.filter((item) => item.status !== "unchanged");
-        return files.sort((a, b) => mode === "lines"
-            ? (b.lines_added + b.lines_removed) - (a.lines_added + a.lines_removed)
-            : a.path.localeCompare(b.path));
+        return files.sort((a, b) =>
+            (b.lines_added + b.lines_removed) - (a.lines_added + a.lines_removed)
+            || a.path.localeCompare(b.path)
+        );
     }
+    if (mode === "lines") return model.nodes
+        .filter((node) => node.kind === "module" && node.change !== "unchanged")
+        .sort((a, b) => (b.metrics?.lines_changed || 0) - (a.metrics?.lines_changed || 0));
     if (mode === "symbols") return model.nodes
         .filter((node) => ["class", "function", "method"].includes(node.kind) && node.change !== "unchanged")
         .sort((a, b) => (b.metrics?.lines_changed || 0) - (a.metrics?.lines_changed || 0));
@@ -635,7 +693,10 @@ function renderCollection(model) {
             row.addEventListener("click", () => selectPackage(item));
         } else {
             title = item.title || item.name;
-            subtitle = item.reason || `${item.kind || item.change} · +${item.metrics?.lines_added || 0} / -${item.metrics?.lines_removed || 0}`;
+            const historicalChurn = (item.metrics?.churn_additions_90d || 0) + (item.metrics?.churn_deletions_90d || 0);
+            subtitle = state.mode === "lines"
+                ? `Change churn ${item.metrics?.lines_changed || 0} · +${item.metrics?.lines_added || 0} / −${item.metrics?.lines_removed || 0} · 90d churn ${historicalChurn}`
+                : item.reason || `${item.kind || item.change} · +${item.metrics?.lines_added || 0} / −${item.metrics?.lines_removed || 0}`;
             row.addEventListener("click", () => item.id?.startsWith("package:") ? selectPackage(item) : selectItem(item));
         }
         const copy = el("span", "collection-copy");
@@ -768,6 +829,36 @@ function render() {
             && (!query || `${node.name} ${node.path || ""}`.toLowerCase().includes(query))
         );
         renderGraph(elements.graph, decoratedNodes(model, nodes, groupedObservations), aggregateEdges(model, nodes), maybeDrill);
+    } else if (state.mode === "edges") {
+        elements.level_label.textContent = "CHANGED RELATIONSHIPS";
+        elements.graph_title.textContent = "Added and removed module edges";
+        const query = state.query.toLowerCase();
+        const changedEdges = (model.aggregate_edges || [])
+            .filter((edge) => edge.level === "module" && (edge.added_count > 0 || edge.removed_count > 0))
+            .map((edge) => ({
+                ...edge,
+                type: edge.kind,
+                change: edge.added_count > 0 && edge.removed_count === 0
+                    ? "added"
+                    : edge.removed_count > 0 && edge.added_count === 0
+                        ? "removed"
+                        : "modified",
+                count: Math.max(edge.count || 0, edge.added_count || 0, edge.removed_count || 0),
+                evidence_ids: [],
+            }));
+        const nodeIds = new Set(changedEdges.flatMap((edge) => [edge.source, edge.target]));
+        const nodes = model.nodes.filter((node) =>
+            node.kind === "module"
+            && nodeIds.has(node.id)
+            && (!query || `${node.name} ${node.path || ""}`.toLowerCase().includes(query))
+        );
+        const visibleIds = new Set(nodes.map((node) => node.id));
+        renderGraph(
+            elements.graph,
+            decoratedNodes(model, nodes, groupedObservations),
+            changedEdges.filter((edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target)),
+            (item) => item.level ? selectAggregateEdge(item, model) : maybeDrill(item),
+        );
     } else {
         elements.level_label.textContent = "REVIEW INDEX";
         elements.graph_title.textContent = collectionTitle(state.mode);
@@ -836,6 +927,7 @@ window.addEventListener("resize", () => {
 });
 elements.source_close.addEventListener("click", () => {
     state.source = null;
+    state.attribution = [];
     elements.source_panel.classList.add("hidden");
 });
 document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {

@@ -126,7 +126,7 @@ main { padding: 20px 20px 36px; }
   background: var(--cp-surface-soft);
 }
 .progress-bar { width: 0; height: 100%; background: var(--cp-accent); transition: width .25s ease; }
-.summary { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 12px; }
+.summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px; }
 .metric {
   min-height: 92px;
   padding: 14px 16px;
@@ -390,13 +390,32 @@ marker path { fill: var(--cp-border-strong); }
 .tablist { display: flex; gap: 4px; }
 .tab.active { border-color: var(--cp-accent); background: var(--cp-accent-soft); color: var(--cp-accent); }
 .source-close { margin-left: 8px; border-color: var(--cp-border-strong); }
-.source-annotation, .risk-panel {
+.source-annotation, .source-provenance, .risk-panel {
   margin: 14px 18px 0;
   padding: 14px;
   border: 1px solid var(--cp-border);
   border-radius: .625rem;
   background: var(--cp-surface-soft);
 }
+.source-provenance { border-color: var(--cp-link); }
+.provenance-heading { display: flex; align-items: center; gap: 9px; }
+.provenance-heading strong { font-size: .75rem; }
+.provenance-mark {
+  padding: 3px 5px;
+  border-radius: .625rem;
+  background: var(--cp-link);
+  color: var(--cp-accent-fg);
+  font: 800 8px Consolas, "Courier New", Courier, monospace;
+}
+.confidence { margin-left: auto; font-size: .5625rem; text-transform: uppercase; }
+.confidence-likely { color: var(--cp-success); }
+.confidence-possible { color: var(--cp-warning); }
+.provenance-prompt { margin-top: 8px; font-size: .75rem; line-height: 1.45; }
+.provenance-activity { margin-top: 8px; font-size: .625rem; }
+.provenance-activity summary { color: var(--cp-link); cursor: pointer; }
+.provenance-activity ul { margin: 6px 0 0; padding-left: 20px; color: var(--cp-text-muted); }
+.provenance-activity li + li { margin-top: 4px; }
+.provenance-disclaimer { margin-top: 8px; color: var(--cp-text-muted); font-size: .5625rem; }
 .annotation-heading { display: flex; align-items: center; gap: 9px; }
 .annotation-heading strong { font-size: .75rem; }
 .annotation-mark {
@@ -465,7 +484,7 @@ marker path { fill: var(--cp-border-strong); }
 .risk-reasons { padding-left: 20px; color: var(--cp-text-soft); font-size: .6875rem; line-height: 1.55; }
 .source-status { margin-top: 12px; color: var(--cp-text-muted); font-size: .5625rem; line-height: 1.5; }
 @media (max-width: 1100px) {
-  .summary { grid-template-columns: repeat(3, 1fr); }
+  .summary { grid-template-columns: repeat(2, 1fr); }
   .workspace { grid-template-columns: 220px minmax(0, 1fr); }
   .detail { grid-column: 1 / -1; min-height: 220px; border-top: 1px solid var(--cp-border); border-left: 0; }
   .empty-state { margin: 36px auto; max-width: 320px; }
@@ -487,7 +506,7 @@ marker path { fill: var(--cp-border-strong); }
   .graph svg { min-height: 440px; }
   .source-panel > .panel-heading { align-items: flex-start; flex-wrap: wrap; gap: 10px; }
   .tablist { width: 100%; overflow-x: auto; }
-  .source-annotation { margin: 10px 10px 0; }
+  .source-annotation, .source-provenance { margin: 10px 10px 0; }
   .code-row { grid-template-columns: 42px 42px 20px minmax(max-content, 1fr); }
   .code-row > span, .code-row > code { padding: 1px 5px; }
   .graph-viewport-controls span { display: none; }
