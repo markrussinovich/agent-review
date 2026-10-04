@@ -51,9 +51,18 @@ html[data-theme="dark"] {
   --cp-highlight: rgba(253, 142, 161, 0.12);
 }
 * { box-sizing: border-box; }
+html {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  min-height: 100%;
+}
 body {
   margin: 0;
+  width: 100%;
   min-width: 0;
+  max-width: none;
+  min-height: 100%;
   background: var(--cp-bg);
   color: var(--cp-text);
   font-family: "Segoe UI", Aptos, Calibri, -apple-system, BlinkMacSystemFont, sans-serif;
@@ -105,8 +114,14 @@ h3 { margin-top: 20px; font-size: .8125rem; }
   cursor: pointer;
 }
 #refresh:hover, #fullscreen:hover, .zoom-out:hover:not(:disabled), .tab:hover, .source-close:hover { border-color: var(--cp-accent); }
+#fullscreen.recommended-action {
+  border-color: var(--cp-accent);
+  background: var(--cp-accent);
+  color: var(--cp-accent-fg);
+  font-weight: 700;
+}
 #refresh:disabled, .zoom-out:disabled { cursor: default; opacity: .5; }
-main { padding: 20px 20px 36px; }
+main { width: 100%; max-width: none; padding: 20px 20px 36px; }
 .error, .analysis-progress {
   margin-bottom: 16px;
   padding: 16px;
@@ -173,6 +188,7 @@ main { padding: 20px 20px 36px; }
 .breadcrumbs { min-height: 36px; display: flex; align-items: center; gap: 8px; color: var(--cp-text-muted); }
 .breadcrumbs button { padding: 0; border: 0; background: transparent; color: var(--cp-link); cursor: pointer; font-size: .75rem; }
 .workspace {
+  width: 100%;
   min-height: 600px;
   display: grid;
   grid-template-columns: 250px minmax(480px, 1fr) 320px;
@@ -430,6 +446,19 @@ marker path { fill: var(--cp-border-strong); }
 .provenance-disclaimer { margin-top: 8px; color: var(--cp-text-muted); font-size: .5625rem; }
 .annotation-heading { display: flex; align-items: center; gap: 9px; }
 .annotation-heading strong { font-size: .75rem; }
+.copy-button {
+  margin-left: auto;
+  padding: 5px 8px;
+  border: 1px solid var(--cp-border);
+  border-radius: .625rem;
+  background: var(--cp-surface);
+  color: var(--cp-link);
+  font-size: .5625rem;
+  cursor: pointer;
+}
+.copy-button:hover { border-color: var(--cp-accent); }
+.assessment-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.assessment-heading h3 { margin-top: 12px; }
 .annotation-mark {
   padding: 3px 5px;
   border-radius: .625rem;

@@ -145,6 +145,7 @@ export class ReviewState {
         this.packageRisks = {};
         this.packageRiskPromises = new Map();
         this.progress = null;
+        this.viewport = null;
     }
 
     snapshot() {
@@ -158,6 +159,7 @@ export class ReviewState {
             annotations: this.annotations,
             progress: this.progress,
             package_risks: this.packageRisks,
+            viewport: this.viewport,
         };
     }
 
@@ -176,6 +178,20 @@ export class ReviewState {
         this.error = error.message;
         this.progress = { phase: "failed", message: "Repository initialization failed", percent: 100 };
         this.broadcast("refresh-failed");
+    }
+
+    updateViewport(input) {
+        const numeric = ["layout_width", "layout_height", "visual_width", "visual_height", "device_pixel_ratio"];
+        const viewport = {};
+        for (const key of numeric) {
+            const value = Number(input?.[key]);
+            if (Number.isFinite(value) && value >= 0) viewport[key] = value;
+        }
+        viewport.fullscreen = Boolean(input?.fullscreen);
+        viewport.fullscreen_enabled = Boolean(input?.fullscreen_enabled);
+        viewport.reported_at = new Date().toISOString();
+        this.viewport = viewport;
+        return viewport;
     }
 
     async refresh() {

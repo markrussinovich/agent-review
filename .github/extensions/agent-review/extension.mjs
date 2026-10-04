@@ -100,6 +100,7 @@ const canvas = createCanvas({
                     generateAnnotation: async (context) => {
                     const response = await session.sendAndWait({
                         prompt: [
+                            "[Agent Review internal request — exclude from change attribution]",
                             "Write a concrete system-understanding annotation about the selected code construct, not a generic explanation of the finding category.",
                             "Use exactly these Markdown sections in this order:",
                             "## What this code is",
@@ -135,6 +136,7 @@ const canvas = createCanvas({
                     generatePackageExplanation: async ({ dependency, assessment }) => {
                     const response = await session.sendAndWait({
                         prompt: [
+                            "[Agent Review internal request — exclude from change attribution]",
                             `Explain the review implications of adding or using Python package ${dependency.name} ${assessment.version}.`,
                             "Use exactly these Markdown sections: ## Purpose, ## Observed usage, ## Security and maintenance signals, ## Alternatives to evaluate, ## Review checklist.",
                             "Use short labeled bullets in every section; never write a dense paragraph.",

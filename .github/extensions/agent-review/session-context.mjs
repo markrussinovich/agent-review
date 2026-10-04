@@ -48,14 +48,30 @@ function toolSummary(event) {
     return truncate(description || data.toolName || data.mcpToolName || "Tool execution", 180);
 }
 
+function isInternalAgentReviewPrompt(content) {
+    const text = String(content || "");
+    return text.startsWith("[Agent Review internal request")
+        || text.startsWith("Write a concrete system-understanding annotation about")
+        || text.startsWith("Write a concise system-oriented code-review annotation")
+        || text.startsWith("Explain the review implications of adding or using Python package");
+}
+
 export function buildSessionContext(events, repoRoot) {
     const timeline = [];
     const files = new Set();
     const turns = [];
     let currentTurn = null;
+    let ignoringInternalTurn = false;
     for (const event of events) {
         if (event.ephemeral) continue;
         if (event.type === "user.message") {
+            if (!event.agentId && isInternalAgentReviewPrompt(event.data?.content)) {
+                currentTurn = null;
+                ignoringInternalTurn = true;
+                continue;
+            }
+            if (ignoringInternalTurn && event.agentId) continue;
+            if (!event.agentId) ignoringInternalTurn = false;
             const entry = {
                 id: `session-event:${event.id}`,
                 event_id: event.id,
@@ -81,6 +97,7 @@ export function buildSessionContext(events, repoRoot) {
                 currentTurn.agent_activity.push(entry);
             }
         } else if (event.type === "assistant.message" && event.data?.content?.trim()) {
+            if (ignoringInternalTurn) continue;
             const entry = {
                 id: `session-event:${event.id}`,
                 event_id: event.id,
@@ -92,6 +109,7 @@ export function buildSessionContext(events, repoRoot) {
             timeline.push(entry);
             if (currentTurn) currentTurn.agent_activity.push(entry);
         } else if (event.type === "tool.execution_start") {
+            if (ignoringInternalTurn) continue;
             const eventFiles = collectPaths(event.data?.arguments, repoRoot);
             for (const path of eventFiles) files.add(path);
             const entry = {

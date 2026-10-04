@@ -134,6 +134,37 @@ function evidenceButton(id) {
     return button;
 }
 
+async function copyText(button, text) {
+    const original = button.textContent;
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+        } else {
+            const textarea = el("textarea", "");
+            textarea.value = text;
+            textarea.style.position = "fixed";
+            textarea.style.opacity = "0";
+            document.body.append(textarea);
+            textarea.select();
+            if (!document.execCommand("copy")) throw new Error("The browser rejected the copy command.");
+            textarea.remove();
+        }
+        button.textContent = "Copied";
+        setTimeout(() => {
+            button.textContent = original;
+        }, 1500);
+    } catch (error) {
+        showError(new Error(`Unable to copy text: ${error.message}`));
+    }
+}
+
+function copyButton(text, label = "Copy") {
+    const button = el("button", "copy-button", label);
+    button.type = "button";
+    button.addEventListener("click", () => copyText(button, text));
+    return button;
+}
+
 function renderCards(container, items, emptyText) {
     container.replaceChildren();
     if (!items.length) {
@@ -493,7 +524,11 @@ function renderAnnotation(item, annotation, loading = false) {
     }
     panel.classList.remove("hidden");
     const heading = el("div", "annotation-heading");
-    heading.append(el("span", "annotation-mark", "AI"), el("strong", "", item.title || item.name || "Review annotation"));
+    heading.append(
+        el("span", "annotation-mark", "AI"),
+        el("strong", "", item.title || item.name || "Review annotation"),
+    );
+    if (annotation?.body) heading.append(copyButton(annotation.body, "Copy explanation"));
     panel.append(heading);
     if (loading) {
         panel.append(el("p", "annotation-loading", "Copilot is grounding an explanation in the selected evidence…"));
@@ -785,7 +820,9 @@ function renderPackageRisk(panel, result) {
     if (result.explanation) {
         const explanation = el("div", "detail-copy markdown-body");
         renderMarkdown(explanation, result.explanation);
-        section.append(el("h3", "", "Copilot assessment"), explanation);
+        const explanationHeading = el("div", "assessment-heading");
+        explanationHeading.append(el("h3", "", "Copilot assessment"), copyButton(result.explanation, "Copy"));
+        section.append(explanationHeading, explanation);
     }
     const sourceLine = el("p", "source-status", Object.entries(result.assessment?.sources || {})
         .map(([name, source]) => `${name}: ${source.status}`)
@@ -945,7 +982,40 @@ function scheduleResizeRender() {
         if (state.payload?.model) render();
     }, 120);
 }
+function reportViewport() {
+    const visual = window.visualViewport;
+    const width = document.documentElement.clientWidth;
+    document.documentElement.style.setProperty("--canvas-width", `${document.documentElement.clientWidth}px`);
+    document.documentElement.style.setProperty("--canvas-height", `${document.documentElement.clientHeight}px`);
+    api("/api/viewport", {
+        method: "POST",
+        body: JSON.stringify({
+            layout_width: document.documentElement.clientWidth,
+            layout_height: document.documentElement.clientHeight,
+            visual_width: visual?.width ?? window.innerWidth,
+            visual_height: visual?.height ?? window.innerHeight,
+            device_pixel_ratio: window.devicePixelRatio,
+            fullscreen: Boolean(document.fullscreenElement),
+            fullscreen_enabled: Boolean(document.fullscreenEnabled),
+        }),
+    }).catch((error) => {
+        if (error.status !== 404) showError(error);
+    });
+    if (!document.fullscreenElement && width < 700) {
+        elements.fullscreen.textContent = `Expand Canvas (${width}px)`;
+        elements.fullscreen.classList.add("recommended-action");
+        elements.fullscreen.title = `The Copilot host allocated only ${width}px. Expand the Canvas to use the full display.`;
+    } else if (!document.fullscreenElement) {
+        elements.fullscreen.textContent = "Full canvas";
+        elements.fullscreen.classList.remove("recommended-action");
+    }
+}
 window.addEventListener("resize", scheduleResizeRender);
+window.addEventListener("resize", reportViewport);
+window.visualViewport?.addEventListener("resize", () => {
+    scheduleResizeRender();
+    reportViewport();
+});
 let observedWidth = document.documentElement.clientWidth;
 new ResizeObserver(() => {
     const width = document.documentElement.clientWidth;
@@ -967,8 +1037,11 @@ elements.fullscreen.addEventListener("click", async () => {
 });
 document.addEventListener("fullscreenchange", () => {
     elements.fullscreen.textContent = document.fullscreenElement ? "Exit full canvas" : "Full canvas";
+    elements.fullscreen.classList.toggle("recommended-action", !document.fullscreenElement && document.documentElement.clientWidth < 700);
     scheduleResizeRender();
+    reportViewport();
 });
+reportViewport();
 elements.source_close.addEventListener("click", () => {
     state.source = null;
     state.attribution = [];

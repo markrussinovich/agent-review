@@ -54,3 +54,25 @@ test("uses filename mentions as possible attribution without claiming authorship
     assert.match(matches[0].reason, /mentioned/);
     assert.deepEqual(findSessionAttribution(context, "src/workflow_service/audit.py"), []);
 });
+
+test("excludes Agent Review internal model requests from attribution", () => {
+    const context = buildSessionContext([
+        {
+            id: "internal-user",
+            type: "user.message",
+            timestamp: "2026-10-03T12:00:00Z",
+            data: {
+                content: "[Agent Review internal request — exclude from change attribution]\nWrite a concrete system-understanding annotation about rules.py",
+            },
+        },
+        {
+            id: "internal-assistant",
+            type: "assistant.message",
+            timestamp: "2026-10-03T12:00:01Z",
+            data: { content: "Generated review annotation." },
+        },
+    ], ROOT);
+    assert.deepEqual(context.turns, []);
+    assert.deepEqual(context.intent, []);
+    assert.deepEqual(findSessionAttribution(context, "src/workflow_service/rules.py"), []);
+});

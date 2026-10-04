@@ -97,6 +97,10 @@ export function startReviewServer(state) {
                 sendJson(res, { ok: true, summary: model.summary });
                 return;
             }
+            if (req.method === "POST" && pathname === "/api/viewport") {
+                sendJson(res, { ok: true, viewport: state.updateViewport(await readJson(req)) });
+                return;
+            }
             if (req.method === "POST" && pathname === "/api/selection") {
                 sendJson(res, { ok: true, context: state.select(await readJson(req)) });
                 return;
