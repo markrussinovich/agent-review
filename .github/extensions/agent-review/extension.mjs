@@ -195,3 +195,25 @@ const canvas = createCanvas({
 
 session = await joinSession({ canvases: [canvas] });
 await session.log("Agent Review canvas ready.", { ephemeral: true });
+
+async function recoverPersistedCanvases() {
+    try {
+        const { openCanvases } = await session.rpc.canvas.listOpen();
+        const persisted = openCanvases.filter((item) =>
+            item.canvasId === "agent-review"
+            && (item.extensionName === "agent-review" || item.extensionId.includes("agent-review"))
+        );
+        for (const item of persisted) {
+            await session.rpc.canvas.open({
+                extensionId: item.extensionId,
+                canvasId: item.canvasId,
+                instanceId: item.instanceId,
+                input: item.input,
+            });
+        }
+    } catch (error) {
+        console.error("[agent-review] unable to recover persisted Canvas instances", error);
+    }
+}
+
+await recoverPersistedCanvases();
