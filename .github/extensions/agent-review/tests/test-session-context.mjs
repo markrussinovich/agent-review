@@ -175,3 +175,14 @@ test("treats explicit file creation as authoring even when review is mentioned",
     assert.equal(match.review_intent, false);
     assert.match(match.reason, /authoring prompt/);
 });
+
+test("tool events carry a concise detail for transcript display", () => {
+    const events = [
+        { id: "u", type: "user.message", timestamp: "2026-10-03T10:00:00Z", data: { content: "Add a feature." } },
+        { id: "t1", type: "tool.execution_start", timestamp: "2026-10-03T10:00:01Z", data: { toolName: "view", arguments: { path: "C:\\repo\\src\\a.py" } } },
+        { id: "t2", type: "tool.execution_start", timestamp: "2026-10-03T10:00:02Z", data: { toolName: "powershell", arguments: { command: "python -m unittest\nsecond line" } } },
+        { id: "t3", type: "tool.execution_start", timestamp: "2026-10-03T10:00:03Z", data: { toolName: "apply_patch", arguments: { patch: "*** Begin Patch\n*** Update File: src\\a.py\n*** End Patch" } } },
+    ];
+    const tools = buildSessionContext(events, ROOT).timeline.filter((item) => item.role === "tool");
+    assert.deepEqual(tools.map((item) => item.detail), ["src/a.py", "python -m unittest", "update src/a.py"]);
+});

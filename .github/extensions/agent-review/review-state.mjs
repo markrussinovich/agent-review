@@ -11,6 +11,10 @@ const execFileAsync = promisify(execFile);
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const analyzerPath = join(extensionRoot, "analyzer", "analyze.py");
 
+export function isTestPath(path) {
+    return /(^|\/)(tests?|__tests__)\//i.test(path) || /(^|\/)test_[^/]+\.py$|_test\.py$/i.test(path);
+}
+
 function withTimeout(promise, timeoutMs, message) {
     let timer;
     const timeout = new Promise((_, reject) => {
@@ -453,6 +457,96 @@ export class ReviewState {
             .finally(() => this.annotationPromises.delete(id));
         this.annotationPromises.set(id, promise);
         return promise;
+    }
+
+    async overviewFor() {
+        if (this.annotations.overview) return this.annotations.overview;
+        if (!this.generateAnnotation) throw new Error("Copilot annotation is unavailable.");
+        if (!this.model) throw new Error("Analysis is not complete.");
+        if (this.annotationPromises.has("overview")) return this.annotationPromises.get("overview");
+        const promise = this.generateAnnotation(this.overviewContext())
+            .then((body) => {
+                const annotation = {
+                    id: "annotation:overview",
+                    item_id: "overview",
+                    body: String(body || "").trim(),
+                    evidence_ids: [],
+                    generated_at: new Date().toISOString(),
+                };
+                if (!annotation.body) throw new Error("Copilot returned an empty change summary.");
+                this.annotations.overview = annotation;
+                this.broadcast("annotation");
+                return annotation;
+            })
+            .finally(() => this.annotationPromises.delete("overview"));
+        this.annotationPromises.set("overview", promise);
+        return promise;
+    }
+
+    overviewContext() {
+        const model = this.model;
+        const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
+        const files = model.changes
+            .filter((change) => change.status !== "unchanged")
+            .map((change) => ({
+                path: change.path,
+                status: change.status,
+                added: change.lines_added,
+                removed: change.lines_removed,
+                is_test: isTestPath(change.path),
+            }))
+            .sort((a, b) => (b.added + b.removed) - (a.added + a.removed));
+        const totals = { source: { added: 0, removed: 0 }, tests: { added: 0, removed: 0 } };
+        for (const file of files) {
+            const bucket = file.is_test ? totals.tests : totals.source;
+            bucket.added += file.added;
+            bucket.removed += file.removed;
+        }
+        const seen = new Set();
+        const findings = [];
+        for (const finding of [...(model.attention || [])].sort((a, b) => (b.impact_score || 0) - (a.impact_score || 0))) {
+            const key = finding.node_id || finding.edge_id || finding.id;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const node = nodeById.get(finding.node_id);
+            findings.push({
+                title: finding.title,
+                subject: node ? { name: node.name, kind: node.kind, path: node.path } : null,
+                impact_score: finding.impact_score,
+                reason: finding.reason,
+                factors: finding.impact_factors,
+            });
+            if (findings.length >= 12) break;
+        }
+        const attribution = files
+            .filter((file) => !file.is_test)
+            .slice(0, 3)
+            .map((file) => ({ file, match: this.attributionForPath(file.path)[0] }))
+            .filter((entry) => entry.match)
+            .map(({ file, match }) => ({
+                path: file.path,
+                prompt: String(match.prompt || "").slice(0, 500),
+                confidence: match.confidence,
+            }));
+        return {
+            kind: "overview",
+            summary: model.summary,
+            totals,
+            files: files.slice(0, 30),
+            omitted_files: Math.max(0, files.length - 30),
+            findings,
+            packages: (model.package_changes || []).map((item) => ({
+                name: item.name,
+                change: item.change,
+                version: item.resolved_current || null,
+            })),
+            session_intent: (this.sessionContext?.intent || []).slice(-4).map((item) => String(item.summary || "").slice(0, 500)),
+            session_attribution: attribution,
+            analysis_quality: {
+                coverage_available: Boolean(model.coverage?.available),
+                warnings: model.warnings || [],
+            },
+        };
     }
 
     async codeContextFor(context) {

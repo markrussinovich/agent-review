@@ -57,6 +57,24 @@ function toolSummary(event) {
     return truncate(description || data.toolName || data.mcpToolName || "Tool execution", 180);
 }
 
+function toolDetail(event, repoRoot) {
+    const args = event.data?.arguments;
+    if (!args || typeof args !== "object") return null;
+    const patch = typeof args.patch === "string" ? args.patch : typeof args.input === "string" ? args.input : null;
+    if (patch) {
+        const edits = [...patch.matchAll(/\*{3}\s+(Add|Update|Delete)\s+File:\s*(.+)/g)]
+            .map((match) => `${match[1].toLowerCase()} ${repositoryPath(match[2].trim(), repoRoot) || match[2].trim()}`);
+        if (edits.length) return truncate(edits.join(", "), 200);
+    }
+    const target = [args.path, args.filePath, args.file].find((value) => typeof value === "string" && value.trim());
+    const relativeTarget = target ? repositoryPath(target, repoRoot) || target : null;
+    const query = [args.pattern, args.query].find((value) => typeof value === "string" && value.trim());
+    if (query) return truncate(relativeTarget ? `${query} in ${relativeTarget}` : query, 200);
+    if (relativeTarget) return truncate(relativeTarget, 200);
+    if (typeof args.command === "string" && args.command.trim()) return truncate(args.command.split(/\r?\n/)[0], 200);
+    return null;
+}
+
 function toolOperation(event) {
     const name = String(event.data?.toolName || event.data?.mcpToolName || "").toLowerCase();
     const summary = toolSummary(event).toLowerCase();
@@ -159,6 +177,7 @@ export function buildSessionContext(events, repoRoot) {
                 tool_name: event.data?.toolName || event.data?.mcpToolName || "tool",
                 operation: toolOperation(event),
                 summary: toolSummary(event),
+                detail: toolDetail(event, repoRoot),
                 referenced_files: [...eventFiles].sort(),
             };
             timeline.push(entry);

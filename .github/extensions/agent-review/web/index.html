@@ -101,9 +101,13 @@
                     <button id="source-close" class="source-close" type="button" aria-label="Close source review">Close ×</button>
                 </div>
             </div>
-            <aside id="source-provenance" class="source-provenance hidden" aria-live="polite"></aside>
-            <aside id="source-annotation" class="source-annotation hidden" aria-live="polite"></aside>
-            <div id="source" class="code-view" aria-label="Source and diff"></div>
+            <div class="source-body">
+                <div id="source" class="code-view" aria-label="Source and diff"></div>
+                <div class="source-side">
+                    <aside id="source-provenance" class="source-provenance hidden" aria-live="polite"></aside>
+                    <aside id="source-annotation" class="source-annotation hidden" aria-live="polite"></aside>
+                </div>
+            </div>
         </section>
         <section id="session-history-panel" class="session-history-panel hidden">
             <div class="panel-heading">

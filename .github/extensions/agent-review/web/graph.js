@@ -20,11 +20,14 @@ function wrapLabel(value, max = 24) {
     return remainder.length <= max ? [first, remainder] : [first, `${remainder.slice(0, max - 1)}…`];
 }
 
+const NODE_CELL_WIDTH = 216;
+const NODE_CELL_HEIGHT = 184;
+
 function layout(nodes, width, height) {
-    const columns = Math.max(1, Math.ceil(Math.sqrt(nodes.length * (width / Math.max(height, 1)))));
+    const columns = Math.min(nodes.length, Math.max(1, Math.floor(width / NODE_CELL_WIDTH)));
     const rows = Math.ceil(nodes.length / columns);
     const cellWidth = width / columns;
-    const cellHeight = height / Math.max(rows, 1);
+    const cellHeight = Math.max(NODE_CELL_HEIGHT, height / Math.max(rows, 1));
     return new Map(nodes.map((node, index) => {
         const column = index % columns;
         const row = Math.floor(index / columns);
@@ -63,7 +66,8 @@ export function renderGraph(container, nodes, edges, onSelect) {
         return;
     }
     const width = Math.max(container.clientWidth || 320, 320);
-    const height = Math.max(440, Math.ceil(nodes.length / 3) * 184);
+    const columns = Math.max(1, Math.floor(width / NODE_CELL_WIDTH));
+    const height = Math.max(440, Math.ceil(nodes.length / columns) * NODE_CELL_HEIGHT);
     const root = svg("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", class: "graph-canvas" });
     const defs = svg("defs");
     const marker = svg("marker", {
@@ -78,6 +82,16 @@ export function renderGraph(container, nodes, edges, onSelect) {
     const positions = layout(nodes, width, height);
     const nodeIds = new Set(nodes.map((node) => node.id));
     const edgeRecords = [];
+    const highlightEdges = (nodeId) => {
+        root.classList.toggle("focus-edges", nodeId !== null);
+        for (const record of edgeRecords) {
+            record.path.classList.toggle(
+                "edge-active",
+                nodeId !== null && (record.edge.source === nodeId || record.edge.target === nodeId),
+            );
+        }
+    };
+    if (nodes.length > 24) root.classList.add("graph-dense");
     const transform = { x: 0, y: 0, scale: 1 };
     let activeDrag = null;
 
@@ -194,6 +208,10 @@ export function renderGraph(container, nodes, edges, onSelect) {
             root.setPointerCapture(event.pointerId);
             group.classList.add("dragging");
         });
+        group.addEventListener("pointerenter", () => highlightEdges(node.id));
+        group.addEventListener("pointerleave", () => highlightEdges(null));
+        group.addEventListener("focus", () => highlightEdges(node.id));
+        group.addEventListener("blur", () => highlightEdges(null));
         group.addEventListener("keydown", (event) => event.key === "Enter" && onSelect(node));
         viewport.append(group);
     }

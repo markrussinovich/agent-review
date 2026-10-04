@@ -32,6 +32,25 @@ function el(tag, className, text) {
     return node;
 }
 
+function isTestPath(path) {
+    return /(^|\/)(tests?|__tests__)\//i.test(path || "") || /(^|\/)test_[^/]+\.py$|_test\.py$/i.test(path || "");
+}
+
+function sourceTestChurn(model) {
+    const totals = { source: 0, tests: 0 };
+    for (const change of model.changes || []) {
+        if (change.status === "unchanged") continue;
+        totals[isTestPath(change.path) ? "tests" : "source"] += change.lines_added + change.lines_removed;
+    }
+    return totals;
+}
+
+function churnBar(fraction, kind) {
+    const bar = el("i", `churn-bar churn-${kind}`);
+    bar.style.width = `${Math.max(2, Math.round(fraction * 100))}%`;
+    return bar;
+}
+
 async function api(path, options = {}) {
     const response = await fetch(path, {
         ...options,
@@ -89,27 +108,26 @@ function deltaMetric(label, added, removed, detail, mode) {
 function renderSummary(model) {
     const summary = model.summary || {};
     const meta = model.metadata || {};
-    const changedFiles = model.changes
-        .filter((item) => item.status !== "unchanged")
-        .sort((a, b) => (b.lines_added + b.lines_removed) - (a.lines_added + a.lines_removed));
     const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
     const changedEdges = model.edges
         .filter((edge) => edge.change === "added")
         .sort((a, b) => (b.count || 1) - (a.count || 1));
-    const topFile = changedFiles[0];
     const topEdge = changedEdges[0];
+    const split = sourceTestChurn(model);
+    const fileDetail = [
+        `${summary.files_added || 0} added`,
+        `${summary.files_modified || 0} modified`,
+        `${summary.files_removed || 0} deleted`,
+    ].join(" · ");
     const packageDetail = (model.package_changes || []).slice(0, 2).map((item) =>
         `${item.name} ${item.resolved_current || item.declared_current?.map((entry) => entry.specifier).filter(Boolean).join(", ") || item.change}`
     ).join(" · ") || "No dependency changes";
     elements.summary.replaceChildren(
-        deltaMetric("Files", summary.files_added, summary.files_removed, topFile
-            ? `${topFile.path} · +${topFile.lines_added}/−${topFile.lines_removed}`
-            : `${summary.files_modified} modified`, "files"),
-        deltaMetric("Lines", summary.lines_added, summary.lines_removed, topFile
-            ? `Modules ranked by change churn`
-            : "No line changes", "lines"),
+        deltaMetric("Files", summary.files_added, summary.files_removed, fileDetail, "files"),
+        deltaMetric("Lines", summary.lines_added, summary.lines_removed,
+            `source ${split.source.toLocaleString()} · tests ${split.tests.toLocaleString()} lines changed`, "lines"),
         deltaMetric("Architecture edges", summary.new_arch_edges, summary.arch_edges_removed, topEdge
-            ? `${nodeById.get(topEdge.source)?.name || topEdge.source} → ${nodeById.get(topEdge.target)?.name || topEdge.target}`
+            ? `Largest: ${nodeById.get(topEdge.source)?.name || topEdge.source} → ${nodeById.get(topEdge.target)?.name || topEdge.target}`
             : "No relationship changes", "edges"),
         deltaMetric("Packages", summary.new_packages, summary.packages_removed, packageDetail, "packages"),
     );
@@ -133,9 +151,18 @@ function renderSummary(model) {
     elements.summary.title = `${meta.base_ref || "base"} @ ${(meta.base_sha || "").slice(0, 8)} → ${(meta.head_sha || "").slice(0, 8)} · ${meta.python_loc || 0} Python LOC`;
 }
 
+function evidenceLabel(id) {
+    const evidence = state.payload?.model?.evidence?.[id];
+    if (!evidence) return id;
+    const kind = String(evidence.kind || "evidence").replaceAll("_", " ");
+    const location = evidence.path ? `${evidence.path}${evidence.line ? `:${evidence.line}` : ""}` : null;
+    return location ? `${kind} · ${location}` : kind;
+}
+
 function evidenceButton(id) {
-    const button = el("button", "evidence-link", id);
+    const button = el("button", "evidence-link", evidenceLabel(id));
     button.type = "button";
+    button.title = id;
     button.addEventListener("click", () => selectItem({ id, kind: "evidence" }, false));
     return button;
 }
@@ -199,26 +226,63 @@ function renderCards(container, items, emptyText) {
         const heading = el("div", "card-heading");
         heading.append(el("strong", "", item.title || item.name || item.id));
         if (item.impact_score != null) heading.append(el("b", "impact-score", String(item.impact_score)));
-        card.append(heading, el("span", "", item.body || item.reason || packageVersion(item) || item.change || ""));
+        card.append(heading, el("span", "card-body", item.body || item.reason || packageVersion(item) || item.change || ""));
         if (item.impact_factors?.length) card.append(el("small", "factor-line", item.impact_factors.join(" · ")));
-        card.append(el("i", "card-arrow", "→"));
-        card.addEventListener("click", () => item.name && item.id?.startsWith("package:")
-            ? selectPackage(item)
-            : selectItem(item, false));
+        card.title = [item.title, item.body || item.reason].filter(Boolean).join("\n");
+        card.addEventListener("click", () => openReviewItem(item));
         container.append(card);
     }
+}
+
+function openReviewItem(item) {
+    if (item.collect_mode) {
+        state.mode = item.collect_mode;
+        state.stack = [];
+        clearSelection();
+        state.query = "";
+        elements.review_search.value = "";
+        render();
+    } else if (item.name && item.id?.startsWith("package:")) {
+        selectPackage(item);
+    } else {
+        selectItem(item, false);
+    }
+}
+
+function collapseSizeFindings(items, model) {
+    const sizes = items.filter((item) => item.title === "Large implementation change");
+    if (sizes.length < 3) return items;
+    const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
+    const label = (item) => {
+        const node = nodeById.get(item.node_id);
+        const lines = node?.metrics?.lines_changed ?? 0;
+        return `${(node?.name || "unit").split(".").pop()} ${lines}`;
+    };
+    const shown = sizes.slice(0, 4).map(label).join(" · ");
+    const group = {
+        id: "group:size",
+        title: `Large changes · ${sizes.length} areas`,
+        body: `${shown}${sizes.length > 4 ? ` · +${sizes.length - 4} more` : ""}`,
+        impact_score: sizes[0].impact_score,
+        severity: sizes[0].severity,
+        collect_mode: "lines",
+    };
+    const rest = items.filter((item) => !sizes.includes(item));
+    const position = rest.findIndex((item) => (item.impact_score || 0) < (group.impact_score || 0));
+    rest.splice(position === -1 ? rest.length : position, 0, group);
+    return rest;
 }
 
 function renderSessionContext(context) {
     const container = elements.session_intent;
     container.replaceChildren();
+    const intent = context?.intent || [];
+    const empty = !intent.length && !context?.error;
+    container.classList.toggle("hidden", empty);
+    container.previousElementSibling?.classList.toggle("hidden", empty);
+    if (empty) return;
     if (context?.error) {
         container.append(el("p", "muted", context.error));
-        return;
-    }
-    const intent = context?.intent || [];
-    if (!intent.length) {
-        container.append(el("p", "muted", "No session history is available."));
         return;
     }
     for (const item of intent.slice(-3).reverse()) {
@@ -228,7 +292,6 @@ function renderSessionContext(context) {
         card.append(el("span", "", `${time} · intent context`));
         container.append(card);
     }
-    container.append(el("p", "provenance-note", "Intent context only; code claims require repository evidence."));
 }
 
 function childNodes(model) {
@@ -374,13 +437,79 @@ function field(label, value) {
 function renderEmptyDetail() {
     const panel = elements.detail;
     panel.replaceChildren();
-    const empty = el("div", "empty-state");
-    empty.append(
-        el("span", "focus-mark", "◎"),
-        el("h2", "", "Select evidence"),
-        el("p", "", "Choose a component, relationship, package, or finding to inspect deterministic evidence."),
+    const model = state.payload?.model;
+    const top = el("div", "detail-top");
+    top.append(el("p", "eyebrow", "CHANGE BRIEF"), el("h2", "", "Where to start"));
+    panel.append(top);
+    if (!model) {
+        panel.append(el("p", "detail-copy", "The brief appears when analysis completes."));
+        return;
+    }
+    const summary = model.summary || {};
+    const split = sourceTestChurn(model);
+    const ratio = split.source ? split.tests / split.source : 0;
+    const grid = el("div", "detail-grid");
+    grid.append(
+        field("Files", `${summary.files_added || 0} added · ${summary.files_modified || 0} modified · ${summary.files_removed || 0} deleted`),
+        field("Source lines", split.source.toLocaleString()),
+        field("Test lines", `${split.tests.toLocaleString()} (${ratio.toFixed(2)} per source line)`),
+        field("Coverage", model.coverage?.available ? "measured" : "unknown"),
     );
-    panel.append(empty);
+    panel.append(grid);
+    if (split.source > 50 && ratio < 0.15) {
+        panel.append(el("p", "brief-warning", "Little or no test code changed relative to source."));
+    }
+
+    const findings = collapseSizeFindings(groupFindings(model.attention || []), model).slice(0, 4);
+    if (findings.length) {
+        panel.append(el("h3", "", "Highest-impact areas"));
+        const list = el("div", "brief-list");
+        for (const finding of findings) {
+            const button = el("button", "brief-link");
+            button.type = "button";
+            button.append(el("b", "", String(finding.impact_score ?? "")), el("span", "", finding.title));
+            button.title = finding.body || finding.reason || "";
+            button.addEventListener("click", () => openReviewItem(finding));
+            list.append(button);
+        }
+        panel.append(list);
+    }
+
+    const annotation = state.payload?.annotations?.overview;
+    const heading = el("div", "assessment-heading");
+    heading.append(el("h3", "", "Copilot change summary"));
+    if (annotation?.body) heading.append(copyButton(annotation.body, "Copy summary"));
+    panel.append(heading);
+    if (annotation?.body) {
+        const body = el("div", "annotation-body brief-ai");
+        renderMarkdown(body, annotation.body);
+        panel.append(body);
+    } else if (state.overviewLoading) {
+        panel.append(el("p", "annotation-loading", "Copilot is summarizing the whole change…"));
+    } else {
+        if (state.overviewError) panel.append(el("p", "annotation-error", state.overviewError));
+        const generate = el("button", "brief-generate", state.overviewError ? "Retry summary" : "Summarize this change");
+        generate.type = "button";
+        generate.addEventListener("click", generateOverview);
+        panel.append(
+            el("p", "muted", "A short narrative of what the change does and the order to review it in."),
+            generate,
+        );
+    }
+}
+
+async function generateOverview() {
+    state.overviewLoading = true;
+    state.overviewError = null;
+    if (!state.selected) renderEmptyDetail();
+    try {
+        await api("/api/overview", { method: "POST", body: "{}" });
+    } catch (error) {
+        state.overviewError = error.message;
+    } finally {
+        state.overviewLoading = false;
+        if (!state.selected) renderEmptyDetail();
+    }
 }
 
 function clearSelection() {
@@ -500,25 +629,23 @@ function ensureAnnotation(item, epoch = state.selectionEpoch) {
 function renderProvenance() {
     const panel = elements.source_provenance;
     panel.replaceChildren();
-    if (!state.attribution.length && state.attributionStatus === "loading") {
+    const note = (text, className = "provenance-none") => {
         panel.classList.remove("hidden");
-        panel.append(el("p", "muted", state.attributionMessage || "Searching same-repository Copilot sessions…"));
+        panel.classList.add("provenance-compact");
+        panel.append(el("p", className, text));
+    };
+    panel.classList.remove("provenance-compact");
+    if (!state.attribution.length && state.attributionStatus === "loading") {
+        note(state.attributionMessage || "Searching same-repository Copilot sessions…");
         return;
     }
     if (!state.attribution.length && state.attributionStatus === "no_match") {
-        panel.classList.remove("hidden");
-        const heading = el("div", "provenance-heading");
-        heading.append(el("span", "provenance-mark", "SESSION"), el("strong", "", "No originating session found"));
-        panel.append(
-            heading,
-            el("p", "provenance-prompt", state.attributionMessage),
-            el("p", "provenance-disclaimer", "Only Copilot sessions belonging to this Git repository are eligible. Sessions from other repositories are excluded."),
-        );
+        note("No originating prompt found in this repository's Copilot sessions.");
+        panel.title = "Only Copilot sessions belonging to this Git repository are searched.";
         return;
     }
     if (!state.attribution.length && state.attributionStatus === "error") {
-        panel.classList.remove("hidden");
-        panel.append(el("p", "annotation-error", state.attributionMessage));
+        note(state.attributionMessage, "annotation-error");
         return;
     }
     if (!state.attribution.length) {
@@ -526,35 +653,32 @@ function renderProvenance() {
         return;
     }
     panel.classList.remove("hidden");
+    panel.title = "Correlates visible prompts with file/tool activity. It does not expose hidden model reasoning or prove line-level authorship.";
     const primary = state.attribution[0];
     const heading = el("div", "provenance-heading");
     heading.append(
-        el("span", "provenance-mark", "SESSION"),
-        el("strong", "", "Likely originating prompt"),
+        el("strong", "", "Originating prompt"),
         el("b", `confidence confidence-${primary.confidence}`, `${primary.confidence} match`),
     );
-    panel.append(heading, el("p", "provenance-prompt", primary.prompt), el("p", "source-status", primary.reason));
+    const prompt = el("p", "provenance-prompt clamped", primary.prompt);
+    panel.append(heading, prompt);
+    const actions = el("div", "provenance-actions");
+    if (primary.prompt.length > 260) {
+        const toggle = el("button", "link-button", "Show full prompt");
+        toggle.type = "button";
+        toggle.addEventListener("click", () => {
+            const expanded = prompt.classList.toggle("clamped");
+            toggle.textContent = expanded ? "Show full prompt" : "Collapse";
+        });
+        actions.append(toggle);
+    }
     if (primary.session_id) {
-        const openHistory = el("button", "session-history-link", "View full session history →");
+        const openHistory = el("button", "link-button", "Open session history →");
         openHistory.type = "button";
         openHistory.addEventListener("click", () => openSessionHistory(primary));
-        panel.append(openHistory);
+        actions.append(openHistory);
     }
-    const activity = primary.agent_activity.filter((item) => item.role === "assistant" || item.role === "tool").slice(-5);
-    if (activity.length) {
-        const details = el("details", "provenance-activity");
-        const summary = el("summary", "", `Visible agent activity (${activity.length})`);
-        const list = el("ul", "");
-        for (const item of activity) {
-            const label = item.role === "tool" ? item.tool_name || "tool" : "assistant";
-            const row = el("li", "");
-            row.append(el("strong", "", `${label}: `), document.createTextNode(item.summary));
-            list.append(row);
-        }
-        details.append(summary, list);
-        panel.append(details);
-    }
-    panel.append(el("p", "provenance-disclaimer", "Correlation uses visible prompts and file/tool activity. It does not expose hidden model reasoning or prove line-level authorship."));
+    panel.append(actions, el("p", "source-status", primary.reason));
 }
 
 async function openSessionHistory(attribution) {
@@ -568,7 +692,35 @@ async function openSessionHistory(attribution) {
         ].filter(Boolean).join(" · ");
         const fragment = document.createDocumentFragment();
         let highlighted = null;
+        let tools = [];
+        const flushTools = () => {
+            if (!tools.length) return;
+            const counts = new Map();
+            for (const tool of tools) counts.set(tool.tool_name, (counts.get(tool.tool_name) || 0) + 1);
+            const edits = tools.filter((tool) => tool.operation === "write").length;
+            const group = el("details", "history-tools");
+            group.append(el("summary", "", [
+                `${tools.length} tool call${tools.length === 1 ? "" : "s"}`,
+                edits ? `${edits} edit${edits === 1 ? "" : "s"}` : null,
+                [...counts].map(([name, count]) => `${name}×${count}`).join(", "),
+            ].filter(Boolean).join(" · ")));
+            const list = el("ul", "");
+            for (const tool of tools) {
+                const item = el("li", tool.operation === "write" ? "tool-write" : "");
+                const text = tool.detail || (tool.summary !== tool.tool_name ? tool.summary : "");
+                item.append(el("strong", "", tool.tool_name), document.createTextNode(text ? ` ${text}` : ""));
+                list.append(item);
+            }
+            group.append(list);
+            fragment.append(group);
+            tools = [];
+        };
         for (const event of history.timeline) {
+            if (event.role === "tool") {
+                tools.push(event);
+                continue;
+            }
+            flushTools();
             const row = el("article", `history-row history-${event.role}`);
             row.dataset.eventId = event.event_id;
             if (event.event_id === attribution.prompt_event_id) {
@@ -576,13 +728,8 @@ async function openSessionHistory(attribution) {
                 highlighted = row;
             }
             const heading = el("div", "history-row-heading");
-            const role = event.role === "user"
-                ? "User prompt"
-                : event.role === "assistant"
-                    ? "Assistant"
-                    : event.tool_name || "Tool";
             heading.append(
-                el("strong", "", role),
+                el("strong", "", event.role === "user" ? "User prompt" : "Assistant"),
                 el("time", "", event.timestamp ? new Date(event.timestamp).toLocaleString() : ""),
             );
             row.append(heading);
@@ -591,6 +738,7 @@ async function openSessionHistory(attribution) {
             row.append(body);
             fragment.append(row);
         }
+        flushTools();
         elements.session_transcript.replaceChildren(fragment);
         elements.session_history_panel.classList.remove("hidden");
         requestAnimationFrame(() => highlighted?.scrollIntoView({ block: "center" }));
@@ -710,6 +858,16 @@ function renderMarkdown(container, markdown) {
     flushParagraph();
 }
 
+function extractRisk(body) {
+    const match = /^\s*\*\*Risk:\s*(Low|Medium|High|Critical)\s*(?:—|–|-)\s*(.+?)\*\*\s*$/im.exec(body || "");
+    if (!match) return null;
+    return {
+        level: match[1].toLowerCase(),
+        reason: match[2].trim(),
+        body: body.replace(match[0], "").replace(/\n{3,}/g, "\n\n"),
+    };
+}
+
 function renderAnnotation(item, annotation, loading = false) {
     const panel = elements.source_annotation;
     panel.replaceChildren();
@@ -733,12 +891,21 @@ function renderAnnotation(item, annotation, loading = false) {
         panel.append(el("p", "annotation-error", annotation.error));
         return;
     }
+    const risk = extractRisk(annotation.body);
+    if (risk) {
+        const banner = el("div", `risk-banner risk-banner-${risk.level}`);
+        banner.append(el("b", "", `${risk.level} risk`), el("span", "", risk.reason));
+        panel.append(banner);
+    }
     const body = el("div", "annotation-body");
-    renderMarkdown(body, annotation.body);
+    renderMarkdown(body, risk ? risk.body : annotation.body);
     panel.append(body);
     if (annotation.evidence_ids?.length) {
-        const citations = el("div", "annotation-citations");
-        citations.append(...annotation.evidence_ids.map(evidenceButton));
+        const citations = el("details", "annotation-citations");
+        citations.append(el("summary", "", `Evidence (${annotation.evidence_ids.length})`));
+        const list = el("div", "evidence-list");
+        list.append(...annotation.evidence_ids.map(evidenceButton));
+        citations.append(list);
         panel.append(citations);
     }
 }
@@ -748,8 +915,12 @@ function renderDetail(item) {
     const panel = elements.detail;
     panel.replaceChildren();
     const top = el("div", "detail-top");
+    const back = el("button", "link-button detail-back", "← Change brief");
+    back.type = "button";
+    back.addEventListener("click", clearSelection);
     top.append(
-        el("p", "eyebrow", (item.kind || item.type || "EVIDENCE").toUpperCase()),
+        back,
+        el("p", "eyebrow", String(item.kind || item.type || "EVIDENCE").replaceAll("_", " ").toUpperCase()),
         el("h2", "", item.display_name || item.name || item.title || item.id),
     );
     panel.append(top);
@@ -810,16 +981,21 @@ function parseDiff(text) {
     const lines = String(text || "").split(/\r?\n/);
     for (let index = 0; index < lines.length;) {
         const line = lines[index];
-        const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(line);
+        const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/.exec(line);
         if (hunk) {
             oldLine = Number(hunk[1]);
-            newLine = Number(hunk[2]);
-            rows.push(codeRow("hunk", "", "", "", line));
+            newLine = Number(hunk[3]);
+            const wholeNewFile = oldLine === 0 && Number(hunk[2] ?? 1) === 0;
+            if (!wholeNewFile) {
+                const length = Number(hunk[4] ?? 1);
+                const range = length > 1 ? `${newLine}–${newLine + length - 1}` : String(newLine);
+                const context = hunk[5].trim();
+                rows.push(codeRow("hunk", "", "", "", `Lines ${range}${context ? ` · ${context}` : ""}`));
+            }
             index += 1;
             continue;
         }
-        if (line.startsWith("---") || line.startsWith("+++") || line.startsWith("diff ") || line.startsWith("index ")) {
-            rows.push(codeRow("meta", "", "", "", line));
+        if (/^(diff --git |index |--- |\+\+\+ |new file mode|deleted file mode|similarity index|rename (from|to) |old mode|new mode|\\ )/.test(line)) {
             index += 1;
             continue;
         }
@@ -921,6 +1097,9 @@ function renderCollection(model) {
         !query || `${item.title || ""} ${item.name || ""} ${item.path || ""} ${item.reason || ""}`.toLowerCase().includes(query)
     );
     const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
+    const maxChurn = Math.max(1, ...items.map((item) => item.lines_added != null
+        ? item.lines_added + item.lines_removed
+        : item.metrics?.lines_changed || 0));
     elements.graph.replaceChildren();
     const list = el("div", "collection-list");
     if (!items.length) {
@@ -933,7 +1112,7 @@ function renderCollection(model) {
         let subtitle;
         if (item.path && item.status) {
             title = item.path;
-            subtitle = `${item.status} · +${item.lines_added} / -${item.lines_removed}`;
+            subtitle = `${item.status} · +${item.lines_added} / −${item.lines_removed}${isTestPath(item.path) ? " · test code" : ""}`;
             const statusClass = item.status === "added"
                 ? "file-added"
                 : item.status === "deleted" || item.status === "removed"
@@ -951,9 +1130,8 @@ function renderCollection(model) {
             row.addEventListener("click", () => selectPackage(item));
         } else {
             title = item.title || item.display_name || item.name;
-            const historicalChurn = (item.metrics?.churn_additions_90d || 0) + (item.metrics?.churn_deletions_90d || 0);
             subtitle = state.mode === "lines"
-                ? `Change churn ${item.metrics?.lines_changed || 0} · +${item.metrics?.lines_added || 0} / −${item.metrics?.lines_removed || 0} · 90d churn ${historicalChurn}`
+                ? `+${item.metrics?.lines_added || 0} / −${item.metrics?.lines_removed || 0}${isTestPath(item.path || "") || /^tests?\./.test(item.name || "") ? " · test code" : ""}`
                 : item.reason || `${item.kind || item.change} · +${item.metrics?.lines_added || 0} / −${item.metrics?.lines_removed || 0}`;
             if (state.mode === "lines") {
                 row.classList.add(
@@ -968,7 +1146,16 @@ function renderCollection(model) {
         }
         const copy = el("span", "collection-copy");
         copy.append(el("strong", "", title), el("small", "", subtitle));
-        row.append(copy, el("span", "collection-arrow", "→"));
+        row.append(copy);
+        if (["files", "lines", "symbols"].includes(state.mode)) {
+            const churn = item.lines_added != null
+                ? item.lines_added + item.lines_removed
+                : item.metrics?.lines_changed || 0;
+            const kind = item.status || item.change;
+            row.append(churnBar(churn / maxChurn, kind === "deleted" || kind === "removed" ? "removed" : kind === "added" ? "added" : "modified"));
+            row.classList.add("has-bar");
+        }
+        row.append(el("span", "collection-arrow", "→"));
         list.append(row);
     }
     elements.graph.append(list);
@@ -1072,7 +1259,7 @@ function render() {
         ...(payload.generated_observations || []),
     ].sort((a, b) => (b.impact_score || 0) - (a.impact_score || 0));
     elements.attention_count.textContent = String(groupedObservations.length);
-    renderCards(elements.attention, groupedObservations.slice(0, 12), "No deterministic attention findings.");
+    renderCards(elements.attention, collapseSizeFindings(groupedObservations, model).slice(0, 12), "No deterministic attention findings.");
     if (groupedObservations.length > 12) {
         const viewAll = el("button", "view-all", `View all ${groupedObservations.length} ranked findings →`);
         viewAll.type = "button";
@@ -1102,7 +1289,7 @@ function render() {
         renderGraph(elements.graph, decoratedNodes(model, nodes, groupedObservations), aggregateEdges(model, nodes), maybeDrill);
     } else if (state.mode === "edges") {
         elements.level_label.textContent = "CHANGED RELATIONSHIPS";
-        elements.graph_title.textContent = "Added and removed module edges";
+        elements.graph_title.textContent = "Changed module relationships";
         const query = state.query.toLowerCase();
         const changedEdges = (model.aggregate_edges || [])
             .filter((edge) => edge.level === "module" && (edge.added_count > 0 || edge.removed_count > 0))
@@ -1144,6 +1331,7 @@ function render() {
     if (state.selected && payload.annotations?.[state.selected.id]) {
         renderAnnotation(state.selected, payload.annotations[state.selected.id]);
     }
+    if (!state.selected) renderEmptyDetail();
 }
 
 function showError(error) {
@@ -1246,7 +1434,7 @@ function setRailWidth(width) {
     scheduleResizeRender();
 }
 const savedRailWidth = Number(localStorage.getItem("agent-review:rail-width"));
-if (Number.isFinite(savedRailWidth)) setRailWidth(savedRailWidth);
+if (Number.isFinite(savedRailWidth) && savedRailWidth > 0) setRailWidth(savedRailWidth);
 elements.rail_resize.addEventListener("pointerdown", (event) => {
     const rail = document.querySelector(".rail");
     railResizeStart = { x: event.clientX, width: rail.getBoundingClientRect().width };

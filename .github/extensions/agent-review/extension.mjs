@@ -3,7 +3,9 @@ import { generateIsolatedExplanation } from "./ai-explainer.mjs";
 import {
     ANNOTATION_HEADINGS,
     buildAnnotationPrompt,
+    buildOverviewPrompt,
     buildPackagePrompt,
+    OVERVIEW_HEADINGS,
     PACKAGE_HEADINGS,
 } from "./ai-prompts.mjs";
 import { loadHistoricalSessionContexts } from "./historical-sessions.mjs";
@@ -109,12 +111,12 @@ const canvas = createCanvas({
                     getHistoricalSessionContexts: () =>
                         loadHistoricalSessionContexts(state.repoRoot, session.sessionId),
                     generateAnnotation: async (context) => {
-                    const prompt = buildAnnotationPrompt(context);
+                    const overview = context.kind === "overview";
                     return generateIsolatedExplanation({
                         workingDirectory: state.repoRoot,
-                        prompt,
+                        prompt: overview ? buildOverviewPrompt(context) : buildAnnotationPrompt(context),
                         sourceEvents: await session.getEvents(),
-                        requiredHeadings: ANNOTATION_HEADINGS,
+                        requiredHeadings: overview ? OVERVIEW_HEADINGS : ANNOTATION_HEADINGS,
                     });
                     },
                     generatePackageExplanation: async ({ dependency, assessment }) => {

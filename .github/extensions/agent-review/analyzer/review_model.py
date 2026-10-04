@@ -518,14 +518,13 @@ class ReviewModel:
             )
             append_finding(
                 node, "broad_impact", "_impact_evidence", "Change has broad caller impact",
-                f"{node['name']} can affect {callers} direct or transitive callers; review compatibility and failure propagation.",
+                f"{node['name']} is reached by {callers} direct or transitive callers.",
                 35 + min(45, callers * 3) + min(12, metrics["lines_changed"] // 10),
                 [f"{callers} callers", f"{metrics['lines_changed']} changed lines"],
             )
             append_finding(
                 node, "size", "_size_evidence", "Large implementation change",
-                f"{node['name']} changes {metrics['lines_changed']} lines "
-                f"(+{metrics['lines_added']} / -{metrics['lines_removed']}); review in focused chunks.",
+                f"{node['name']} changes {metrics['lines_changed']} lines.",
                 25 + min(55, metrics["lines_changed"] // 5),
                 [f"+{metrics['lines_added']} / -{metrics['lines_removed']} lines"],
             )

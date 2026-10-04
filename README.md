@@ -38,18 +38,24 @@ Copilot actions.
 
 ## Review experience
 
-- Progressive architecture, module, class, and function drilldown
+- A change brief on first load: file mix, source-versus-test churn, a
+  highest-impact shortlist, and an on-demand Copilot summary with a suggested
+  review order and gaps
+- Progressive architecture, module, class, and function drilldown with edge
+  highlighting on hover for dense graphs
 - Impact-ranked attention findings with caller, complexity, signature, coverage,
-  churn, and line-delta evidence
-- Clickable summary deltas and compact file, symbol, relationship, package, and
-  finding indexes
-- Full-Canvas graphical diff with added, deleted, and modified rows
+  churn, and line-delta evidence; repeated size findings collapse into one card
+- Clickable summary deltas and compact file, module, relationship, and package
+  indexes with proportional churn bars
+- Code-first source and diff view with a side panel for the originating prompt
+  and a concise Copilot briefing that leads with a risk banner
 - Exact source-range highlighting for findings backed by precise line evidence
 - Cached Copilot explanations generated in isolated, tool-free sessions and
   validated for the required sections: what the code is, usage, behavior
   changes, motivation, risk, and review focus
 - Repository-scoped prompt provenance with bounded history search and explicit
-  matched, no-match, and error states
+  matched, no-match, and error states; transcripts group tool calls and show
+  the files and commands involved
 - Dependency versions and on-demand public risk indicators from PyPI, OSV,
   OpenSSF Scorecard, and PyPI download statistics
 - GitHub-style responsive layouts, typography, controls, and graph treatment for
