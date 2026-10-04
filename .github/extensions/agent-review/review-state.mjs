@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:pa
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { assessPackageRisk } from "./package-risk.mjs";
+import { buildPackageUsageContext } from "./package-context.mjs";
 import { CustomPromptStore } from "./custom-prompts.mjs";
 import { customAnalysisContext, validateCustomAnalysis } from "./custom-analysis.mjs";
 import { resolveReviewTarget } from "./review-target.mjs";
@@ -869,11 +870,14 @@ export class ReviewState {
         if (!explain) return { assessment, explanation: this.packageRisks[cacheKey]?.explanation ?? null };
         if (this.packageRisks[cacheKey]) return this.packageRisks[cacheKey];
         if (this.packageRiskPromises.has(cacheKey)) return this.packageRiskPromises.get(cacheKey);
+        const generation = this.reviewGeneration;
+        const usageContext = buildPackageUsageContext(this.model, dependency, isTestPath);
         const promise = Promise.resolve()
             .then(() => this.generatePackageExplanation
-                ? this.generatePackageExplanation({ dependency, assessment })
+                ? this.generatePackageExplanation({ dependency, assessment, usageContext })
                 : null)
             .then((explanation) => {
+                if (generation !== this.reviewGeneration) throw new Error("The review changed while explaining this package.");
                 const result = { assessment, explanation };
                 this.packageRisks[cacheKey] = result;
                 this.broadcast("package-risk");
@@ -915,6 +919,23 @@ export class ReviewState {
             startLine,
             endLine,
         );
+    }
+
+    async sourceForPackageDeclaration(path, name) {
+        const dependency = this.model?.package_changes?.find((item) => item.name === name)
+            || this.model?.package_dependencies?.find((item) => item.name === name);
+        if (!dependency) throw new Error(`Unknown package dependency: ${name}`);
+        const current = dependency.declared_current?.find((item) => item.source === path);
+        const declaration = current || dependency.declared_base?.find((item) => item.source === path);
+        if (!declaration || !Number.isInteger(declaration.line)) {
+            throw new Error(`No saved declaration location for ${name} in ${path}. Reanalyze this review.`);
+        }
+        const source = await this.sourceForPath(path, declaration.line, declaration.end_line || declaration.line);
+        return { ...source, declaration_highlight: {
+            line: declaration.line, end_line: declaration.end_line || declaration.line,
+            start_column: declaration.start_column, end_column: declaration.end_column,
+            side: current ? "current" : "base",
+        } };
     }
 
     async sourceForPath(path, startLine = null, endLine = startLine) {

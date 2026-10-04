@@ -4,11 +4,109 @@ import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 
 ANALYZER = Path(__file__).parents[1] / "analyzer" / "analyze.py"
+sys.path.insert(0, str(ANALYZER.parent))
+from packages import parse_packages
+
+
+def declaration_slice(text: str, declaration: dict) -> str:
+    lines = text.splitlines(keepends=True)
+    start_line = declaration["line"] - 1
+    end_line = declaration["end_line"] - 1
+    start = sum(map(len, lines[:start_line])) + declaration["start_column"]
+    end = sum(map(len, lines[:end_line])) + declaration["end_column"]
+    return text[start:end]
+
+
+class PackageLocationTests(unittest.TestCase):
+    def test_inline_dependencies_do_not_match_description_comments_or_other_names(self) -> None:
+        text = (
+            '# dependencies = ["croniter==99"]\n'
+            '[project]\n'
+            'description = "croniter and packaging are mentioned here"\n'
+            'dependencies = ["packaging>=24; extra == \'📦\'", "croniter==6", "croniter-extra==1"] # croniter\n'
+            '[tool.unrelated]\n'
+            'dependencies = ["croniter==99"]\n'
+        )
+        declarations = parse_packages({"pyproject.toml": text.encode()})
+        self.assertEqual(3, len(declarations))
+        for item in declarations:
+            self.assertEqual(4, item["declaration_line"])
+            self.assertEqual(item["name"], declaration_slice(text, item))
+        croniter = next(item for item in declarations if item["name"] == "croniter")
+        self.assertEqual(text.splitlines()[3].index('"croniter==6"') + 1,
+                         croniter["declaration_column_start"])
+        self.assertEqual("==6", croniter["specifier"])
+
+    def test_multiline_arrays_optional_groups_and_quoted_dotted_keys(self) -> None:
+        text = (
+            '[project]\r\n'
+            'description = """croniter\r\n'
+            'dependencies = ["wrong==1"]"""\r\n'
+            'dependencies = [\r\n'
+            '    "packaging>=24", # "croniter==99"\r\n'
+            "    'croniter[extra]>=6; python_version > \"3.10\"',\r\n"
+            ']\r\n'
+            '[project."optional-dependencies"]\r\n'
+            '"test.group" = ["pytest>=8", # croniter\r\n'
+            '    "croniter==7",\r\n'
+            ']\r\n'
+            '[tool.unrelated]\r\n'
+            '"project".dependencies = ["croniter==99"]\r\n'
+        )
+        declarations = parse_packages({"pyproject.toml": text.encode()})
+        expected = {
+            ("packaging", "runtime"): (5, ">=24"),
+            ("croniter", "runtime"): (6, ">=6"),
+            ("pytest", "test.group"): (9, ">=8"),
+            ("croniter", "test.group"): (10, "==7"),
+        }
+        self.assertEqual(len(expected), len(declarations))
+        for item in declarations:
+            line, specifier = expected[(item["name"], item["group"])]
+            self.assertEqual(line, item["declaration_line"])
+            self.assertEqual(specifier, item["specifier"])
+            self.assertEqual(item["name"], declaration_slice(text, item))
+
+    def test_escaped_literals_and_inline_optional_table(self) -> None:
+        text = (
+            '[project]\n'
+            'dependencies = ["cr\\u006fniter==6", """\\\n'
+            'packaging>=24"""]\n'
+            'optional-dependencies = { "docs" = ["sphinx>=8"], test = [\'pytest\'] }\n'
+        )
+        declarations = {item["name"]: item for item in parse_packages({"pyproject.toml": text.encode()})}
+        self.assertEqual('"cr\\u006fniter==6"', declaration_slice(text, declarations["croniter"]))
+        self.assertEqual('"""\\\npackaging>=24"""', declaration_slice(text, declarations["packaging"]))
+        self.assertEqual(2, declarations["packaging"]["declaration_line"])
+        self.assertEqual(3, declarations["packaging"]["declaration_end_line"])
+        self.assertEqual("sphinx", declaration_slice(text, declarations["sphinx"]))
+        self.assertEqual("docs", declarations["sphinx"]["group"])
+        self.assertEqual("pytest", declaration_slice(text, declarations["pytest"]))
+
+    def test_requirements_locations_preserve_bom_crlf_case_extras_and_comments(self) -> None:
+        text = (
+            "\ufeff  PyYAML[extra]==6.0.3; python_version > '3.10'\r\n"
+            "# PyYAML and croniter do not declare packages\r\n"
+            "   croniter>=6 # croniter-extra\r\n"
+            "-r requirements-other.txt\r\n"
+        )
+        declarations = parse_packages({"nested/requirements-dev.txt": text.encode()})
+        self.assertEqual(["croniter", "pyyaml"], [item["name"] for item in declarations])
+        for item in declarations:
+            self.assertEqual("requirements-dev", item["group"])
+            self.assertEqual("nested/requirements-dev.txt", item["source"])
+            expected = "PyYAML" if item["name"] == "pyyaml" else "croniter"
+            self.assertEqual(expected, declaration_slice(text, item))
+        self.assertEqual(3, declarations[0]["declaration_line"])
+        self.assertEqual(3, declarations[0]["declaration_column_start"])
+        self.assertEqual(1, declarations[1]["declaration_line"])
+        self.assertEqual(3, declarations[1]["declaration_column_start"])
 
 
 class AnalyzerTests(unittest.TestCase):
@@ -20,7 +118,14 @@ class AnalyzerTests(unittest.TestCase):
         self.git("config", "user.name", "Agent Review")
 
     def tearDown(self) -> None:
-        self.temporary.cleanup()
+        for attempt in range(6):
+            try:
+                self.temporary.cleanup()
+                return
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.1 * 2 ** attempt)
 
     def git(self, *args: str) -> str:
         return subprocess.run(
@@ -29,6 +134,7 @@ class AnalyzerTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
         ).stdout
 
     def write(self, path: str, content: str) -> None:
@@ -172,6 +278,52 @@ class AnalyzerTests(unittest.TestCase):
         self.assertFalse(model["coverage"]["available"])
         self.assertEqual("Committed", model["codeboarding"]["components"][0]["name"])
 
+    def test_package_report_locations_use_saved_revisions_not_dirty_files(self) -> None:
+        baseline = '[project]\ndependencies = ["croniter==5", "packaging>=23"]\n'
+        current = (
+            '[project]\n'
+            'description = "croniter is here, not a dependency declaration"\n'
+            'dependencies = ["packaging>=24", "croniter==6"]\n'
+            '[project.optional-dependencies]\n'
+            'test = ["croniter==7"]\n'
+        )
+        self.write("pyproject.toml", baseline)
+        self.write("requirements.txt", "\ufeff  PyYAML==5\n")
+        base = self.commit()
+        self.write("pyproject.toml", current)
+        self.write("requirements.txt", "\ufeff    PyYAML==6\n")
+        head = self.commit()
+        self.write("pyproject.toml", '[project]\ndependencies = ["unrelated==99"]\n')
+        self.write("requirements.txt", "dirty-only==1\n")
+        model = self.analyze(base, "--current-ref", head)
+        for collection in ("package_changes", "package_dependencies"):
+            for package in model[collection]:
+                for side, source_side in (("declared_current", "current"),
+                                          ("declared_baseline", "baseline")):
+                    for declaration in package[side]:
+                        saved = (
+                            model["source_files"][declaration["source"]]["current"]
+                            if source_side == "current"
+                            else self.git("show", f"{base}:{declaration['source']}")
+                        )
+                        self.assertEqual(
+                            "PyYAML" if package["name"] == "pyyaml" else package["name"],
+                            declaration_slice(saved, declaration),
+                        )
+                if collection == "package_changes":
+                    self.assertEqual(package["declared_base"], package["declared_baseline"])
+        croniter = next(item for item in model["package_dependencies"] if item["name"] == "croniter")
+        self.assertEqual([3, 5], [item["declaration_line"] for item in croniter["declared_current"]])
+        self.assertEqual(2, croniter["declared_baseline"][0]["declaration_line"])
+        pyyaml = next(item for item in model["package_dependencies"] if item["name"] == "pyyaml")
+        self.assertTrue(model["source_files"]["requirements.txt"]["current"].startswith("\ufeff"))
+        self.assertEqual((1, 5, 11), tuple(
+            pyyaml["declared_current"][0][key] for key in ("line", "start_column", "end_column")
+        ))
+        self.assertEqual((1, 3, 9), tuple(
+            pyyaml["declared_baseline"][0][key] for key in ("line", "start_column", "end_column")
+        ))
+
     def test_changed_line_coverage_and_deterministic_output(self) -> None:
         self.write("calc.py", "def calc(value):\n    return value\n")
         base = self.commit()
@@ -198,7 +350,9 @@ class AnalyzerTests(unittest.TestCase):
         changed = first["coverage"]["changed_lines"]["calc.py"]
         self.assertGreater(changed["total"], 0)
         self.assertIn(4, changed["uncovered_lines"])
-        self.assertEqual(first["summary"]["files_changed"], 2)
+        self.assertEqual(first["summary"]["files_changed"], 1)
+        self.assertNotIn("coverage.xml", first["source_files"])
+        self.assertFalse(any(change["path"] == "coverage.xml" for change in first["changes"]))
         self.assertGreater(first["summary"]["lines_added"], 0)
 
     def test_primary_canvas_contract(self) -> None:

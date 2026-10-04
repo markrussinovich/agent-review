@@ -53,7 +53,7 @@ def _json_coverage(path: Path) -> dict[str, dict[str, set[int]]] | None:
 
 
 def load_coverage(repo: Path, base_ref: str | None, python_paths: list[str]) -> dict[str, Any]:
-    candidates = [repo / "coverage.xml", repo / ".coverage"]
+    candidates = [repo / "coverage.json", repo / "coverage.xml", repo / ".coverage"]
     coverage: dict[str, dict[str, set[int]]] | None = None
     source: str | None = None
     for candidate in candidates:

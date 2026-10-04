@@ -142,9 +142,9 @@ function createReviewState(requestedPath, input) {
                 requiredHeadings: overview ? OVERVIEW_HEADINGS : ANNOTATION_HEADINGS,
             });
         },
-        generatePackageExplanation: async ({ dependency, assessment }) => generateIsolatedExplanation({
+        generatePackageExplanation: async ({ dependency, assessment, usageContext }) => generateIsolatedExplanation({
             workingDirectory: state.repoRoot,
-            prompt: buildPackagePrompt(dependency, assessment),
+            prompt: buildPackagePrompt(dependency, assessment, usageContext),
             sourceEvents: await session.getEvents(),
             requiredHeadings: PACKAGE_HEADINGS,
         }),

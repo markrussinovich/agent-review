@@ -133,6 +133,11 @@ URL to those services. Repository source and credentials are never sent.
 - Import locations link to actual source lines. PyYAML's distribution name maps
   to its `yaml` import; other unsupported aliases or dynamic imports can remain
   unresolved.
+- Package AI assessments inspect bounded, line-numbered consuming implementations
+  and diffs from the selected snapshot. They explain called APIs and implemented
+  behavior rather than guessing usage from registry descriptions or imports.
+- Manifest links highlight the exact dependency declaration and package-name
+  span, including dependencies sharing a TOML array line.
 - Scorecard, weak checks, registry, vulnerability queries, release history, and
   download evidence are links. Lookup failures display their errors instead of
   presenting missing evidence as a reassuring result.
@@ -199,7 +204,7 @@ components remain available.
 ## Validate
 
 ```text
-python -m unittest discover -s .github/extensions/agent-review/tests -p test_analyzer.py -v
+python -m unittest discover -s .github/extensions/agent-review/tests -p "test_*.py" -v
 node --test .github/extensions/agent-review/tests/test-*.mjs
 node --check .github/extensions/agent-review/extension.mjs
 node --check .github/extensions/agent-review/web/app.js
@@ -217,6 +222,12 @@ node .github\extensions\agent-review\tests\browser\custom-prompts.mjs
 
 Set `AGENT_REVIEW_LIVE_PR` to a GitHub PR URL to also exercise authenticated PR
 resolution, fetching, analysis, and UI switching against GitHub.
+
+Worktree coverage accepts standard `coverage.json`, `coverage.xml`, or legacy JSON
+`.coverage` reports generated against that checkout. Report artifacts do not count
+as code changes. A SQLite `.coverage` database alone is not a JSON/XML report.
+Do not copy coverage between different worktrees or use worktree results to claim
+coverage of a historical commit/PR snapshot.
 
 `tests/browser/sample-feature.mjs` verifies both added dependencies and genuine
 SDK session provenance in the two-import sample. Override

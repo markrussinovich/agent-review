@@ -82,8 +82,10 @@ export function startReviewServer(state, options = {}) {
             if (req.method === "GET" && pathname === "/api/source") {
                 const path = requestUrl.searchParams.get("path");
                 const line = Number(requestUrl.searchParams.get("line"));
+                const packageName = requestUrl.searchParams.get("package");
                 sendJson(res, path
-                    ? await state.sourceForPath(path, Number.isInteger(line) && line > 0 ? line : null)
+                    ? packageName ? await state.sourceForPackageDeclaration(path, packageName)
+                        : await state.sourceForPath(path, Number.isInteger(line) && line > 0 ? line : null)
                     : await state.sourceFor(requestUrl.searchParams.get("id")));
                 return;
             }

@@ -20,6 +20,11 @@ DEFAULT_EXCLUDES = (
     ".github/extensions/agent-review",
     ".agent-review.json",
     ".agent-review",
+    ".coverage",
+    ".coverage.*",
+    "coverage.json",
+    "coverage.xml",
+    "htmlcov",
 )
 
 

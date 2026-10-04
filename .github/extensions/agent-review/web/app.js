@@ -658,7 +658,8 @@ async function loadSource(query, epoch, preferredTab = null, nav = "reset") {
     if (epoch !== state.selectionEpoch) return false;
     state.source = source;
     state.attribution = attribution;
-    state.sourceTab = preferredTab || (source.diff ? "diff" : "current");
+    state.sourceTab = source.declaration_highlight?.side === "base" ? "base"
+        : preferredTab || (source.diff ? "diff" : "current");
     recordSourceNavigation(nav, { query, tab: state.sourceTab, label: `${source.path}${source.start_line ? `:${source.start_line}` : ""}` });
     renderSource();
     return true;
@@ -993,6 +994,10 @@ function sourceReferenceButton(label, reference, title = null) {
         const epoch = ++state.selectionEpoch;
         const query = new URLSearchParams({ path: reference.path });
         if (reference.lines[0]) query.set("line", String(reference.lines[0]));
+        const packageName = reference.packageName || (state.selected?.id?.startsWith("package:")
+            && [...(state.selected.declared_current || []), ...(state.selected.declared_base || [])].some((item) => item.source === reference.path)
+            ? state.selected.name : null);
+        if (packageName) query.set("package", packageName);
         try {
             await loadSource(query.toString(), epoch, "current", "push");
         } catch (error) {
@@ -1253,6 +1258,20 @@ function renderSource() {
             if (Number.isFinite(line) && line >= start && line <= end) {
                 row.classList.add("focus-line");
                 focused.push(row);
+                const highlight = state.source.declaration_highlight;
+                const highlightLine = highlight?.side === "base" ? oldLine : newLine;
+                if (highlight && highlightLine >= highlight.line && highlightLine <= highlight.end_line
+                    && (state.sourceTab === highlight.side || state.sourceTab === "diff")
+                    && Number.isInteger(highlight.start_column) && Number.isInteger(highlight.end_column)) {
+                    const code = row.querySelector("code");
+                    const characters = [...code.textContent];
+                    const from = highlightLine === highlight.line ? highlight.start_column : 0;
+                    const to = highlightLine === highlight.end_line ? highlight.end_column : characters.length;
+                    const token = el("mark", "package-reference-highlight",
+                        characters.slice(from, to).join(""));
+                    code.replaceChildren(document.createTextNode(characters.slice(0, from).join("")),
+                        token, document.createTextNode(characters.slice(to).join("")));
+                }
             }
         }
         focused.forEach((row, index) => {
@@ -1262,7 +1281,10 @@ function renderSource() {
         focused[0]?.scrollIntoView({ block: "center" });
     }
     const annotation = state.payload?.annotations?.[state.selected?.id];
-    if (annotation) renderAnnotation(state.selected, annotation);
+    const selectedPath = state.selected?.path || state.payload?.model?.nodes?.find((node) =>
+        node.id === (state.selected?.node_id || state.selected?.id))?.path;
+    if (annotation && selectedPath === state.source.path) renderAnnotation(state.selected, annotation);
+    else elements.source_annotation.classList.add("hidden");
     renderProvenance();
     document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === state.sourceTab));
     renderSourceNavigation();
@@ -1565,7 +1587,7 @@ function renderPackagePanel() {
     sections.push(header);
     const declaration = el("p", "package-declaration-note");
     declaration.append(document.createTextNode(`Reported because a dependency declaration was ${item.change} in `));
-    if (declared?.source) declaration.append(sourceReferenceButton(declared.source, { path: declared.source, lines: [] }));
+    if (declared?.source) declaration.append(sourceReferenceButton(declared.source, { path: declared.source, lines: [], packageName: item.name }));
     else declaration.append(document.createTextNode("the package manifest"));
     declaration.append(document.createTextNode(". Manifest changes are reviewed even when no Python import is found."));
     sections.push(declaration);

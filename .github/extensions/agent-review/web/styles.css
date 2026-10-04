@@ -1421,7 +1421,11 @@ h3 { font-size: 14px; font-weight: 600; }
 .change-brief { margin: 0 0 16px; padding: 16px; border: 1px solid var(--cp-border); border-radius: 6px; background: var(--cp-surface); }
 .change-brief .detail-top { margin-bottom: 8px; }
 .change-brief .detail-top h2 { font-size: 16px; }
-.change-brief .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0 24px; }
+.change-brief .detail-grid { display: grid; grid-template-columns: 1.4fr 1fr 1.5fr .8fr; gap: 0 24px; }
+.change-brief .detail-row strong { max-width: none; white-space: nowrap; }
+@media (max-width: 1100px) { .change-brief .detail-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .change-brief .detail-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 420px) { .change-brief .detail-row { flex-direction: column; gap: 4px; align-items: flex-start; } }
 .change-brief .brief-origin { margin-top: 12px; max-height: 180px; overflow: auto; }
 .change-brief .brief-origin > summary { font-size: 12px; color: var(--cp-link); cursor: pointer; }
 .change-brief h3 { margin: 12px 0 6px; font-size: 14px; }
@@ -1469,6 +1473,7 @@ html { scrollbar-gutter: stable; }
 .stat-value .external-link { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
 .evidence-sources { display: grid; gap: 4px; padding-left: 18px; }
 .source-error { color: var(--cp-warning); }
+.package-reference-highlight { background: var(--cp-highlight); color: var(--cp-text); border-bottom: 2px solid var(--cp-link); font-weight: 600; }
 /* Queue entries follow GitHub's neutral list treatment; severity belongs in text, not colored rails. */
 .rail .review-card {
   border: 0; border-bottom: 1px solid var(--cp-border); border-radius: 0;

@@ -367,6 +367,7 @@ class ReviewModel:
                         "name": name,
                         "change": change_kind.get(name, "unchanged"),
                         "declared_base": baseline.get(name, []),
+                        "declared_baseline": baseline.get(name, []),
                         "declared_current": current.get(name, []),
                     },
                 )]
@@ -376,6 +377,7 @@ class ReviewModel:
                     change_kind.get(name, "unchanged"), change_kind.get(name, "unchanged")
                 ),
                 "declared_base": baseline.get(name, []),
+                "declared_baseline": baseline.get(name, []),
                 "declared_current": current.get(name, []),
                 "resolved_current": next(
                     (item["resolved_version"] for item in current.get(name, []) if "resolved_version" in item),
@@ -397,6 +399,9 @@ class ReviewModel:
     ) -> list[dict[str, Any]]:
         changes = {item["name"]: item for item in package_changes}
         grouped: dict[str, list[dict[str, Any]]] = {}
+        baseline: dict[str, list[dict[str, Any]]] = {}
+        for item in self.packages["baseline"]:
+            baseline.setdefault(item["name"], []).append(item)
         for item in self.packages["current"]:
             grouped.setdefault(item["name"], []).append(item)
         result = []
@@ -407,6 +412,7 @@ class ReviewModel:
                 "name": name,
                 "change": change["change"] if change else "unchanged",
                 "declared_current": declarations,
+                "declared_baseline": baseline.get(name, []),
                 "resolved_current": next(
                     (item["resolved_version"] for item in declarations if "resolved_version" in item),
                     None,

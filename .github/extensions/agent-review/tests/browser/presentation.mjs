@@ -60,6 +60,16 @@ try {
         await page.locator("#change-brief .brief-ai").waitFor();
         assert.match(await page.locator("#repository-identity").textContent(), /review-presentation-.*Base [a-f0-9]{8}/);
         const generated = summaries;
+        for (const width of [1440, 1280, 1024, 820, 600, 420]) {
+            await page.setViewportSize({ width, height: 1000 });
+            const measurements = await page.locator("#change-brief .detail-row strong").evaluateAll((values) => values.map((value) => ({
+                height: value.getBoundingClientRect().height, lineHeight: Number.parseFloat(getComputedStyle(value).lineHeight),
+                right: value.getBoundingClientRect().right, rowRight: value.parentElement.getBoundingClientRect().right,
+            })));
+            assert.ok(measurements.every((value) => value.height <= value.lineHeight + 1), `brief values stay on one line at ${width}px`);
+            assert.ok(measurements.every((value) => value.right <= value.rowRight + 1), `brief values fit their metric at ${width}px`);
+        }
+        await page.setViewportSize({ width: 1440, height: 1000 });
         const header = await page.locator(".topbar").boundingBox();
         const openPosition = await page.locator("#review-apply").boundingBox();
         const panels = await page.locator(".brief-ai-section").evaluateAll((sections) =>
@@ -77,6 +87,11 @@ try {
         assert.match(panel, /Python import locations \(0\)/);
         assert.match(panel, /not an observed import/);
         assert.match(panel, /Reviewed version/);
+        await page.locator("#package-detail .package-declaration-note .source-reference").click();
+        await page.locator("#source .package-reference-highlight").waitFor();
+        assert.equal(await page.locator("#source .package-reference-highlight").textContent(), "packaging");
+        assert.equal(await page.locator("#source-title").textContent(), "pyproject.toml:4");
+        await page.click("#source-close");
         const scorecard = page.getByRole("link", { name: "OpenSSF Scorecard", exact: true });
         assert.match(await scorecard.getAttribute("href"), /^https:\/\/securityscorecards\.dev\/viewer/);
         assert.equal(await page.getByRole("link", { name: "8.8/10", exact: true }).count(), 1);
