@@ -675,6 +675,10 @@ function renderSource() {
                 focused.push(row);
             }
         }
+        focused.forEach((row, index) => {
+            if (index === 0) row.classList.add("focus-start");
+            if (index === focused.length - 1) row.classList.add("focus-end");
+        });
         focused[0]?.scrollIntoView({ block: "center" });
     }
     const annotation = state.payload?.annotations?.[state.selected?.id];

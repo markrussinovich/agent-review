@@ -488,11 +488,21 @@ marker path { fill: var(--cp-border-strong); }
 .code-row > span, .code-row > code { padding: 1px 8px; white-space: pre; }
 .code-row.focus-line {
   position: relative;
-  outline: 2px solid var(--cp-accent);
-  outline-offset: -2px;
   background: var(--cp-highlight);
+  box-shadow:
+    inset 2px 0 var(--cp-accent),
+    inset -2px 0 var(--cp-accent);
 }
-.code-row.focus-line::after {
+.code-row.focus-line.focus-start {
+  border-top: 2px solid var(--cp-accent);
+  border-radius: .625rem .625rem 0 0;
+}
+.code-row.focus-line.focus-end {
+  border-bottom: 2px solid var(--cp-accent);
+  border-radius: 0 0 .625rem .625rem;
+}
+.code-row.focus-line.focus-start.focus-end { border-radius: .625rem; }
+.code-row.focus-line.focus-start::after {
   content: "Relevant to finding";
   position: absolute;
   right: 8px;
