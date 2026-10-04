@@ -23,6 +23,7 @@
   --cp-panel-strong: rgba(255, 255, 255, 0.96);
   --cp-sheen: rgba(255, 255, 255, 0.55);
   --cp-highlight: rgba(177, 31, 75, 0.12);
+  --review-rail-width: 250px;
 }
 .session-history-panel {
   position: fixed;
@@ -224,14 +225,38 @@ main { width: 100%; max-width: none; padding: 20px 20px 36px; }
   width: 100%;
   min-height: 600px;
   display: grid;
-  grid-template-columns: 250px minmax(480px, 1fr) 320px;
+  grid-template-columns: var(--review-rail-width) 8px minmax(480px, 1fr) 320px;
   border: 1px solid var(--cp-border);
   border-radius: .625rem;
   overflow: hidden;
   background: var(--cp-surface);
 }
 .rail, .detail { padding: 18px; background: var(--cp-bg-elevated); overflow-y: auto; }
-.rail { border-right: 1px solid var(--cp-border); }
+.rail {
+  min-width: 190px;
+  max-width: 520px;
+  max-height: calc(100vh - 220px);
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.rail-resize {
+  position: relative;
+  z-index: 5;
+  width: 8px;
+  border-right: 1px solid var(--cp-border);
+  cursor: col-resize;
+  touch-action: none;
+}
+.rail-resize::after {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  background: transparent;
+}
+.rail-resize:hover::after, .rail-resize:focus-visible::after, .resizing-rail .rail-resize::after {
+  background: var(--cp-accent);
+}
+.resizing-rail { cursor: col-resize; user-select: none; }
 .detail { border-left: 1px solid var(--cp-border); }
 .count, .impact-score {
   min-width: 26px;
@@ -584,7 +609,7 @@ marker path { fill: var(--cp-border-strong); }
 .source-status { margin-top: 12px; color: var(--cp-text-muted); font-size: .5625rem; line-height: 1.5; }
 @media (max-width: 1100px) {
   .summary { grid-template-columns: repeat(2, 1fr); }
-  .workspace { grid-template-columns: 220px minmax(0, 1fr); }
+  .workspace { grid-template-columns: var(--review-rail-width) 8px minmax(0, 1fr); }
   .detail { grid-column: 1 / -1; min-height: 220px; border-top: 1px solid var(--cp-border); border-left: 0; }
   .empty-state { margin: 36px auto; max-width: 320px; }
 }
@@ -595,6 +620,7 @@ marker path { fill: var(--cp-border-strong); }
   .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workspace { display: block; min-height: 0; }
   .rail { max-height: 320px; border-right: 0; border-bottom: 1px solid var(--cp-border); }
+  .rail-resize { display: none; }
   .detail { min-height: 200px; border-top: 1px solid var(--cp-border); }
   .graph-panel > .panel-heading { align-items: flex-start; flex-wrap: wrap; padding: 14px; }
   .graph-heading { width: 100%; }

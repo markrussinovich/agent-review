@@ -23,7 +23,13 @@ function collectPaths(value, repoRoot, key = "", paths = new Set()) {
     } else if (value && typeof value === "object") {
         for (const [childKey, child] of Object.entries(value)) collectPaths(child, repoRoot, childKey, paths);
     } else if (typeof value === "string") {
-        if (PATH_KEYS.has(key) || /\.(py|toml|txt|json|ya?ml|md|mjs|js|css|html)$/i.test(value)) {
+        if (
+            PATH_KEYS.has(key)
+            || (
+                /\.(py|toml|txt|json|ya?ml|md|mjs|js|css|html)$/i.test(value.trim())
+                && !/\s/.test(value.trim())
+            )
+        ) {
             const path = repositoryPath(value, repoRoot);
             if (path) paths.add(path);
         }
@@ -35,7 +41,7 @@ function collectPaths(value, repoRoot, key = "", paths = new Set()) {
                 if (path) paths.add(path);
             }
             if (scanEmbeddedPaths) {
-                for (const match of line.matchAll(/(?:^|[\s"'`])([A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_. -]+)+\.(?:py|toml|txt|json|ya?ml|md|mjs|js|css|html))(?=$|[\s"'`,:])/gi)) {
+                for (const match of line.matchAll(/(?:^|[\s"'`])([A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+\.(?:py|toml|txt|json|ya?ml|md|mjs|js|css|html))(?=$|[\s"'`,:])/gi)) {
                     const path = repositoryPath(match[1], repoRoot);
                     if (path) paths.add(path);
                 }
@@ -67,6 +73,10 @@ function promptIntentScore(prompt) {
     if (/\b(create|add|implement|build|generate|write|introduce|replace|remove|refactor|optimi[sz]e|fix)\b/.test(text)) score += 0.18;
     if (/\b(review|inspect|explain|why is|copy button|map.*prompt|canvas|highlight)\b/.test(text)) score -= 0.16;
     return score;
+}
+
+function isReviewPrompt(prompt) {
+    return /\b(review|inspect|explain|highlight|canvas|copy button|not fixed|still finding|why is|doesn't work|broken|error)\b/i.test(String(prompt || ""));
 }
 
 function isInternalAgentReviewPrompt(content) {
@@ -211,11 +221,13 @@ export function findSessionAttribution(sessionContext, path) {
                 : `${basename} was mentioned in visible prompt or agent activity.`,
             write_activity_count: writes,
             read_activity_count: reads,
+            review_intent: isReviewPrompt(turn.prompt),
             agent_activity: turn.agent_activity.slice(-12),
             referenced_files: turn.referenced_files,
         });
     }
-    return results
+    const authoringCandidates = results.filter((item) => !item.review_intent);
+    return (authoringCandidates.length ? authoringCandidates : results)
         .sort((a, b) => b.confidence_score - a.confidence_score || String(b.started_at).localeCompare(String(a.started_at)))
         .slice(0, 3);
 }

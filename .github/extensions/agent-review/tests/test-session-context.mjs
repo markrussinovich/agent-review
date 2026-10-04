@@ -115,5 +115,34 @@ test("ranks authoring intent above later inspection of the same file", () => {
     ], ROOT);
     const matches = findSessionAttribution(context, "src/workflow_service/rules.py");
     assert.equal(matches[0].prompt, "Create a new composable rules feature for workflow validation.");
-    assert.ok(matches[0].confidence_score > matches[1].confidence_score);
+    assert.equal(matches.length, 1);
+});
+
+test("splits multiple file paths from one command argument", () => {
+    const context = buildSessionContext([
+        {
+            id: "user-multi",
+            type: "user.message",
+            timestamp: "2026-10-03T08:00:00Z",
+            data: { content: "Add workflow rules and scheduling features." },
+        },
+        {
+            id: "tool-multi",
+            type: "tool.execution_start",
+            timestamp: "2026-10-03T08:01:00Z",
+            data: {
+                toolName: "powershell",
+                arguments: {
+                    command: "git add src/workflow_service/rules.py src/workflow_service/scheduling.py tests/test_rules.py",
+                    description: "Commit feature files",
+                },
+            },
+        },
+    ], ROOT);
+    assert.deepEqual(context.turns[0].referenced_files, [
+        "src/workflow_service/rules.py",
+        "src/workflow_service/scheduling.py",
+        "tests/test_rules.py",
+    ]);
+    assert.equal(findSessionAttribution(context, "src/workflow_service/rules.py")[0].prompt, "Add workflow rules and scheduling features.");
 });

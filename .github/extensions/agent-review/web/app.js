@@ -16,7 +16,7 @@ const state = {
 };
 const elements = Object.fromEntries([
     "status", "refresh", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
-    "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "session-intent",
+    "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "session-intent", "rail-resize",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail", "source-panel", "source-title",
     "source-provenance", "source-annotation", "source-close", "source",
     "session-history-panel", "session-history-title", "session-history-meta", "session-history-close", "session-transcript",
@@ -1140,6 +1140,39 @@ resizeObserver.observe(document.documentElement);
 resizeObserver.observe(document.body);
 resizeObserver.observe(elements.graph);
 setInterval(detectHostResize, 500);
+
+let railResizeStart = null;
+function setRailWidth(width) {
+    const workspaceWidth = document.querySelector(".workspace")?.clientWidth || window.innerWidth;
+    const maximum = Math.max(260, Math.min(520, workspaceWidth - 420));
+    const value = Math.max(190, Math.min(maximum, width));
+    document.documentElement.style.setProperty("--review-rail-width", `${value}px`);
+    localStorage.setItem("agent-review:rail-width", String(value));
+    scheduleResizeRender();
+}
+const savedRailWidth = Number(localStorage.getItem("agent-review:rail-width"));
+if (Number.isFinite(savedRailWidth)) setRailWidth(savedRailWidth);
+elements.rail_resize.addEventListener("pointerdown", (event) => {
+    const rail = document.querySelector(".rail");
+    railResizeStart = { x: event.clientX, width: rail.getBoundingClientRect().width };
+    elements.rail_resize.setPointerCapture(event.pointerId);
+    document.body.classList.add("resizing-rail");
+});
+elements.rail_resize.addEventListener("pointermove", (event) => {
+    if (!railResizeStart || !elements.rail_resize.hasPointerCapture(event.pointerId)) return;
+    setRailWidth(railResizeStart.width + event.clientX - railResizeStart.x);
+});
+elements.rail_resize.addEventListener("pointerup", (event) => {
+    railResizeStart = null;
+    elements.rail_resize.releasePointerCapture(event.pointerId);
+    document.body.classList.remove("resizing-rail");
+});
+elements.rail_resize.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    event.preventDefault();
+    const current = document.querySelector(".rail").getBoundingClientRect().width;
+    setRailWidth(current + (event.key === "ArrowRight" ? 20 : -20));
+});
 elements.source_close.addEventListener("click", () => {
     state.selectionEpoch += 1;
     state.source = null;
