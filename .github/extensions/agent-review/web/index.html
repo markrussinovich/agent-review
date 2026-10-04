@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Agent Review</title>
+    <script>
+      (() => {
+        const param = new URLSearchParams(window.location.search).get("scoutTheme");
+        const theme =
+          param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        document.documentElement.setAttribute("data-theme", theme);
+      })();
+    </script>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+    <header class="topbar">
+        <div>
+            <p class="eyebrow">COPILOT CANVAS</p>
+            <h1>Agent Review</h1>
+        </div>
+        <div class="top-actions">
+            <span id="status" class="status">Connecting</span>
+            <button id="refresh" type="button">Refresh analysis</button>
+        </div>
+    </header>
+    <main>
+        <section id="error" class="error hidden" role="alert"></section>
+        <section id="analysis-progress" class="analysis-progress hidden" aria-live="polite">
+            <div class="progress-copy">
+                <div>
+                    <p id="progress-phase" class="eyebrow">STARTING</p>
+                    <strong id="progress-message">Starting deterministic repository analysis</strong>
+                </div>
+                <span id="progress-percent">0%</span>
+            </div>
+            <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div id="progress-bar" class="progress-bar"></div>
+            </div>
+        </section>
+        <section id="summary" class="summary" aria-label="Change summary"></section>
+        <nav id="breadcrumbs" class="breadcrumbs" aria-label="Review level"></nav>
+        <section class="workspace">
+            <aside class="rail">
+                <div class="rail-heading">
+                    <div><p class="eyebrow">REVIEW QUEUE</p><h2>Attention</h2></div>
+                    <span id="attention-count" class="count">0</span>
+                </div>
+                <div id="attention" class="cards"></div>
+                <div class="rail-heading session-heading">
+                    <div><p class="eyebrow">COPILOT CONTEXT</p><h2>Session intent</h2></div>
+                </div>
+                <div id="session-intent" class="cards compact"></div>
+                <div class="rail-heading packages-heading">
+                    <div><p class="eyebrow">DEPENDENCIES</p><h2>Current packages</h2></div>
+                </div>
+                <div id="packages" class="cards compact"></div>
+            </aside>
+            <section class="graph-panel">
+                <div class="panel-heading">
+                    <div class="graph-heading">
+                        <button id="zoom-out" class="zoom-out" type="button" disabled aria-label="Go back one review level">← Back</button>
+                        <div>
+                        <p id="level-label" class="eyebrow">ARCHITECTURE</p>
+                        <h2 id="graph-title">Structural change map</h2>
+                        </div>
+                    </div>
+                    <div class="legend">
+                        <span><i class="added"></i>Added</span>
+                        <span><i class="modified"></i>Modified</span>
+                        <span><i class="removed"></i>Removed</span>
+                    </div>
+                    <div class="graph-controls">
+                        <label><input id="changed-only" type="checkbox" checked> Changed only</label>
+                        <input id="review-search" type="search" placeholder="Filter names…" aria-label="Filter review items">
+                    </div>
+                </div>
+                <div id="graph" class="graph" aria-label="Interactive change graph"></div>
+            </section>
+            <aside id="detail" class="detail">
+                <div class="empty-state">
+                    <span class="focus-mark">◎</span>
+                    <h2>Select evidence</h2>
+                    <p>Choose a component, relationship, package, or finding to inspect deterministic evidence.</p>
+                </div>
+            </aside>
+        </section>
+        <section id="source-panel" class="source-panel hidden">
+            <div class="panel-heading">
+                <div><p class="eyebrow">SOURCE / DIFF</p><h2 id="source-title"></h2></div>
+                <div class="tablist" role="tablist">
+                    <button class="tab active" data-tab="diff" type="button">Diff</button>
+                    <button class="tab" data-tab="current" type="button">Current</button>
+                    <button class="tab" data-tab="base" type="button">Base</button>
+                    <button id="source-close" class="source-close" type="button" aria-label="Close source review">Close ×</button>
+                </div>
+            </div>
+            <aside id="source-annotation" class="source-annotation hidden" aria-live="polite"></aside>
+            <div id="source" class="code-view" aria-label="Source and diff"></div>
+        </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+</body>
+</html>
