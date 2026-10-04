@@ -482,8 +482,10 @@ function renderEmptyDetail() {
     panel.append(heading);
     if (annotation?.body) {
         const body = el("div", "annotation-body brief-ai");
+        markdownContext.intent = state.briefIntent || null;
         renderMarkdown(body, annotation.body);
         panel.append(body);
+        ensureBriefIntent(model);
     } else if (state.overviewLoading) {
         panel.append(el("p", "annotation-loading", "Copilot is summarizing the whole change…"));
     } else {
@@ -496,6 +498,23 @@ function renderEmptyDetail() {
             generate,
         );
     }
+}
+
+function ensureBriefIntent(model) {
+    const complete = Boolean(state.payload?.session_context?.historical_search_complete);
+    const key = `${model.metadata?.head_sha}|${complete}`;
+    if (state.briefIntentKey === key) return;
+    state.briefIntentKey = key;
+    const top = (model.changes || [])
+        .filter((change) => change.status !== "unchanged" && !isTestPath(change.path))
+        .sort((a, b) => (b.lines_added + b.lines_removed) - (a.lines_added + a.lines_removed))[0];
+    if (!top) return;
+    api(`/api/attribution?path=${encodeURIComponent(top.path)}`)
+        .then((result) => {
+            state.briefIntent = result.attribution?.[0] || null;
+            if (!state.selected) renderEmptyDetail();
+        })
+        .catch(() => {});
 }
 
 async function generateOverview() {
@@ -754,14 +773,26 @@ function appendInlineMarkdown(container, text) {
         if (match.index > offset) appendTextWithSourceReferences(container, text.slice(offset, match.index));
         const token = match[0];
         if (token.startsWith("**")) {
-            const strong = el("strong", "");
-            appendInlineMarkdown(strong, token.slice(2, -2));
-            container.append(strong);
+            const label = token.slice(2, -2);
+            const intent = markdownContext.intent;
+            if (intent?.session_id && /^(Stated intent|Requested):?$/i.test(label.trim())) {
+                container.append(intentLink(label, intent));
+            } else {
+                const strong = el("strong", "");
+                appendInlineMarkdown(strong, label);
+                container.append(strong);
+            }
         } else {
             const value = token.slice(1, -1);
             const reference = parseSourceReference(value);
+            const symbol = reference ? null : resolveSymbol(value);
             if (reference) {
                 container.append(sourceReferenceButton(value, reference));
+            } else if (symbol) {
+                container.append(sourceReferenceButton(value, {
+                    path: symbol.path,
+                    lines: [symbol.start_line],
+                }, `Open ${symbol.display_name || symbol.name} at ${symbol.path}:${symbol.start_line}`));
             } else {
                 container.append(el("code", "inline-code", value));
             }
@@ -780,12 +811,44 @@ function parseSourceReference(value) {
     };
 }
 
-function sourceReferenceButton(label, reference) {
+const markdownContext = { intent: null };
+let symbolIndex = { model: null, byName: new Map() };
+
+function resolveSymbol(value) {
+    const model = state.payload?.model;
+    if (!model) return null;
+    if (symbolIndex.model !== model) {
+        const byName = new Map();
+        for (const node of model.nodes) {
+            if (!["class", "function", "method"].includes(node.kind) || !node.path || !node.start_line) continue;
+            for (const key of new Set([node.display_name, node.name, node.qualified_name].filter(Boolean))) {
+                if (!byName.has(key)) byName.set(key, []);
+                byName.get(key).push(node);
+            }
+        }
+        symbolIndex = { model, byName };
+    }
+    const key = value.trim().replace(/\(.*\)$/, "");
+    const candidates = symbolIndex.byName.get(key) || [];
+    if (candidates.length === 1) return candidates[0];
+    const changed = candidates.filter((node) => node.change !== "unchanged");
+    return changed.length === 1 ? changed[0] : null;
+}
+
+function intentLink(label, attribution) {
+    const button = el("button", "intent-link", label);
+    button.type = "button";
+    button.title = "Open the originating prompt in the session history";
+    button.addEventListener("click", () => openSessionHistory(attribution));
+    return button;
+}
+
+function sourceReferenceButton(label, reference, title = null) {
     const button = el("button", "source-reference", label);
     button.type = "button";
-    button.title = reference.lines.length
+    button.title = title || (reference.lines.length
         ? `Open ${reference.path} at line ${reference.lines.join(", ")}`
-        : `Open ${reference.path}`;
+        : `Open ${reference.path}`);
     button.addEventListener("click", async () => {
         const epoch = ++state.selectionEpoch;
         const query = new URLSearchParams({ path: reference.path });
@@ -898,6 +961,7 @@ function renderAnnotation(item, annotation, loading = false) {
         panel.append(banner);
     }
     const body = el("div", "annotation-body");
+    markdownContext.intent = state.attribution?.[0] || null;
     renderMarkdown(body, risk ? risk.body : annotation.body);
     panel.append(body);
     if (annotation.evidence_ids?.length) {
@@ -1219,6 +1283,7 @@ function renderPackageRisk(panel, result) {
     }
     if (result.explanation) {
         const explanation = el("div", "detail-copy markdown-body");
+        markdownContext.intent = null;
         renderMarkdown(explanation, result.explanation);
         const explanationHeading = el("div", "assessment-heading");
         explanationHeading.append(el("h3", "", "Copilot assessment"), copyButton(result.explanation, "Copy"));
@@ -1484,7 +1549,10 @@ function connectEvents() {
         if (state.payload.type === "session-history" && state.source?.path) {
             const epoch = state.selectionEpoch;
             refreshAttribution().then(() => {
-                if (epoch === state.selectionEpoch) renderProvenance();
+                if (epoch !== state.selectionEpoch) return;
+                renderProvenance();
+                const annotation = state.payload.annotations?.[state.selected?.id];
+                if (annotation) renderAnnotation(state.selected, annotation);
             }).catch(showError);
         }
     });
