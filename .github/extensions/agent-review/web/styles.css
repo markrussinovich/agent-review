@@ -1086,3 +1086,20 @@ main { padding: 16px 20px 32px; }
 }
 .intent-link::after { content: " ↗"; font-size: .75em; }
 .intent-link:hover, .intent-link:focus-visible { border-bottom-style: solid; color: var(--cp-accent); }
+
+.source-heading { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.source-nav { display: flex; gap: 4px; flex: 0 0 auto; }
+.source-nav-button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--cp-border-strong);
+  border-radius: .625rem;
+  background: var(--cp-surface);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.source-nav-button:hover:not(:disabled) { background: var(--cp-surface-soft); }
+.source-nav-button:disabled { opacity: .4; cursor: default; }
+.source-heading h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

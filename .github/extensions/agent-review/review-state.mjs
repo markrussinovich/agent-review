@@ -141,6 +141,7 @@ export class ReviewState {
     constructor(repoRoot, options = {}) {
         this.repoRoot = repoRoot;
         this.baseRef = options.baseRef || null;
+        this.resolveBaseRef = options.resolveBaseRef || null;
         this.model = null;
         this.error = null;
         this.loading = false;
@@ -208,10 +209,15 @@ export class ReviewState {
         };
         this.broadcast("refresh-started");
         const sessionContextPromise = this.refreshSessionContext(false);
-        this.refreshPromise = runAnalyzer(this.repoRoot, this.baseRef, (progress) => {
-            this.progress = { ...this.progress, ...progress };
-            this.broadcast("progress");
-        })
+        this.refreshPromise = Promise.resolve()
+            .then(() => this.resolveBaseRef ? this.resolveBaseRef() : this.baseRef)
+            .then((baseRef) => {
+                this.baseRef = baseRef ?? null;
+                return runAnalyzer(this.repoRoot, this.baseRef, (progress) => {
+                    this.progress = { ...this.progress, ...progress };
+                    this.broadcast("progress");
+                });
+            })
             .then((model) => {
                 this.model = model;
                 this.generatedObservations = this.generatedObservations.filter((observation) =>

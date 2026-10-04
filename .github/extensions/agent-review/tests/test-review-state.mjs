@@ -55,3 +55,14 @@ test("overview context summarizes churn split, ranked findings, and prompts dete
     assert.equal(received.analysis_quality.coverage_available, false);
     assert.equal(await state.overviewFor(), first, "overview is cached until refresh");
 });
+
+test("base ref is re-resolved on every refresh", async () => {
+    let calls = 0;
+    const state = new ReviewState("C:\\definitely-not-a-repo", {
+        resolveBaseRef: async () => `ref-${++calls}`,
+    });
+    await state.refresh().catch(() => {});
+    assert.equal(state.baseRef, "ref-1");
+    await state.refresh().catch(() => {});
+    assert.equal(state.baseRef, "ref-2");
+});

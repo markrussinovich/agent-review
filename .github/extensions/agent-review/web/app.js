@@ -16,12 +16,13 @@ const state = {
     changedOnly: true,
     query: "",
     detailVisible: true,
+    sourceHistory: { entries: [], index: -1, pending: -1 },
 };
 const elements = Object.fromEntries([
     "status", "refresh", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "session-intent", "rail-resize",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail-toggle", "detail", "detail-close", "source-panel", "source-title",
-    "source-provenance", "source-annotation", "source-close", "source",
+    "source-provenance", "source-annotation", "source-close", "source", "source-back", "source-forward",
     "session-history-panel", "session-history-title", "session-history-meta", "session-history-close", "session-transcript",
 ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
 
@@ -545,15 +546,57 @@ function setDetailVisible(visible) {
     scheduleResizeRender();
 }
 
-async function loadSource(query, epoch, preferredTab = null) {
+async function loadSource(query, epoch, preferredTab = null, nav = "reset") {
     const source = await api(`/api/source?${query}`);
     const attribution = await fetchAttribution(source.path);
     if (epoch !== state.selectionEpoch) return false;
     state.source = source;
     state.attribution = attribution;
     state.sourceTab = preferredTab || (source.diff ? "diff" : "current");
+    recordSourceNavigation(nav, { query, tab: state.sourceTab, label: `${source.path}${source.start_line ? `:${source.start_line}` : ""}` });
     renderSource();
     return true;
+}
+
+function recordSourceNavigation(mode, entry) {
+    const history = state.sourceHistory;
+    if (mode === "replay") {
+        history.index = history.pending;
+        return;
+    }
+    if (mode === "push" && history.index >= 0) {
+        if (history.entries[history.index].query === entry.query) return;
+        history.entries.splice(history.index + 1);
+        history.entries.push(entry);
+        history.index = history.entries.length - 1;
+        return;
+    }
+    history.entries = [entry];
+    history.index = 0;
+}
+
+function renderSourceNavigation() {
+    const history = state.sourceHistory;
+    const back = history.entries[history.index - 1];
+    const forward = history.entries[history.index + 1];
+    elements.source_back.disabled = !back;
+    elements.source_forward.disabled = !forward;
+    elements.source_back.title = back ? `Back to ${back.label} (Alt+←)` : "Back (Alt+←)";
+    elements.source_forward.title = forward ? `Forward to ${forward.label} (Alt+→)` : "Forward (Alt+→)";
+}
+
+async function navigateSource(delta) {
+    const history = state.sourceHistory;
+    const target = history.index + delta;
+    const entry = history.entries[target];
+    if (!entry) return;
+    history.pending = target;
+    const epoch = ++state.selectionEpoch;
+    try {
+        await loadSource(entry.query, epoch, entry.tab, "replay");
+    } catch (error) {
+        if (epoch === state.selectionEpoch) showError(error);
+    }
 }
 
 async function fetchAttribution(path) {
@@ -854,7 +897,7 @@ function sourceReferenceButton(label, reference, title = null) {
         const query = new URLSearchParams({ path: reference.path });
         if (reference.lines[0]) query.set("line", String(reference.lines[0]));
         try {
-            await loadSource(query.toString(), epoch, "current");
+            await loadSource(query.toString(), epoch, "current", "push");
         } catch (error) {
             if (epoch === state.selectionEpoch) showError(error);
         }
@@ -1124,6 +1167,7 @@ function renderSource() {
     if (annotation) renderAnnotation(state.selected, annotation);
     renderProvenance();
     document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === state.sourceTab));
+    renderSourceNavigation();
 }
 
 function collectionTitle(mode) {
@@ -1445,6 +1489,11 @@ window.addEventListener("keydown", (event) => {
         elements.source_close.click();
         return;
     }
+    if (event.altKey && ["ArrowLeft", "ArrowRight"].includes(event.key) && !elements.source_panel.classList.contains("hidden")) {
+        event.preventDefault();
+        navigateSource(event.key === "ArrowLeft" ? -1 : 1);
+        return;
+    }
     if (event.altKey && event.key === "ArrowLeft" && (state.stack.length || state.mode !== "graph")) {
         event.preventDefault();
         elements.zoom_out.click();
@@ -1525,7 +1574,15 @@ elements.source_close.addEventListener("click", () => {
     state.selectionEpoch += 1;
     state.source = null;
     state.attribution = [];
+    state.sourceHistory = { entries: [], index: -1, pending: -1 };
     elements.source_panel.classList.add("hidden");
+});
+elements.source_back.addEventListener("click", () => navigateSource(-1));
+elements.source_forward.addEventListener("click", () => navigateSource(1));
+window.addEventListener("mouseup", (event) => {
+    if ((event.button !== 3 && event.button !== 4) || elements.source_panel.classList.contains("hidden")) return;
+    event.preventDefault();
+    navigateSource(event.button === 3 ? -1 : 1);
 });
 elements.session_history_close.addEventListener("click", () => {
     elements.session_history_panel.classList.add("hidden");
@@ -1534,6 +1591,8 @@ elements.session_history_close.addEventListener("click", () => {
 });
 document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
     state.sourceTab = tab.dataset.tab;
+    const current = state.sourceHistory.entries[state.sourceHistory.index];
+    if (current) current.tab = state.sourceTab;
     renderSource();
 }));
 

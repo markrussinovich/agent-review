@@ -93,7 +93,13 @@
         </section>
         <section id="source-panel" class="source-panel hidden">
             <div class="panel-heading">
-                <div><p class="eyebrow">SOURCE / DIFF</p><h2 id="source-title"></h2></div>
+                <div class="source-heading">
+                    <div class="source-nav" role="group" aria-label="Source navigation">
+                        <button id="source-back" class="source-nav-button" type="button" aria-label="Back" title="Back (Alt+←)" disabled>←</button>
+                        <button id="source-forward" class="source-nav-button" type="button" aria-label="Forward" title="Forward (Alt+→)" disabled>→</button>
+                    </div>
+                    <div><p class="eyebrow">SOURCE / DIFF</p><h2 id="source-title"></h2></div>
+                </div>
                 <div class="tablist" role="tablist">
                     <button class="tab active" data-tab="diff" type="button">Diff</button>
                     <button class="tab" data-tab="current" type="button">Current</button>

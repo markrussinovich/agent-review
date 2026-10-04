@@ -116,6 +116,17 @@ const canvas = createCanvas({
 function createReviewState(requestedPath, input) {
     const state = new ReviewState(requestedPath, {
         baseRef: input.baseRef,
+        // Re-read on every refresh so a base_ref added by a later commit or checkout takes effect.
+        resolveBaseRef: async () => {
+            if (input.baseRef) return input.baseRef;
+            try {
+                const config = await loadReviewConfig(state.repoRoot);
+                return config.base_ref || process.env.COPILOT_DEFAULT_BRANCH || null;
+            } catch (error) {
+                console.error("[agent-review]", error);
+                return state.baseRef;
+            }
+        },
         getSessionEvents: () => session.getEvents(),
         currentSessionId: session.sessionId,
         getHistoricalSessionContexts: () => loadHistoricalSessionContexts(state.repoRoot, session.sessionId),
