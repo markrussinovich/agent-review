@@ -143,17 +143,27 @@ function evidenceButton(id) {
 async function copyText(button, text) {
     const originalLabel = button.getAttribute("aria-label") || "Copy";
     try {
+        let copied = false;
         if (navigator.clipboard?.writeText) {
-            await navigator.clipboard.writeText(text);
-        } else {
+            try {
+                await navigator.clipboard.writeText(text);
+                copied = true;
+            } catch {
+                // Sandboxed Canvas hosts can expose the API while denying clipboard permission.
+            }
+        }
+        if (!copied) {
             const textarea = el("textarea", "");
             textarea.value = text;
             textarea.style.position = "fixed";
             textarea.style.opacity = "0";
             document.body.append(textarea);
-            textarea.select();
-            if (!document.execCommand("copy")) throw new Error("The browser rejected the copy command.");
-            textarea.remove();
+            try {
+                textarea.select();
+                if (!document.execCommand("copy")) throw new Error("The browser rejected the copy command.");
+            } finally {
+                textarea.remove();
+            }
         }
         button.textContent = "✓";
         button.setAttribute("aria-label", "Copied");

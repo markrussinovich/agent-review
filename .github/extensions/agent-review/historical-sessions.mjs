@@ -27,7 +27,7 @@ function isUsefulSession(metadata, currentSessionId, repositoryRoots) {
     return sessionMatchesRepository(metadata, repositoryRoots);
 }
 
-async function managedCopilotPath() {
+export async function managedCopilotPath() {
     if (basename(process.execPath).toLowerCase() === "copilot.exe") return process.execPath;
     const root = join(process.env.LOCALAPPDATA || "", "github-copilot-sdk", "cli");
     const versions = await readdir(root, { withFileTypes: true });
