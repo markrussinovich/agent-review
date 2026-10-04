@@ -67,16 +67,22 @@ function toolOperation(event) {
     return "unknown";
 }
 
+function hasAuthoringIntent(prompt) {
+    return /\b(create|add|implement|build|generate|write|introduce|replace|remove|refactor|optimi[sz]e|fix)\b/i.test(String(prompt || ""));
+}
+
 function promptIntentScore(prompt) {
     const text = String(prompt || "").toLowerCase();
     let score = 0;
-    if (/\b(create|add|implement|build|generate|write|introduce|replace|remove|refactor|optimi[sz]e|fix)\b/.test(text)) score += 0.18;
-    if (/\b(review|inspect|explain|why is|copy button|map.*prompt|canvas|highlight)\b/.test(text)) score -= 0.16;
+    const authoring = hasAuthoringIntent(text);
+    if (authoring) score += 0.18;
+    if (!authoring && /\b(review|inspect|explain|why is|copy button|map.*prompt|canvas|highlight)\b/.test(text)) score -= 0.16;
     return score;
 }
 
 function isReviewPrompt(prompt) {
-    return /\b(review|inspect|explain|highlight|canvas|copy button|not fixed|still finding|why is|doesn't work|broken|error)\b/i.test(String(prompt || ""));
+    return !hasAuthoringIntent(prompt)
+        && /\b(review|inspect|explain|highlight|canvas|copy button|not fixed|still finding|why is|doesn't work|broken|error)\b/i.test(String(prompt || ""));
 }
 
 function isInternalAgentReviewPrompt(content) {
@@ -200,9 +206,10 @@ export function findSessionAttribution(sessionContext, path) {
         ].join(" ").toLowerCase();
         const mentioned = Boolean(basename && searchable.includes(basename));
         if (!exact && !mentioned) continue;
+        const authoringMention = mentioned && hasAuthoringIntent(turn.prompt);
         const confidenceScore = Math.max(0.1, Math.min(
             1,
-            (writes ? 0.88 : exact ? 0.65 : 0.38) + promptIntentScore(turn.prompt),
+            (writes ? 0.88 : exact ? 0.65 : authoringMention ? 0.72 : 0.38) + promptIntentScore(turn.prompt),
         ));
         results.push({
             turn_id: turn.id,
@@ -218,7 +225,9 @@ export function findSessionAttribution(sessionContext, path) {
                 ? `${normalized} was targeted by visible write/edit activity during this turn.`
                 : exact
                     ? `${normalized} was referenced by visible read/inspection activity during this turn.`
-                : `${basename} was mentioned in visible prompt or agent activity.`,
+                    : authoringMention
+                        ? `${normalized} was explicitly named in an authoring prompt.`
+                        : `${basename} was mentioned in visible prompt or agent activity.`,
             write_activity_count: writes,
             read_activity_count: reads,
             review_intent: isReviewPrompt(turn.prompt),

@@ -146,3 +146,20 @@ test("splits multiple file paths from one command argument", () => {
     ]);
     assert.equal(findSessionAttribution(context, "src/workflow_service/rules.py")[0].prompt, "Add workflow rules and scheduling features.");
 });
+
+test("treats explicit file creation as authoring even when review is mentioned", () => {
+    const context = buildSessionContext([
+        {
+            id: "user-create-review",
+            type: "user.message",
+            timestamp: "2026-10-03T07:00:00Z",
+            data: {
+                content: "Add src/workflow_service/health.py and leave it for Agent Review.",
+            },
+        },
+    ], ROOT);
+    const match = findSessionAttribution(context, "src/workflow_service/health.py")[0];
+    assert.equal(match.confidence, "likely");
+    assert.equal(match.review_intent, false);
+    assert.match(match.reason, /authoring prompt/);
+});
