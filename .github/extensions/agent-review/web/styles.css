@@ -106,20 +106,14 @@ h3 { margin-top: 20px; font-size: .8125rem; }
   background: var(--cp-success);
 }
 .status.working::before { background: var(--cp-warning); }
-#refresh, #fullscreen, .zoom-out, .tab, .source-close {
+#refresh, .zoom-out, .tab, .source-close {
   padding: 8px 12px;
   border: 1px solid var(--cp-border);
   border-radius: .625rem;
   background: var(--cp-surface);
   cursor: pointer;
 }
-#refresh:hover, #fullscreen:hover, .zoom-out:hover:not(:disabled), .tab:hover, .source-close:hover { border-color: var(--cp-accent); }
-#fullscreen.recommended-action {
-  border-color: var(--cp-accent);
-  background: var(--cp-accent);
-  color: var(--cp-accent-fg);
-  font-weight: 700;
-}
+#refresh:hover, .zoom-out:hover:not(:disabled), .tab:hover, .source-close:hover { border-color: var(--cp-accent); }
 #refresh:disabled, .zoom-out:disabled { cursor: default; opacity: .5; }
 main { width: 100%; max-width: none; padding: 20px 20px 36px; }
 .error, .analysis-progress {

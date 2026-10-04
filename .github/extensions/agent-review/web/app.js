@@ -13,7 +13,7 @@ const state = {
     query: "",
 };
 const elements = Object.fromEntries([
-    "status", "fullscreen", "refresh", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
+    "status", "refresh", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "session-intent",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail", "source-panel", "source-title",
     "source-provenance", "source-annotation", "source-close", "source",
@@ -979,69 +979,40 @@ let resizeTimer;
 function scheduleResizeRender() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
-        if (state.payload?.model) render();
-    }, 120);
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            if (state.payload?.model) render();
+        }));
+    }, 100);
 }
-function reportViewport() {
-    const visual = window.visualViewport;
-    const width = document.documentElement.clientWidth;
-    document.documentElement.style.setProperty("--canvas-width", `${document.documentElement.clientWidth}px`);
-    document.documentElement.style.setProperty("--canvas-height", `${document.documentElement.clientHeight}px`);
-    api("/api/viewport", {
-        method: "POST",
-        body: JSON.stringify({
-            layout_width: document.documentElement.clientWidth,
-            layout_height: document.documentElement.clientHeight,
-            visual_width: visual?.width ?? window.innerWidth,
-            visual_height: visual?.height ?? window.innerHeight,
-            device_pixel_ratio: window.devicePixelRatio,
-            fullscreen: Boolean(document.fullscreenElement),
-            fullscreen_enabled: Boolean(document.fullscreenEnabled),
-        }),
-    }).catch((error) => {
-        if (error.status !== 404) showError(error);
-    });
-    if (!document.fullscreenElement && width < 700) {
-        elements.fullscreen.textContent = `Expand Canvas (${width}px)`;
-        elements.fullscreen.classList.add("recommended-action");
-        elements.fullscreen.title = `The Copilot host allocated only ${width}px. Expand the Canvas to use the full display.`;
-    } else if (!document.fullscreenElement) {
-        elements.fullscreen.textContent = "Full canvas";
-        elements.fullscreen.classList.remove("recommended-action");
-    }
+function layoutSignature() {
+    const graphRect = elements.graph.getBoundingClientRect();
+    return [
+        document.documentElement.clientWidth,
+        document.documentElement.clientHeight,
+        window.visualViewport?.width ?? window.innerWidth,
+        window.visualViewport?.height ?? window.innerHeight,
+        Math.round(graphRect.width),
+        Math.round(graphRect.height),
+    ].join(":");
 }
-window.addEventListener("resize", scheduleResizeRender);
-window.addEventListener("resize", reportViewport);
-window.visualViewport?.addEventListener("resize", () => {
+let lastLayoutSignature = layoutSignature();
+function detectHostResize() {
+    const signature = layoutSignature();
+    if (signature === lastLayoutSignature) return;
+    lastLayoutSignature = signature;
     scheduleResizeRender();
-    reportViewport();
+}
+window.addEventListener("resize", detectHostResize);
+window.addEventListener("focus", detectHostResize);
+document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) detectHostResize();
 });
-let observedWidth = document.documentElement.clientWidth;
-new ResizeObserver(() => {
-    const width = document.documentElement.clientWidth;
-    if (Math.abs(width - observedWidth) < 2) return;
-    observedWidth = width;
-    scheduleResizeRender();
-}).observe(document.documentElement);
-
-elements.fullscreen.addEventListener("click", async () => {
-    try {
-        if (document.fullscreenElement) {
-            await document.exitFullscreen();
-        } else {
-            await document.documentElement.requestFullscreen();
-        }
-    } catch (error) {
-        showError(new Error(`The Copilot host did not allow web fullscreen. Use the native Expand Canvas control. ${error.message}`));
-    }
-});
-document.addEventListener("fullscreenchange", () => {
-    elements.fullscreen.textContent = document.fullscreenElement ? "Exit full canvas" : "Full canvas";
-    elements.fullscreen.classList.toggle("recommended-action", !document.fullscreenElement && document.documentElement.clientWidth < 700);
-    scheduleResizeRender();
-    reportViewport();
-});
-reportViewport();
+window.visualViewport?.addEventListener("resize", detectHostResize);
+const resizeObserver = new ResizeObserver(detectHostResize);
+resizeObserver.observe(document.documentElement);
+resizeObserver.observe(document.body);
+resizeObserver.observe(elements.graph);
+setInterval(detectHostResize, 500);
 elements.source_close.addEventListener("click", () => {
     state.source = null;
     state.attribution = [];
