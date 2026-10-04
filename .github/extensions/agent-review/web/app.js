@@ -20,7 +20,7 @@ const state = {
 };
 const elements = Object.fromEntries([
     "status", "refresh", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
-    "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "session-intent", "rail-resize",
+    "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "rail-resize",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail-toggle", "detail", "detail-close", "source-panel", "source-title",
     "source-provenance", "source-annotation", "source-close", "source", "source-back", "source-forward",
     "session-history-panel", "session-history-title", "session-history-meta", "session-history-close", "session-transcript",
@@ -274,27 +274,6 @@ function collapseSizeFindings(items, model) {
     return rest;
 }
 
-function renderSessionContext(context) {
-    const container = elements.session_intent;
-    container.replaceChildren();
-    const intent = context?.intent || [];
-    const empty = !intent.length && !context?.error;
-    container.classList.toggle("hidden", empty);
-    container.previousElementSibling?.classList.toggle("hidden", empty);
-    if (empty) return;
-    if (context?.error) {
-        container.append(el("p", "muted", context.error));
-        return;
-    }
-    for (const item of intent.slice(-3).reverse()) {
-        const card = el("article", "session-card");
-        card.append(el("strong", "", item.summary));
-        const time = item.timestamp ? new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
-        card.append(el("span", "", `${time} · intent context`));
-        container.append(card);
-    }
-}
-
 function childNodes(model) {
     const parent = state.stack.at(-1);
     if (!parent) return model.nodes.filter((node) => node.kind === "component");
@@ -457,6 +436,13 @@ function renderEmptyDetail() {
         field("Coverage", model.coverage?.available ? "measured" : "unknown"),
     );
     panel.append(grid);
+    ensureBriefIntent(model);
+    if (state.briefIntent) {
+        panel.append(el("h3", "", "Originating prompt"));
+        const origin = el("div", "brief-origin");
+        origin.append(promptBlock(state.briefIntent));
+        panel.append(origin);
+    }
     if (split.source > 50 && ratio < 0.15) {
         panel.append(el("p", "brief-warning", "Little or no test code changed relative to source."));
     }
@@ -486,7 +472,6 @@ function renderEmptyDetail() {
         markdownContext.intent = state.briefIntent || null;
         renderMarkdown(body, annotation.body);
         panel.append(body);
-        ensureBriefIntent(model);
     } else if (state.overviewLoading) {
         panel.append(el("p", "annotation-loading", "Copilot is summarizing the whole change…"));
     } else {
@@ -688,6 +673,30 @@ function ensureAnnotation(item, epoch = state.selectionEpoch) {
         });
 }
 
+function promptBlock(attribution) {
+    const fragment = document.createDocumentFragment();
+    const prompt = el("p", "provenance-prompt clamped", attribution.prompt);
+    fragment.append(prompt);
+    const actions = el("div", "provenance-actions");
+    if (attribution.prompt.length > 260) {
+        const toggle = el("button", "link-button", "Show full prompt");
+        toggle.type = "button";
+        toggle.addEventListener("click", () => {
+            const expanded = prompt.classList.toggle("clamped");
+            toggle.textContent = expanded ? "Show full prompt" : "Collapse";
+        });
+        actions.append(toggle);
+    }
+    if (attribution.session_id) {
+        const openHistory = el("button", "link-button", "Open session history →");
+        openHistory.type = "button";
+        openHistory.addEventListener("click", () => openSessionHistory(attribution));
+        actions.append(openHistory);
+    }
+    fragment.append(actions);
+    return fragment;
+}
+
 function renderProvenance() {
     const panel = elements.source_provenance;
     panel.replaceChildren();
@@ -722,25 +731,7 @@ function renderProvenance() {
         el("strong", "", "Originating prompt"),
         el("b", `confidence confidence-${primary.confidence}`, `${primary.confidence} match`),
     );
-    const prompt = el("p", "provenance-prompt clamped", primary.prompt);
-    panel.append(heading, prompt);
-    const actions = el("div", "provenance-actions");
-    if (primary.prompt.length > 260) {
-        const toggle = el("button", "link-button", "Show full prompt");
-        toggle.type = "button";
-        toggle.addEventListener("click", () => {
-            const expanded = prompt.classList.toggle("clamped");
-            toggle.textContent = expanded ? "Show full prompt" : "Collapse";
-        });
-        actions.append(toggle);
-    }
-    if (primary.session_id) {
-        const openHistory = el("button", "link-button", "Open session history →");
-        openHistory.type = "button";
-        openHistory.addEventListener("click", () => openSessionHistory(primary));
-        actions.append(openHistory);
-    }
-    panel.append(actions, el("p", "source-status", primary.reason));
+    panel.append(heading, promptBlock(primary), el("p", "source-status", primary.reason));
 }
 
 async function openSessionHistory(attribution) {
@@ -1381,7 +1372,6 @@ function render() {
         });
         elements.attention.append(viewAll);
     }
-    renderSessionContext(payload.session_context);
     renderCards(elements.packages, model.package_dependencies || [], "No declared package dependencies.");
 
     const parent = state.stack.at(-1);

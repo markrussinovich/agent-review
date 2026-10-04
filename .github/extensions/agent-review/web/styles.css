@@ -1103,3 +1103,18 @@ main { padding: 16px 20px 32px; }
 .source-nav-button:hover:not(:disabled) { background: var(--cp-surface-soft); }
 .source-nav-button:disabled { opacity: .4; cursor: default; }
 .source-heading h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.brief-origin { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--cp-border); border-radius: .625rem; background: var(--cp-surface); }
+.brief-origin .provenance-prompt { font-size: .8125rem; }
+
+/* The finding highlight must not recolor diff rows: tint-free outline in the link color only. */
+.code-row.focus-line {
+  background: color-mix(in srgb, var(--cp-link) 10%, transparent);
+  box-shadow: inset 3px 0 var(--cp-link), inset -3px 0 var(--cp-link);
+}
+.code-row.focus-line.diff-add { background: color-mix(in srgb, var(--cp-success) 18%, var(--cp-surface)); }
+.code-row.focus-line.diff-delete { background: color-mix(in srgb, var(--cp-danger) 18%, var(--cp-surface)); }
+.code-row.focus-line.diff-modified { background: color-mix(in srgb, var(--cp-warning) 20%, var(--cp-surface)); }
+.code-row.focus-line.focus-start { border-top: 2px solid var(--cp-link); }
+.code-row.focus-line.focus-end { border-bottom: 2px solid var(--cp-link); }
+.code-row.focus-line.focus-start::after { background: var(--cp-link); }
