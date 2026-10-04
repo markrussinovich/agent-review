@@ -38,7 +38,7 @@ async function readJson(req) {
     return text ? JSON.parse(text) : {};
 }
 
-export function startReviewServer(state) {
+export function startReviewServer(state, options = {}) {
     const clients = new Set();
     const unsubscribe = state.subscribe((event) => {
         const payload = `event: state\ndata: ${JSON.stringify(event)}\n\n`;
@@ -91,6 +91,8 @@ export function startReviewServer(state) {
                     Connection: "keep-alive",
                 });
                 res.write(": connected\n\n");
+                if (!state.model && !state.loading) state.refresh().catch(() => {});
+                res.write(`event: state\ndata: ${JSON.stringify({ type: "connected", ...state.snapshot() })}\n\n`);
                 clients.add(res);
                 const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
                 req.on("close", () => {
@@ -133,19 +135,49 @@ export function startReviewServer(state) {
         }
     });
 
-    return new Promise((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(0, "127.0.0.1", () => {
-            const address = server.address();
-            const port = typeof address === "object" && address ? address.port : 0;
-            resolve({
-                url: `http://127.0.0.1:${port}/`,
-                close: async () => {
-                    unsubscribe();
-                    for (const client of clients) client.end();
-                    await new Promise((done, fail) => server.close((error) => error ? fail(error) : done()));
-                },
-            });
-        });
+    const listen = (port) => new Promise((resolve, reject) => {
+        const onError = (error) => {
+            server.off("listening", onListening);
+            reject(error);
+        };
+        const onListening = () => {
+            server.off("error", onError);
+            resolve();
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(port, "127.0.0.1");
     });
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    return (async () => {
+        const preferred = Number.isInteger(options.port) ? options.port : 0;
+        const deadline = Date.now() + (options.exactPort ? options.waitMs ?? 20_000 : 0);
+        for (;;) {
+            try {
+                await listen(preferred);
+                break;
+            } catch (error) {
+                if (error.code !== "EADDRINUSE" || !preferred) throw error;
+                if (options.exactPort) {
+                    if (Date.now() >= deadline) throw error;
+                    await sleep(300);
+                    continue;
+                }
+                await listen(0);
+                break;
+            }
+        }
+        const address = server.address();
+        const port = typeof address === "object" && address ? address.port : 0;
+        return {
+            port,
+            url: `http://127.0.0.1:${port}/`,
+            close: async () => {
+                unsubscribe();
+                for (const client of clients) client.end();
+                await new Promise((done, fail) => server.close((error) => error ? fail(error) : done()));
+            },
+        };
+    })();
 }

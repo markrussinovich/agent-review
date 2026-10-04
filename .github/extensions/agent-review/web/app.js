@@ -1476,17 +1476,27 @@ api("/api/state").then((payload) => {
     state.payload = payload;
     render();
 }).catch(showError);
-const events = new EventSource("/events");
-events.addEventListener("state", (event) => {
-    state.payload = JSON.parse(event.data);
-    render();
-    if (state.payload.type === "session-history" && state.source?.path) {
-        const epoch = state.selectionEpoch;
-        refreshAttribution().then(() => {
-            if (epoch === state.selectionEpoch) renderProvenance();
-        }).catch(showError);
-    }
-});
-events.onerror = () => {
-    elements.status.textContent = "Reconnecting…";
-};
+function connectEvents() {
+    const events = new EventSource("/events");
+    events.addEventListener("state", (event) => {
+        state.payload = JSON.parse(event.data);
+        render();
+        if (state.payload.type === "session-history" && state.source?.path) {
+            const epoch = state.selectionEpoch;
+            refreshAttribution().then(() => {
+                if (epoch === state.selectionEpoch) renderProvenance();
+            }).catch(showError);
+        }
+    });
+    events.onerror = () => {
+        elements.status.textContent = "Reconnecting…";
+        elements.status.classList.add("working");
+        // The host can restart the provider that serves this page; a replacement serves the
+        // same URL, so keep retrying instead of leaving the page permanently stale.
+        if (events.readyState === EventSource.CLOSED) {
+            events.close();
+            setTimeout(connectEvents, 2000);
+        }
+    };
+}
+connectEvents();

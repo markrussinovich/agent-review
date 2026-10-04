@@ -27,6 +27,13 @@ The extension prefers `COPILOT_WORKSPACE_PATH`, `COPILOT_ROOT_PATH`, and
 override discovery. Set `AGENT_REVIEW_PYTHON` only if Python 3.11+ is not
 available as `py -3.11`, `python3`, or `python`.
 
+The Copilot app can restart extension processes several times while a session
+resumes, which would otherwise leave an open Canvas pointing at a stopped
+server ("Reconnecting…"). Each Canvas therefore uses a stable loopback port that
+is recorded under `~/.copilot/agent-review/canvases`; a replacement provider
+for the same session re-serves that URL and the page reconnects on its own.
+Set `AGENT_REVIEW_STATE_DIR` to relocate the records.
+
 The analyzer can also run independently:
 
 ```text

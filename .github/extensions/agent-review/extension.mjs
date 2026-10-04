@@ -10,9 +10,11 @@ import {
 } from "./ai-prompts.mjs";
 import { loadHistoricalSessionContexts } from "./historical-sessions.mjs";
 import { loadReviewConfig, resolveRepoRoot, ReviewState } from "./review-state.mjs";
+import { preferredPort, readCanvasMarkers, removeCanvasMarker, writeCanvasMarker } from "./canvas-persistence.mjs";
 import { startReviewServer } from "./server.mjs";
 
 const instances = new Map();
+const pendingInstances = new Map();
 const reviewStates = new Map();
 let session;
 
@@ -95,65 +97,15 @@ const canvas = createCanvas({
     ],
     open: async (ctx) => {
         let instance = instances.get(ctx.instanceId);
-        if (!instance) {
-            const requestedPath = ctx.input?.repoPath
-                || process.env.COPILOT_WORKSPACE_PATH
-                || process.env.COPILOT_ROOT_PATH
-                || process.cwd();
-            const stateKey = `${requestedPath}|${ctx.input?.baseRef || ""}`;
-            let state = reviewStates.get(stateKey);
-            const isNewState = !state;
-            if (!state) {
-                state = new ReviewState(requestedPath, {
-                    baseRef: ctx.input?.baseRef,
-                    getSessionEvents: () => session.getEvents(),
-                    currentSessionId: session.sessionId,
-                    getHistoricalSessionContexts: () =>
-                        loadHistoricalSessionContexts(state.repoRoot, session.sessionId),
-                    generateAnnotation: async (context) => {
-                    const overview = context.kind === "overview";
-                    return generateIsolatedExplanation({
-                        workingDirectory: state.repoRoot,
-                        prompt: overview ? buildOverviewPrompt(context) : buildAnnotationPrompt(context),
-                        sourceEvents: await session.getEvents(),
-                        requiredHeadings: overview ? OVERVIEW_HEADINGS : ANNOTATION_HEADINGS,
-                    });
-                    },
-                    generatePackageExplanation: async ({ dependency, assessment }) => {
-                    const prompt = buildPackagePrompt(dependency, assessment);
-                    return generateIsolatedExplanation({
-                        workingDirectory: state.repoRoot,
-                        prompt,
-                        sourceEvents: await session.getEvents(),
-                        requiredHeadings: PACKAGE_HEADINGS,
-                    });
-                    },
-                });
-                reviewStates.set(stateKey, state);
-            }
-            const server = await startReviewServer(state);
-            instance = { state, server };
-            instances.set(ctx.instanceId, instance);
-            if (isNewState) {
-                resolveRepoRoot(requestedPath)
-                    .then(async (repoRoot) => {
-                        state.repoRoot = repoRoot;
-                        const config = await loadReviewConfig(repoRoot);
-                        state.baseRef = ctx.input?.baseRef
-                            || config.base_ref
-                            || process.env.COPILOT_DEFAULT_BRANCH
-                            || null;
-                        return state.refresh();
-                    })
-                    .catch((error) => {
-                        state.failInitialization(error);
-                        console.error("[agent-review]", error);
-                    });
-            }
+        if (!instance && pendingInstances.has(ctx.instanceId)) {
+            const wait = new Promise((resolve) => setTimeout(() => resolve(null), 4_000));
+            instance = await Promise.race([pendingInstances.get(ctx.instanceId).catch(() => null), wait]);
         }
+        if (!instance) instance = await createInstance(ctx.instanceId, ctx.input || {});
         return { title: "Agent Review", status: "Architecture-to-source change review", url: instance.server.url };
     },
     onClose: async (ctx) => {
+        await removeCanvasMarker(session.sessionId, ctx.instanceId).catch(() => {});
         const instance = instances.get(ctx.instanceId);
         if (!instance) return;
         instances.delete(ctx.instanceId);
@@ -161,5 +113,101 @@ const canvas = createCanvas({
     },
 });
 
+function createReviewState(requestedPath, input) {
+    const state = new ReviewState(requestedPath, {
+        baseRef: input.baseRef,
+        getSessionEvents: () => session.getEvents(),
+        currentSessionId: session.sessionId,
+        getHistoricalSessionContexts: () => loadHistoricalSessionContexts(state.repoRoot, session.sessionId),
+        generateAnnotation: async (context) => {
+            const overview = context.kind === "overview";
+            return generateIsolatedExplanation({
+                workingDirectory: state.repoRoot,
+                prompt: overview ? buildOverviewPrompt(context) : buildAnnotationPrompt(context),
+                sourceEvents: await session.getEvents(),
+                requiredHeadings: overview ? OVERVIEW_HEADINGS : ANNOTATION_HEADINGS,
+            });
+        },
+        generatePackageExplanation: async ({ dependency, assessment }) => generateIsolatedExplanation({
+            workingDirectory: state.repoRoot,
+            prompt: buildPackagePrompt(dependency, assessment),
+            sourceEvents: await session.getEvents(),
+            requiredHeadings: PACKAGE_HEADINGS,
+        }),
+    });
+    return state;
+}
+
+function createInstance(instanceId, input, serverOptions = {}) {
+    const pending = buildInstance(instanceId, input, serverOptions)
+        .finally(() => pendingInstances.delete(instanceId));
+    pendingInstances.set(instanceId, pending);
+    return pending;
+}
+
+async function buildInstance(instanceId, input, serverOptions) {
+    const requestedPath = input.repoPath
+        || process.env.COPILOT_WORKSPACE_PATH
+        || process.env.COPILOT_ROOT_PATH
+        || process.cwd();
+    const stateKey = `${requestedPath}|${input.baseRef || ""}`;
+    let state = reviewStates.get(stateKey);
+    const isNewState = !state;
+    if (!state) {
+        state = createReviewState(requestedPath, input);
+        reviewStates.set(stateKey, state);
+    }
+    const server = await startReviewServer(state, {
+        port: preferredPort(requestedPath, input.baseRef),
+        ...serverOptions,
+    });
+    const existing = instances.get(instanceId);
+    if (existing) {
+        await server.close();
+        return existing;
+    }
+    const instance = { state, server };
+    instances.set(instanceId, instance);
+    await writeCanvasMarker({
+        sessionId: session.sessionId,
+        instanceId,
+        port: server.port,
+        input: { repoPath: requestedPath, baseRef: input.baseRef || null },
+    }).catch((error) => console.error("[agent-review] Unable to persist Canvas marker:", error));
+    if (isNewState) {
+        resolveRepoRoot(requestedPath)
+            .then(async (repoRoot) => {
+                state.repoRoot = repoRoot;
+                const config = await loadReviewConfig(repoRoot);
+                state.baseRef = input.baseRef
+                    || config.base_ref
+                    || process.env.COPILOT_DEFAULT_BRANCH
+                    || null;
+                return state.refresh();
+            })
+            .catch((error) => {
+                state.failInitialization(error);
+                console.error("[agent-review]", error);
+            });
+    }
+    return instance;
+}
+
+// The host can restart this extension process several times while a session resumes,
+// which kills a Canvas server that is already open. Re-serve the same URL for any
+// Canvas this session had open so the page reconnects instead of staying stale.
+async function reclaimPersistedCanvases() {
+    const markers = await readCanvasMarkers(session.sessionId);
+    await Promise.all(markers.map((marker) => {
+        if (instances.has(marker.instanceId) || pendingInstances.has(marker.instanceId)) return null;
+        return createInstance(marker.instanceId, marker.input || {}, {
+            port: marker.port,
+            exactPort: true,
+            waitMs: 30_000,
+        }).catch((error) => console.error("[agent-review] Unable to reclaim Canvas server:", error.message));
+    }));
+}
 session = await joinSession({ canvases: [canvas] });
 await session.log("Agent Review canvas ready.", { ephemeral: true });
+reclaimPersistedCanvases().catch((error) => console.error("[agent-review] Canvas reclaim failed:", error));
+
