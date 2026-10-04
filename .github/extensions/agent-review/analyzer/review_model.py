@@ -300,6 +300,8 @@ class ReviewModel:
             })
             result.append({
                 "id": symbol["id"], "type": symbol["kind"], "name": symbol["name"],
+                "display_name": symbol["qualname"] if symbol["kind"] == "method" else symbol["name"],
+                "qualified_name": f"{symbol['module']}.{symbol['qualname']}",
                 "parent_id": parent_id, "module_id": module["id"],
                 "component_id": component_id, "path": symbol["path"],
                 "start_line": symbol["range"]["start_line"],

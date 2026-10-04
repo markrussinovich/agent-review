@@ -100,6 +100,17 @@
             <aside id="source-annotation" class="source-annotation hidden" aria-live="polite"></aside>
             <div id="source" class="code-view" aria-label="Source and diff"></div>
         </section>
+        <section id="session-history-panel" class="session-history-panel hidden">
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">VISIBLE SESSION HISTORY</p>
+                    <h2 id="session-history-title">Session transcript</h2>
+                    <p id="session-history-meta" class="muted"></p>
+                </div>
+                <button id="session-history-close" class="source-close" type="button">Close ×</button>
+            </div>
+            <div id="session-transcript" class="session-transcript"></div>
+        </section>
     </main>
     <script type="module" src="/app.js"></script>
 </body>

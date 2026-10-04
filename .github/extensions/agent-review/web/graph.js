@@ -8,7 +8,7 @@ function svg(name, attributes = {}) {
 }
 
 function displayName(node) {
-    return node.name || node.qualified_name || node.id;
+    return node.display_name || node.name || node.qualified_name || node.id;
 }
 
 function wrapLabel(value, max = 24) {

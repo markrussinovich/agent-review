@@ -1,4 +1,5 @@
 import { CanvasError, createCanvas, joinSession } from "@github/copilot-sdk/extension";
+import { loadHistoricalSessionContexts } from "./historical-sessions.mjs";
 import { loadReviewConfig, resolveRepoRoot, ReviewState } from "./review-state.mjs";
 import { startReviewServer } from "./server.mjs";
 
@@ -97,6 +98,9 @@ const canvas = createCanvas({
                 state = new ReviewState(requestedPath, {
                     baseRef: ctx.input?.baseRef,
                     getSessionEvents: () => session.getEvents(),
+                    currentSessionId: session.sessionId,
+                    getHistoricalSessionContexts: () =>
+                        loadHistoricalSessionContexts(state.repoRoot, session.sessionId),
                     generateAnnotation: async (context) => {
                     const response = await session.sendAndWait({
                         prompt: [

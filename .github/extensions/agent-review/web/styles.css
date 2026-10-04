@@ -24,6 +24,45 @@
   --cp-sheen: rgba(255, 255, 255, 0.55);
   --cp-highlight: rgba(177, 31, 75, 0.12);
 }
+.session-history-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  background: var(--cp-surface);
+}
+.session-history-panel > .panel-heading {
+  flex: 0 0 auto;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--cp-border);
+}
+.session-transcript {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px max(16px, calc((100% - 900px) / 2));
+  background: var(--cp-bg-elevated);
+}
+.history-row {
+  margin-bottom: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--cp-border);
+  border-radius: .625rem;
+  background: var(--cp-surface);
+}
+.history-user { border-left: 5px solid var(--cp-link); }
+.history-assistant { border-left: 5px solid var(--cp-accent); }
+.history-tool { border-left: 5px solid var(--cp-border-strong); background: var(--cp-surface-soft); }
+.history-highlight {
+  border-color: var(--cp-warning);
+  background: color-mix(in srgb, var(--cp-warning) 14%, var(--cp-surface));
+  box-shadow: 0 0 0 2px var(--cp-warning);
+}
+.history-row-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.history-row-heading strong { font-size: .6875rem; }
+.history-row-heading time { color: var(--cp-text-muted); font-size: .5625rem; }
+.history-row-body { margin-top: 7px; font-size: .6875rem; line-height: 1.5; white-space: pre-wrap; }
 html[data-theme="dark"] {
   color-scheme: dark;
   --cp-bg: #3d3b3a;
@@ -438,6 +477,17 @@ marker path { fill: var(--cp-border-strong); }
 .provenance-activity ul { margin: 6px 0 0; padding-left: 20px; color: var(--cp-text-muted); }
 .provenance-activity li + li { margin-top: 4px; }
 .provenance-disclaimer { margin-top: 8px; color: var(--cp-text-muted); font-size: .5625rem; }
+.session-history-link {
+  margin-top: 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--cp-border);
+  border-radius: .625rem;
+  background: var(--cp-surface);
+  color: var(--cp-link);
+  font-size: .625rem;
+  cursor: pointer;
+}
+.session-history-link:hover { border-color: var(--cp-accent); }
 .annotation-heading { display: flex; align-items: center; gap: 9px; }
 .annotation-heading strong { font-size: .75rem; }
 .copy-button {

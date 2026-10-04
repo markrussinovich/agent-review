@@ -9,6 +9,8 @@ const state = {
     sourceTab: "diff",
     packageRisk: new Map(),
     attribution: [],
+    highlightedPromptEventId: null,
+    selectionEpoch: 0,
     changedOnly: true,
     query: "",
 };
@@ -17,6 +19,7 @@ const elements = Object.fromEntries([
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "session-intent",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail", "source-panel", "source-title",
     "source-provenance", "source-annotation", "source-close", "source",
+    "session-history-panel", "session-history-title", "session-history-meta", "session-history-close", "session-transcript",
 ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
 
 function el(tag, className, text) {
@@ -50,7 +53,7 @@ function metric(label, value, detail, mode) {
     card.addEventListener("click", () => {
         state.mode = mode;
         state.stack = [];
-        state.selected = null;
+        clearSelection();
         state.query = "";
         elements.review_search.value = "";
         render();
@@ -71,7 +74,7 @@ function deltaMetric(label, added, removed, detail, mode) {
     card.addEventListener("click", () => {
         state.mode = mode;
         state.stack = [];
-        state.selected = null;
+        clearSelection();
         state.query = "";
         elements.review_search.value = "";
         render();
@@ -283,7 +286,7 @@ function groupFindings(items) {
 function resetToGraph() {
     state.mode = "graph";
     state.stack = [];
-    state.selected = null;
+    clearSelection();
     state.query = "";
     elements.review_search.value = "";
     render();
@@ -305,6 +308,7 @@ function renderBreadcrumbs() {
         button.type = "button";
         button.addEventListener("click", () => {
             state.stack = state.stack.slice(0, index + 1);
+            clearSelection();
             render();
         });
         elements.breadcrumbs.append(button);
@@ -314,7 +318,7 @@ function renderBreadcrumbs() {
 function maybeDrill(item) {
     if (item.kind === "component" || item.kind === "module") {
         state.stack.push(item);
-        state.selected = null;
+        clearSelection();
         render();
     } else {
         selectItem(item, true);
@@ -354,20 +358,56 @@ function field(label, value) {
     return row;
 }
 
-async function loadSource(query) {
-    state.source = await api(`/api/source?${query}`);
+function renderEmptyDetail() {
+    const panel = elements.detail;
+    panel.replaceChildren();
+    const empty = el("div", "empty-state");
+    empty.append(
+        el("span", "focus-mark", "◎"),
+        el("h2", "", "Select evidence"),
+        el("p", "", "Choose a component, relationship, package, or finding to inspect deterministic evidence."),
+    );
+    panel.append(empty);
+}
+
+function clearSelection() {
+    state.selectionEpoch += 1;
+    state.selected = null;
+    renderEmptyDetail();
+}
+
+async function loadSource(query, epoch) {
+    const source = await api(`/api/source?${query}`);
+    const attribution = await fetchAttribution(source.path);
+    if (epoch !== state.selectionEpoch) return false;
+    state.source = source;
+    state.attribution = attribution;
+    state.sourceTab = source.diff ? "diff" : "current";
+    renderSource();
+    return true;
+}
+
+async function fetchAttribution(path) {
+    if (!path) return [];
     try {
-        const provenance = await api(`/api/attribution?path=${encodeURIComponent(state.source.path)}`);
-        state.attribution = provenance.attribution || [];
+        const provenance = await api(`/api/attribution?path=${encodeURIComponent(path)}`);
+        return provenance.attribution || [];
     } catch (error) {
         if (error.status !== 404) throw error;
-        state.attribution = [];
+        return [];
     }
-    state.sourceTab = state.source.diff ? "diff" : "current";
-    renderSource();
+}
+
+async function refreshAttribution() {
+    if (!state.source?.path) {
+        state.attribution = [];
+        return;
+    }
+    state.attribution = await fetchAttribution(state.source.path);
 }
 
 async function selectFile(change) {
+    const epoch = ++state.selectionEpoch;
     state.selected = {
         id: `file:${change.path}`, kind: "file", name: change.path, path: change.path,
         change: change.status, metrics: {
@@ -378,14 +418,16 @@ async function selectFile(change) {
     };
     renderDetail(state.selected);
     try {
-        await loadSource(`path=${encodeURIComponent(change.path)}`);
-        ensureAnnotation(state.selected);
+        if (await loadSource(`path=${encodeURIComponent(change.path)}`, epoch)) {
+            ensureAnnotation(state.selected, epoch);
+        }
     } catch (error) {
-        showError(error);
+        if (epoch === state.selectionEpoch) showError(error);
     }
 }
 
 async function selectItem(item, notify = true) {
+    const epoch = ++state.selectionEpoch;
     state.selected = item;
     renderDetail(item);
     if (notify) api("/api/selection", {
@@ -394,21 +436,24 @@ async function selectItem(item, notify = true) {
     }).catch(showError);
     if (item.path || item.start_line || item.kind === "evidence" || item.evidence_ids?.length) {
         try {
-            await loadSource(`id=${encodeURIComponent(item.id)}`);
+            await loadSource(`id=${encodeURIComponent(item.id)}`, epoch);
         } catch (error) {
+            if (epoch !== state.selectionEpoch) return;
             state.source = null;
             elements.source_panel.classList.add("hidden");
             if (!String(error.message).includes("has no source location")) showError(error);
         }
     }
+    if (epoch !== state.selectionEpoch) return;
     if (item.path || item.evidence_ids?.length || item.node_id || item.edge_id) {
-        ensureAnnotation(item);
+        ensureAnnotation(item, epoch);
     } else {
         renderAnnotation(item, state.payload?.annotations?.[item.id] || null);
     }
 }
 
-function ensureAnnotation(item) {
+function ensureAnnotation(item, epoch = state.selectionEpoch) {
+    if (epoch !== state.selectionEpoch || state.selected?.id !== item.id) return;
     const cached = state.payload?.annotations?.[item.id];
     if (cached) {
         renderAnnotation(item, cached);
@@ -419,8 +464,12 @@ function ensureAnnotation(item) {
         method: "POST",
         body: JSON.stringify({ id: item.id, evidence_ids: item.evidence_ids || [] }),
     })
-        .then(({ annotation }) => renderAnnotation(item, annotation))
-        .catch((error) => renderAnnotation(item, { error: error.message }));
+        .then(({ annotation }) => {
+            if (epoch === state.selectionEpoch && state.selected?.id === item.id) renderAnnotation(item, annotation);
+        })
+        .catch((error) => {
+            if (epoch === state.selectionEpoch && state.selected?.id === item.id) renderAnnotation(item, { error: error.message });
+        });
 }
 
 function renderProvenance() {
@@ -439,6 +488,12 @@ function renderProvenance() {
         el("b", `confidence confidence-${primary.confidence}`, `${primary.confidence} match`),
     );
     panel.append(heading, el("p", "provenance-prompt", primary.prompt), el("p", "source-status", primary.reason));
+    if (primary.session_id) {
+        const openHistory = el("button", "session-history-link", "View full session history →");
+        openHistory.type = "button";
+        openHistory.addEventListener("click", () => openSessionHistory(primary));
+        panel.append(openHistory);
+    }
     const activity = primary.agent_activity.filter((item) => item.role === "assistant" || item.role === "tool").slice(-5);
     if (activity.length) {
         const details = el("details", "provenance-activity");
@@ -454,6 +509,48 @@ function renderProvenance() {
         panel.append(details);
     }
     panel.append(el("p", "provenance-disclaimer", "Correlation uses visible prompts and file/tool activity. It does not expose hidden model reasoning or prove line-level authorship."));
+}
+
+async function openSessionHistory(attribution) {
+    try {
+        const history = await api(`/api/session-history?session_id=${encodeURIComponent(attribution.session_id)}`);
+        state.highlightedPromptEventId = attribution.prompt_event_id;
+        elements.session_history_title.textContent = history.summary || "Session transcript";
+        elements.session_history_meta.textContent = [
+            history.working_directory,
+            `${history.timeline.length} visible events`,
+        ].filter(Boolean).join(" · ");
+        const fragment = document.createDocumentFragment();
+        let highlighted = null;
+        for (const event of history.timeline) {
+            const row = el("article", `history-row history-${event.role}`);
+            row.dataset.eventId = event.event_id;
+            if (event.event_id === attribution.prompt_event_id) {
+                row.classList.add("history-highlight");
+                highlighted = row;
+            }
+            const heading = el("div", "history-row-heading");
+            const role = event.role === "user"
+                ? "User prompt"
+                : event.role === "assistant"
+                    ? "Assistant"
+                    : event.tool_name || "Tool";
+            heading.append(
+                el("strong", "", role),
+                el("time", "", event.timestamp ? new Date(event.timestamp).toLocaleString() : ""),
+            );
+            row.append(heading);
+            const body = el("div", "history-row-body");
+            renderMarkdown(body, event.summary);
+            row.append(body);
+            fragment.append(row);
+        }
+        elements.session_transcript.replaceChildren(fragment);
+        elements.session_history_panel.classList.remove("hidden");
+        requestAnimationFrame(() => highlighted?.scrollIntoView({ block: "center" }));
+    } catch (error) {
+        showError(error);
+    }
 }
 
 function appendInlineMarkdown(container, text) {
@@ -558,7 +655,10 @@ function renderDetail(item) {
     const panel = elements.detail;
     panel.replaceChildren();
     const top = el("div", "detail-top");
-    top.append(el("p", "eyebrow", (item.kind || item.type || "EVIDENCE").toUpperCase()), el("h2", "", item.name || item.title || item.id));
+    top.append(
+        el("p", "eyebrow", (item.kind || item.type || "EVIDENCE").toUpperCase()),
+        el("h2", "", item.display_name || item.name || item.title || item.id),
+    );
     panel.append(top);
     const metrics = item.metrics || {};
     const fields = [
@@ -757,7 +857,7 @@ function renderCollection(model) {
             subtitle = `${item.change} · ${packageVersion(item)}${item.usage_locations?.length ? ` · used by ${item.usage_locations.length}` : " · no usage resolved"}`;
             row.addEventListener("click", () => selectPackage(item));
         } else {
-            title = item.title || item.name;
+            title = item.title || item.display_name || item.name;
             const historicalChurn = (item.metrics?.churn_additions_90d || 0) + (item.metrics?.churn_deletions_90d || 0);
             subtitle = state.mode === "lines"
                 ? `Change churn ${item.metrics?.lines_changed || 0} · +${item.metrics?.lines_added || 0} / −${item.metrics?.lines_removed || 0} · 90d churn ${historicalChurn}`
@@ -779,6 +879,7 @@ function packageVersion(item) {
 }
 
 async function selectPackage(item) {
+    const epoch = ++state.selectionEpoch;
     state.selected = item;
     renderDetail(item);
     const panel = elements.detail;
@@ -797,9 +898,9 @@ async function selectPackage(item) {
             });
             state.packageRisk.set(item.name, result);
         }
-        renderPackageRisk(panel, result);
+        if (epoch === state.selectionEpoch && state.selected?.id === item.id) renderPackageRisk(panel, result);
     } catch (error) {
-        loading.replaceWith(el("p", "annotation-error", error.message));
+        if (epoch === state.selectionEpoch) loading.replaceWith(el("p", "annotation-error", error.message));
     }
 }
 
@@ -876,6 +977,7 @@ function render() {
         viewAll.addEventListener("click", () => {
             state.mode = "findings";
             state.stack = [];
+            clearSelection();
             render();
             elements.graph.scrollIntoView({ behavior: "smooth", block: "start" });
         });
@@ -959,7 +1061,7 @@ elements.zoom_out.addEventListener("click", () => {
         resetToGraph();
     } else if (state.stack.length) {
         state.stack.pop();
-        state.selected = null;
+        clearSelection();
         state.source = null;
         state.query = "";
         elements.review_search.value = "";
@@ -969,13 +1071,19 @@ elements.zoom_out.addEventListener("click", () => {
 });
 elements.changed_only.addEventListener("change", () => {
     state.changedOnly = elements.changed_only.checked;
+    clearSelection();
     render();
 });
 elements.review_search.addEventListener("input", () => {
     state.query = elements.review_search.value.trim();
+    clearSelection();
     render();
 });
 window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !elements.session_history_panel.classList.contains("hidden")) {
+        elements.session_history_close.click();
+        return;
+    }
     if (event.key === "Escape" && !elements.source_panel.classList.contains("hidden")) {
         elements.source_close.click();
         return;
@@ -1024,9 +1132,15 @@ resizeObserver.observe(document.body);
 resizeObserver.observe(elements.graph);
 setInterval(detectHostResize, 500);
 elements.source_close.addEventListener("click", () => {
+    state.selectionEpoch += 1;
     state.source = null;
     state.attribution = [];
     elements.source_panel.classList.add("hidden");
+});
+elements.session_history_close.addEventListener("click", () => {
+    elements.session_history_panel.classList.add("hidden");
+    elements.session_transcript.replaceChildren();
+    state.highlightedPromptEventId = null;
 });
 document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
     state.sourceTab = tab.dataset.tab;
@@ -1041,6 +1155,12 @@ const events = new EventSource("/events");
 events.addEventListener("state", (event) => {
     state.payload = JSON.parse(event.data);
     render();
+    if (state.payload.type === "session-history" && state.source?.path) {
+        const epoch = state.selectionEpoch;
+        refreshAttribution().then(() => {
+            if (epoch === state.selectionEpoch) renderProvenance();
+        }).catch(showError);
+    }
 });
 events.onerror = () => {
     elements.status.textContent = "Reconnecting…";

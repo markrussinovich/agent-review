@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:pa
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { assessPackageRisk } from "./package-risk.mjs";
-import { buildSessionContext, findSessionAttribution } from "./session-context.mjs";
+import { buildSessionContext, findSessionAttribution, mergeSessionContexts } from "./session-context.mjs";
 
 const execFileAsync = promisify(execFile);
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
@@ -137,6 +137,8 @@ export class ReviewState {
         this.listeners = new Set();
         this.refreshPromise = null;
         this.getSessionEvents = options.getSessionEvents || null;
+        this.getHistoricalSessionContexts = options.getHistoricalSessionContexts || null;
+        this.currentSessionId = options.currentSessionId || null;
         this.generateAnnotation = options.generateAnnotation || null;
         this.generatePackageExplanation = options.generatePackageExplanation || null;
         this.sessionContext = null;
@@ -145,6 +147,8 @@ export class ReviewState {
         this.packageRisks = {};
         this.packageRiskPromises = new Map();
         this.progress = null;
+        this.sessionHistories = new Map();
+        this.historicalContextPromise = null;
     }
 
     snapshot() {
@@ -225,7 +229,16 @@ export class ReviewState {
     async refreshSessionContext(broadcast = true) {
         if (!this.getSessionEvents) return null;
         try {
-            this.sessionContext = buildSessionContext(await this.getSessionEvents(), this.repoRoot);
+            const current = buildSessionContext(await this.getSessionEvents(), this.repoRoot);
+            current.session_id = this.currentSessionId;
+            current.session_summary = "Current Agent Review session";
+            for (const turn of current.turns) {
+                turn.session_id = this.currentSessionId;
+                turn.session_summary = current.session_summary;
+            }
+            this.sessionHistories.set(this.currentSessionId, current);
+            this.sessionContext = mergeSessionContexts([current]);
+            this.refreshHistoricalSessionContexts();
         } catch (error) {
             this.sessionContext = {
                 provenance: "copilot_session_history",
@@ -240,6 +253,39 @@ export class ReviewState {
         }
         if (broadcast) this.broadcast("session-context");
         return this.sessionContext;
+    }
+
+    refreshHistoricalSessionContexts() {
+        if (!this.getHistoricalSessionContexts || this.historicalContextPromise) return;
+        if (this.sessionHistories.size > 1) return;
+        this.historicalContextPromise = this.getHistoricalSessionContexts()
+            .then(({ contexts, failures }) => {
+                for (const context of contexts) {
+                    this.sessionHistories.set(context.session_id, context);
+                }
+                this.sessionContext = mergeSessionContexts([...this.sessionHistories.values()]);
+                this.sessionContext.history_failures = failures;
+                this.broadcast("session-history");
+            })
+            .catch((error) => {
+                this.sessionContext.history_error = `Unable to read historical sessions: ${error.message}`;
+                this.broadcast("session-history-failed");
+            })
+            .finally(() => {
+                this.historicalContextPromise = null;
+            });
+    }
+
+    sessionHistoryFor(sessionId) {
+        const context = this.sessionHistories.get(sessionId);
+        if (!context) throw new Error(`Session history is not loaded: ${sessionId}`);
+        return {
+            session_id: context.session_id,
+            summary: context.session_summary,
+            working_directory: context.working_directory || null,
+            timeline: context.timeline || [],
+            turns: context.turns || [],
+        };
     }
 
     select(selection) {

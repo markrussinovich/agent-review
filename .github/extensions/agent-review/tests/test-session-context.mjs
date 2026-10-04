@@ -76,3 +76,44 @@ test("excludes Agent Review internal model requests from attribution", () => {
     assert.deepEqual(context.intent, []);
     assert.deepEqual(findSessionAttribution(context, "src/workflow_service/rules.py"), []);
 });
+
+test("ranks authoring intent above later inspection of the same file", () => {
+    const context = buildSessionContext([
+        {
+            id: "authoring-user",
+            type: "user.message",
+            timestamp: "2026-10-03T09:00:00Z",
+            data: { content: "Create a new composable rules feature for workflow validation." },
+        },
+        {
+            id: "authoring-read",
+            type: "tool.execution_start",
+            timestamp: "2026-10-03T09:01:00Z",
+            data: {
+                toolName: "rg",
+                arguments: { path: "src\\workflow_service\\rules.py" },
+            },
+        },
+        {
+            id: "review-user",
+            type: "user.message",
+            timestamp: "2026-10-03T10:00:00Z",
+            data: { content: "Why is this highlighted in the review canvas?" },
+        },
+        {
+            id: "review-read",
+            type: "tool.execution_start",
+            timestamp: "2026-10-03T10:01:00Z",
+            data: {
+                toolName: "powershell",
+                arguments: {
+                    description: "Inspect rules.py review evidence",
+                    command: "Get-Content src\\workflow_service\\rules.py",
+                },
+            },
+        },
+    ], ROOT);
+    const matches = findSessionAttribution(context, "src/workflow_service/rules.py");
+    assert.equal(matches[0].prompt, "Create a new composable rules feature for workflow validation.");
+    assert.ok(matches[0].confidence_score > matches[1].confidence_score);
+});

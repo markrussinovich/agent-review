@@ -77,6 +77,12 @@ export function startReviewServer(state) {
                 sendJson(res, { attribution: state.attributionForPath(requestUrl.searchParams.get("path")) });
                 return;
             }
+            if (req.method === "GET" && pathname === "/api/session-history") {
+                const sessionId = requestUrl.searchParams.get("session_id");
+                if (!sessionId) throw new Error("A session_id is required.");
+                sendJson(res, state.sessionHistoryFor(sessionId));
+                return;
+            }
             if (req.method === "GET" && pathname === "/events") {
                 res.writeHead(200, {
                     "Content-Type": "text/event-stream",
