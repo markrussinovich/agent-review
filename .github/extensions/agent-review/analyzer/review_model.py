@@ -449,7 +449,7 @@ class ReviewModel:
                                  "detail": f"{metrics['changed_lines_uncovered']} changed lines uncovered"}
                 )
             caller_count = metrics["direct_callers"] + metrics["transitive_callers"]
-            if caller_count >= 3:
+            if caller_count >= 3 and node["change"] != "unchanged":
                 node["_impact_evidence"] = self.add_evidence(
                     "broad_impact", {"path": node["path"], "line": node["start_line"],
                                      "detail": f"{caller_count} direct/transitive callers"}

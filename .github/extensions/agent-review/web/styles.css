@@ -258,6 +258,26 @@ main { width: 100%; max-width: none; padding: 20px 20px 36px; }
 }
 .resizing-rail { cursor: col-resize; user-select: none; }
 .detail { border-left: 1px solid var(--cp-border); }
+.detail { position: relative; }
+.pane-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--cp-border);
+  border-radius: .625rem;
+  background: var(--cp-surface);
+  color: var(--cp-text-muted);
+  font-size: 1rem;
+  cursor: pointer;
+}
+.pane-close:hover { border-color: var(--cp-accent); color: var(--cp-accent); }
+.workspace.detail-collapsed {
+  grid-template-columns: var(--review-rail-width) 8px minmax(0, 1fr);
+}
+.workspace.detail-collapsed .detail { display: none; }
 .count, .impact-score {
   min-width: 26px;
   padding: 4px 7px;
@@ -337,6 +357,15 @@ main { width: 100%; max-width: none; padding: 20px 20px 36px; }
   background: var(--cp-surface);
   color: var(--cp-text);
   font-size: .625rem;
+}
+.graph-controls button {
+  padding: 6px 8px;
+  border: 1px solid var(--cp-border);
+  border-radius: .625rem;
+  background: var(--cp-surface);
+  color: var(--cp-link);
+  font-size: .625rem;
+  cursor: pointer;
 }
 .graph { min-height: 520px; overflow: auto; }
 .graph { position: relative; }

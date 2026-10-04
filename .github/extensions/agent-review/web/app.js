@@ -15,11 +15,12 @@ const state = {
     selectionEpoch: 0,
     changedOnly: true,
     query: "",
+    detailVisible: true,
 };
 const elements = Object.fromEntries([
     "status", "refresh", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "session-intent", "rail-resize",
-    "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail", "source-panel", "source-title",
+    "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail-toggle", "detail", "detail-close", "source-panel", "source-title",
     "source-provenance", "source-annotation", "source-close", "source",
     "session-history-panel", "session-history-title", "session-history-meta", "session-history-close", "session-transcript",
 ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
@@ -378,6 +379,14 @@ function clearSelection() {
     renderEmptyDetail();
 }
 
+function setDetailVisible(visible) {
+    state.detailVisible = visible;
+    document.querySelector(".workspace").classList.toggle("detail-collapsed", !visible);
+    elements.detail_toggle.textContent = visible ? "Hide details" : "Show details";
+    elements.detail_toggle.setAttribute("aria-pressed", String(visible));
+    scheduleResizeRender();
+}
+
 async function loadSource(query, epoch, preferredTab = null) {
     const source = await api(`/api/source?${query}`);
     const attribution = await fetchAttribution(source.path);
@@ -725,6 +734,7 @@ function renderAnnotation(item, annotation, loading = false) {
 }
 
 function renderDetail(item) {
+    setDetailVisible(true);
     const panel = elements.detail;
     panel.replaceChildren();
     const top = el("div", "detail-top");
@@ -1156,6 +1166,8 @@ elements.changed_only.addEventListener("change", () => {
     clearSelection();
     render();
 });
+elements.detail_close.addEventListener("click", () => setDetailVisible(false));
+elements.detail_toggle.addEventListener("click", () => setDetailVisible(!state.detailVisible));
 elements.review_search.addEventListener("input", () => {
     state.query = elements.review_search.value.trim();
     clearSelection();

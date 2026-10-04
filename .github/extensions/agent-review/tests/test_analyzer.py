@@ -258,6 +258,16 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(common, model["metadata"]["base_sha"])
         self.assertNotEqual(default_tip, model["metadata"]["base_sha"])
 
+    def test_explicit_base_falls_back_to_remote_tracking_ref(self) -> None:
+        self.write("base.py", "VALUE = 1\n")
+        base = self.commit()
+        self.git("update-ref", "refs/remotes/origin/review-base", base)
+        self.write("base.py", "VALUE = 2\n")
+        model = self.analyze("review-base")
+        self.assertEqual("origin/review-base", model["metadata"]["base_ref"])
+        self.assertEqual(base, model["metadata"]["base_sha"])
+        self.assertEqual(1, model["summary"]["files_changed"])
+
     def test_checkout_line_endings_do_not_create_false_changes(self) -> None:
         self.write("unchanged.py", "VALUE = 1\n")
         self.write("changed.py", "VALUE = 1\n")
@@ -279,6 +289,24 @@ class AnalyzerTests(unittest.TestCase):
         self.assertTrue(package_edges)
         self.assertTrue(all(edge["change"] == "unchanged" for edge in package_edges))
         self.assertEqual(0, model["summary"]["new_arch_edges"])
+
+    def test_unchanged_high_fan_in_symbol_is_not_an_attention_finding(self) -> None:
+        self.write(
+            "service.py",
+            "def shared():\n    return 1\n\n"
+            "def first():\n    return shared()\n\n"
+            "def second():\n    return shared()\n\n"
+            "def third():\n    return shared()\n",
+        )
+        base = self.commit()
+        self.write("new_feature.py", "def added():\n    return 2\n")
+        model = self.analyze(base)
+        shared = next(node for node in model["nodes"] if node["name"] == "shared")
+        self.assertEqual("unchanged", shared["change"])
+        self.assertFalse(any(
+            item.get("node_id") == shared["id"] and item["type"] == "broad_impact"
+            for item in model["attention"]
+        ))
 
     def test_duplicate_unchanged_import_edges_are_not_added(self) -> None:
         self.write("pkg/models.py", "class First:\n    pass\n\nclass Second:\n    pass\n")

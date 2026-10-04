@@ -237,7 +237,11 @@ export class ReviewState {
                 turn.session_summary = current.session_summary;
             }
             this.sessionHistories.set(this.currentSessionId, current);
-            this.sessionContext = mergeSessionContexts([current]);
+            this.sessionContext = mergeSessionContexts([...this.sessionHistories.values()]);
+            if (this.sessionHistories.size > 1) {
+                this.sessionContext.historical_search_complete = true;
+                this.sessionContext.historical_session_count = this.sessionHistories.size - 1;
+            }
             this.refreshHistoricalSessionContexts();
         } catch (error) {
             this.sessionContext = {

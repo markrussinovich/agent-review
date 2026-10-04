@@ -64,8 +64,12 @@ def discover_repo(explicit: str | None) -> Path:
 
 def discover_base(repo: Path, explicit: str | None) -> str | None:
     if explicit:
-        if run_git(repo, "rev-parse", "--verify", f"{explicit}^{{commit}}", check=False).strip():
-            return explicit
+        candidates = [explicit]
+        if not explicit.startswith(("refs/", "origin/")):
+            candidates.extend((f"origin/{explicit}", f"refs/remotes/origin/{explicit}"))
+        for candidate in candidates:
+            if run_git(repo, "rev-parse", "--verify", f"{candidate}^{{commit}}", check=False).strip():
+                return candidate
         raise RuntimeError(f"base ref does not resolve to a commit: {explicit}")
     candidates = [
         os.environ.get("COPILOT_DEFAULT_BRANCH"),
