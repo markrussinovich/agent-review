@@ -929,6 +929,7 @@ export class ReviewState {
                 latest_file_request: match.original_prompt !== match.prompt ? String(match.prompt || "").slice(0, 500) : null,
                 confidence: match.confidence,
             }));
+        const savedCode = customAnalysisContext(model);
         return {
             kind: "overview",
             summary: model.summary,
@@ -943,6 +944,8 @@ export class ReviewState {
             })),
             session_intent: this.intentForReview(attribution).slice(-4).map((item) => String(item.summary || "").slice(0, 500)),
             session_attribution: attribution,
+            code_context: savedCode.files,
+            evidence_limits: savedCode.evidence_limits,
             analysis_quality: {
                 coverage_available: Boolean(model.coverage?.available),
                 warnings: model.warnings || [],

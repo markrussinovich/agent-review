@@ -81,6 +81,11 @@ try {
             assert.equal(await page.locator("#source").evaluate((code) => code.scrollTop), 0);
             await page.locator("#source-provenance .provenance-prompt").waitFor();
             await page.locator("#source-annotation .annotation-body").waitFor();
+            for (const tab of ["current", "base", "diff"]) {
+                await page.locator(`.tab[data-tab="${tab}"]`).click();
+                assert.equal(await page.locator("#source-annotation .annotation-body").isVisible(), true,
+                    "completed source briefings remain visible when switching tabs");
+            }
             await page.locator("#source-provenance").getByRole("button", { name: "Show full prompt" }).click();
             const scrolled = await page.evaluate(() => {
                 const code = document.querySelector("#source");

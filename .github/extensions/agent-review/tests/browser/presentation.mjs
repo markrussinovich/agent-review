@@ -68,6 +68,14 @@ try {
         const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
         const errors = [];
         page.on("pageerror", (error) => errors.push(error.message));
+        await page.route("**/api/state", async (route) => {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            await route.continue();
+        });
+        await page.route("**/events", async (route) => {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            await route.continue();
+        });
         await page.goto(`${server.url}?scoutTheme=${theme}`);
         await page.locator("#change-brief .brief-ai").waitFor();
         for (const [selector, property, token] of [
@@ -103,6 +111,21 @@ try {
             })));
             assert.ok(measurements.every((value) => value.height <= value.lineHeight + 1), `brief values stay on one line at ${width}px: ${JSON.stringify(measurements)}`);
             assert.ok(measurements.every((value) => value.right <= value.rowRight + 1), `brief values fit their metric at ${width}px`);
+            const queueGeometry = await page.locator("#attention .queue-item").evaluateAll((items) => items.map((item) => {
+                const bounds = item.getBoundingClientRect();
+                const nodes = [...item.querySelectorAll(".queue-heading, .queue-title, .queue-priority, .queue-copy")];
+                return {
+                    fits: nodes.every((node) => {
+                        const child = node.getBoundingClientRect();
+                        return child.left >= bounds.left - 1 && child.right <= bounds.right + 1;
+                    }),
+                    scrollWidth: item.scrollWidth,
+                    clientWidth: item.clientWidth,
+                };
+            }));
+            assert.ok(queueGeometry.length > 0, "fixture has review queue cards");
+            assert.ok(queueGeometry.every((item) => item.fits && item.scrollWidth <= item.clientWidth + 1),
+                `${theme}: queue text and priorities fit at ${width}px: ${JSON.stringify(queueGeometry)}`);
             const metrics = await page.locator("#summary .metric").evaluateAll((cards) => {
                 cards[2].querySelector("small").textContent = "Largest: src.workflow_service.scheduling → croniter";
                 return cards.map((card) => ({

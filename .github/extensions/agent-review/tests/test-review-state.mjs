@@ -56,6 +56,29 @@ test("overview context summarizes churn split, ranked findings, and prompts dete
     assert.equal(await state.overviewFor(), first, "overview is cached until refresh");
 });
 
+test("overview includes bounded saved implementation and test evidence, never live files", () => {
+    const state = new ReviewState("C:\\repo");
+    state.readCurrentSource = () => { throw new Error("must use frozen review evidence"); };
+    state.model = {
+        summary: {}, metadata: {}, nodes: [], attention: [], coverage: {}, warnings: [],
+        changes: [
+            { path: "src/checker.py", status: "modified", lines_added: 2, lines_removed: 1 },
+            { path: "tests/test_checker.py", status: "added", lines_added: 50, lines_removed: 0 },
+        ],
+        source_files: {
+            "src/checker.py": { current: "def accept(number):\n    return number.isdigit()\n",
+                diff: "@@ -1 +1,2 @@\n-def accept(): pass\n+def accept(number):\n+    return number.isdigit()\n" },
+            "tests/test_checker.py": { current: "def test_rejects_letters():\n    assert not accept('bad')\n",
+                diff: "+def test_rejects_letters():\n+    assert not accept('bad')\n" + "x".repeat(45000) },
+        },
+    };
+    const context = state.overviewContext();
+    assert.match(context.code_context.find((file) => file.path === "src/checker.py").current, /2:.*isdigit/);
+    assert.match(context.code_context.find((file) => file.path === "tests/test_checker.py").current, /rejects_letters/);
+    assert.equal(context.evidence_limits.truncated, true);
+    assert.ok(context.code_context.reduce((count, file) => count + file.diff.length + file.current.length, 0) <= 40000);
+});
+
 test("empty worktree, commit and PR reviews skip automatic custom checks and summaries", async () => {
     let summaries = 0, customRuns = 0;
     const state = new ReviewState("C:\\repo", {

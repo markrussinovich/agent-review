@@ -823,7 +823,11 @@ function ensureAnnotation(item, epoch = state.selectionEpoch) {
         body: JSON.stringify({ id: item.id, evidence_ids: item.evidence_ids || [] }),
     })
         .then(({ annotation }) => {
-            if (epoch === state.selectionEpoch && state.selected?.id === item.id) renderAnnotation(item, annotation);
+            if (epoch === state.selectionEpoch && state.selected?.id === item.id) {
+                state.payload.annotations ||= {};
+                state.payload.annotations[item.id] = annotation;
+                renderAnnotation(item, annotation);
+            }
         })
         .catch((error) => {
             if (epoch === state.selectionEpoch && state.selected?.id === item.id) renderAnnotation(item, { error: error.message });
@@ -1991,8 +1995,8 @@ function render() {
     const progress = payload?.progress;
     elements.status.textContent = payload?.loading ? `Analyzing ${progress?.percent || 0}%`
         : payload?.cancelled ? "Analysis cancelled" : model ? payload.restored_from_cache ? "Saved review" : "Analysis current" : "Waiting";
-    elements.status.title = payload.loading ? progress?.message || "Analyzing repository"
-        : payload.analyzed_at ? `Analyzed ${new Date(payload.analyzed_at).toLocaleString()}${payload.restored_from_cache ? ". Reanalyze to update." : ""}` : "";
+    elements.status.title = payload?.loading ? progress?.message || "Analyzing repository"
+        : payload?.analyzed_at ? `Analyzed ${new Date(payload.analyzed_at).toLocaleString()}${payload.restored_from_cache ? ". Reanalyze to update." : ""}` : "";
     elements.status.classList.toggle("working", Boolean(payload?.loading));
     elements.status.classList.toggle("stale", Boolean(worktreeNotice));
     if (worktreeNotice) elements.status.textContent = payload.worktree_changed ? "Worktree changed" : "Freshness unknown";
@@ -2032,7 +2036,7 @@ function render() {
         }
         return;
     }
-    if (state.reviewPickerPending || state.reviewSubmitting || (payload.loading && !model)) return;
+    if (state.reviewPickerPending || state.reviewSubmitting || (payload?.loading && !model)) return;
     if (!model) {
         renderChangeBrief();
         return;

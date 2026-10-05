@@ -15,8 +15,9 @@ illustrative; changes, graph, and findings come from the analyzer. Click to enla
 ### Understand the change
 
 A change brief shows file mix, source/test churn, coverage availability, and the
-originating request. Copilot summarizes the change, suggests a review order, and
-calls out gaps. Clickable metrics include all reviewable files, not just Python.
+originating request. Copilot uses bounded, saved implementation and test excerpts
+to explain behavior changes, suggest a review order, and distinguish demonstrated
+cases from evidence gaps. Clickable metrics include all reviewable files, not just Python.
 
 ### Follow architecture and impact
 

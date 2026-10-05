@@ -58,6 +58,7 @@ export function buildCustomAnalysisPrompt(prompt, context) {
         "Findings: at most 3 actionable problems or clearly labeled possible risks, with an evidenced failure scenario. Do not inventory correct code or speculate about unrelated possibilities.",
         "A hypothetical missing guard is not a confirmed defect. When omitted callers or validators are needed to assess safety, report an evidence gap under Verification, not a finding.",
         "Correct defensive checks are not defects. Do not invent approximate line numbers in prose; omit the line when exact evidence is unavailable.",
+        "Untested rejection branches, thresholds, and supported-format restrictions are evidence gaps, not bugs without a demonstrated contract violation. Put them under Verification.",
         "Verification: at most 3 short bullets with concrete checks and evidence limitations.",
         "Distinguish confirmed observations from possible risks. If no issue is supported, say no supported findings.",
         "State what evidence is missing; partial context does not prove the entire repository was checked.",
@@ -87,7 +88,10 @@ export function validateCustomAnalysis(content, context) {
         const reference = /^(.+\.(?:py|toml|txt|json|ya?ml|md|mjs|js|css|html))(?::(.+))?$/.exec(match[0]);
         if (!reference) continue;
         if (!paths.has(reference[1].replaceAll("\\", "/"))) {
-            throw new ExplanationValidationError(`Custom analysis cited a path outside its supplied evidence: ${reference[1]}`);
+            throw new ExplanationValidationError(
+                `Custom analysis cited a path outside its supplied evidence: ${reference[1]}. `
+                + `Use exact paths from this allowed list: ${[...paths.keys()].join(", ")}.`,
+            );
         }
         const parsed = parseSourceReference(match[0]);
         if (!parsed) {

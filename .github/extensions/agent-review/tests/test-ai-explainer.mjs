@@ -97,3 +97,15 @@ test("annotation prompt enforces a concise, agent-aware briefing", () => {
     assert.match(prompt, /at most 25 words/);
     assert.match(prompt, /written by an AI agent/);
 });
+
+test("briefings prioritize saved behavior and avoid unsupported test-gap and consumer claims", () => {
+    const overview = buildOverviewPrompt({});
+    assert.match(overview, /observable before\/after behavior/);
+    assert.match(overview, /Read supplied test implementations/);
+    assert.match(overview, /Do not infer missing tests from complexity/);
+    assert.match(overview, /mandatory acceptance conditions.*optional input/);
+    assert.doesNotMatch(overview, /compare test lines to source lines/);
+    const annotation = buildAnnotationPrompt({});
+    assert.match(annotation, /internal helpers as consumers/);
+    assert.match(annotation, /dynamic wiring or omitted callers are unverified/);
+});

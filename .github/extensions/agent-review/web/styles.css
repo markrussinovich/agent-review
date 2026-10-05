@@ -1507,7 +1507,9 @@ html { scrollbar-gutter: stable; }
   border: 0; border-bottom: 1px solid var(--cp-border); border-radius: 0;
   background: transparent; padding: 12px 8px; box-shadow: none;
 }
-.rail .cards { gap: 0; }
+.rail .cards { gap: 0; grid-template-columns: minmax(0, 1fr); }
+.rail .queue-item, .rail .review-card { min-width: 0; overflow-wrap: anywhere; }
+.rail .review-card .card-heading strong { flex: 1 1 140px; }
 .rail .review-card:hover { background: var(--cp-surface-soft); border-left: 0; }
 .rail .review-card.is-selected { background: var(--cp-accent-soft); border-left: 0; }
 .rail .review-card .card-heading strong { white-space: normal; font-weight: 600; font-size: 14px; }

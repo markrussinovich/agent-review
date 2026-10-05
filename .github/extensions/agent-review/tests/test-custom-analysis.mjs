@@ -23,7 +23,10 @@ test("custom analysis uses bounded saved source and discloses partial evidence",
 test("custom responses enforce concise output and usable snapshot citations", () => {
     const context = { files: [{ path: "src/main.py" }] };
     assert.equal(validateCustomAnalysis("## Findings\n\nNo supported findings.\n\n## Verification\n\nCheck `src/main.py:3`.", context).startsWith("## Findings"), true);
-    assert.throws(() => validateCustomAnalysis("## Findings\n\nSee `main.py:3`.\n\n## Verification\n\nCheck source.", context), /outside its supplied evidence/);
+    assert.throws(() => validateCustomAnalysis("## Findings\n\nSee `main.py:3`.\n\n## Verification\n\nCheck source.", context),
+        /outside its supplied evidence: main\.py.*allowed list: src\/main\.py/);
+    assert.match(buildCustomAnalysisPrompt({ prompt: "Check evidence." }, context),
+        /Untested rejection branches.*evidence gaps, not bugs/);
     assert.throws(() => validateCustomAnalysis("## Findings\n\nSee `src/main.py:~3`.\n\n## Verification\n\nCheck source.", context), /exact positive line numbers/);
     assert.throws(() => validateCustomAnalysis("## Findings\n\nSee main.py:3.\n\n## Verification\n\nCheck source.", context), /outside its supplied evidence/);
     assert.throws(() => validateCustomAnalysis("## Findings\n\nSee src/main.py:999.\n\n## Verification\n\nCheck source.",
