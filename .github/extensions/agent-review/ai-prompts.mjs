@@ -24,6 +24,7 @@ const SHARED_RULES = [
     "Test filenames, changed-line totals, and static caller counts do not establish exercised behavior, test absence, or runtime reach. Claim a missing case only within supplied test excerpts; otherwise mark it unverified.",
     "Describe intentional rejection conditions as behavior, not defects, unless evidence shows they violate a stated contract. Separate demonstrated facts, evidence gaps, and possible risks.",
     "Distinguish mandatory acceptance conditions from checks applied only when optional input or catalog fields are present; never flatten conditional gates into unconditional requirements.",
+    "decision_map/decision_changes are deterministic: use them for exact conditions, 'only if' gates, thresholds, error handling, and order. When an added exit runs after an earlier return, say that the earlier return can preempt it. They do not prove runtime reachability.",
     "Quote numbers exactly as they appear in the context; never add, estimate, or round them into new totals. Never mention JSON field names such as coverage_available.",
     "Never show opaque evidence, edge, symbol, or confidence-score IDs. Use human-readable `path:line` references.",
     "Wrap every file path, class, function, and method name in backticks so the UI can link it; write methods as `Class.method`.",

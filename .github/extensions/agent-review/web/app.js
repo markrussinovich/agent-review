@@ -4,6 +4,9 @@ import { resolveSymbolReference } from "/symbol-links.mjs";
 import { packageEvidenceLinks } from "/package-presentation.mjs";
 import { resolveSourceReference } from "/source-references.mjs";
 import { unchangedDiffContext } from "/diff-context.mjs";
+import {
+    callableName, callablesForSubject, changedCallables, decisionAction, decisionConditions, decisionSentence, decisionTotals,
+} from "/decision-map.mjs";
 
 const state = {
     payload: null,
@@ -35,7 +38,7 @@ const elements = Object.fromEntries([
     "status", "refresh", "cancel-analysis", "analysis-cancelled", "source-context-notice", "connection-notice", "reconnect", "worktree-notice", "worktree-notice-text", "worktree-reanalyze", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "rail-resize",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail-toggle", "detail", "detail-close", "source-panel", "source-title",
-    "source-provenance", "source-annotation", "source-close", "source", "source-back", "source-forward",
+    "source-provenance", "source-decisions", "source-annotation", "source-close", "source", "source-back", "source-forward",
     "session-history-panel", "session-history-title", "session-history-meta", "session-history-close", "session-transcript",
     "custom-analyses", "custom-results", "custom-manage", "prompt-manager", "prompt-manager-close",
     "prompt-manager-error", "prompt-library", "prompt-editor", "prompt-editor-title", "prompt-scope",
@@ -161,6 +164,7 @@ function renderSummary(model) {
         deltaMetric("Files", summary.files_added, summary.files_removed, fileDetail, "files", summary.files_modified || 0),
         deltaMetric("Lines", summary.lines_added, summary.lines_removed,
             `source ${split.source.toLocaleString()} · tests ${split.tests.toLocaleString()} lines changed`, "lines"),
+        decisionMetric(state.payload?.decision_map),
         deltaMetric("Architecture edges", summary.new_arch_edges, summary.arch_edges_removed, topEdge
             ? `Largest: ${nodeById.get(topEdge.source)?.name || topEdge.source} → ${nodeById.get(topEdge.target)?.name || topEdge.target}`
             : "No relationship changes", "edges"),
@@ -1370,6 +1374,7 @@ function renderSource() {
         node.id === (state.selected?.node_id || state.selected?.id))?.path;
     if (annotation && selectedPath === state.source.path) renderAnnotation(state.selected, annotation);
     else elements.source_annotation.classList.add("hidden");
+    renderSourceDecisions();
     renderProvenance();
     document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === state.sourceTab));
     renderSourceNavigation();
@@ -1380,6 +1385,7 @@ function collectionTitle(mode) {
     return {
         files: "Changed files", lines: "Lines changed by file", symbols: "Changed symbols",
         edges: "New relationships", packages: "Package changes", findings: "Ranked findings",
+        decisions: "Decision changes",
     }[mode] || "Review details";
 }
 
@@ -1414,6 +1420,10 @@ function collectionItems(model, mode) {
 function renderCollection(model) {
     if (state.mode === "packages") {
         renderPackageView(model);
+        return;
+    }
+    if (state.mode === "decisions") {
+        renderDecisionView(model);
         return;
     }
     const query = state.query.toLowerCase();
@@ -1499,6 +1509,218 @@ function renderCollection(model) {
         list.append(row);
     }
     elements.graph.append(list);
+}
+
+function decisionMetric(map) {
+    const totals = decisionTotals(map);
+    let detail;
+    if (!map) detail = "Unavailable for this review";
+    else if (map.status === "loading") detail = "Extracting decision changes…";
+    else if (map.status === "error") detail = "Extraction failed";
+    else if (!map.callables?.length) detail = "No changed production callables";
+    else if (!totals.callables) detail = "No decision changes";
+    else detail = [`${totals.callables} callable${totals.callables === 1 ? "" : "s"}`,
+        totals.gates ? `${totals.gates} conditional gate${totals.gates === 1 ? "" : "s"}` : null].filter(Boolean).join(" · ");
+    if (map?.status !== "complete") return metric("Decisions", map?.status === "loading" ? "…" : "–", detail, "decisions");
+    return deltaMetric("Decisions", totals.added, totals.removed, detail, "decisions", totals.changed + totals.moved);
+}
+
+function appendCodeText(container, text) {
+    String(text).split(/(`[^`]+`)/).forEach((part) => {
+        if (!part) return;
+        container.append(part.startsWith("`") && part.endsWith("`") ? el("code", "", part.slice(1, -1)) : document.createTextNode(part));
+    });
+}
+
+function decisionStatusLabel(status) {
+    return el("span", `label label-${["changed", "moved"].includes(status) ? "modified" : status} decision-status`, status);
+}
+
+function decisionRow(callable, entry, open) {
+    const decision = entry.decision;
+    const row = el("button", `decision-row decision-${entry.status}`);
+    row.type = "button";
+    row.dataset.line = String(decision.line);
+    row.title = `Open ${callable.path}:${decision.line}${entry.status === "removed" ? " in Base" : ""}`;
+    const action = decisionAction(decision);
+    const head = el("span", "decision-action");
+    head.append(decisionStatusLabel(entry.status), el("strong", "", action.verb));
+    if (action.code) head.append(el("code", "", action.code));
+    if (action.via) head.append(el("span", "decision-via", "via"), el("code", "", action.via));
+    head.append(el("span", "decision-line", `${entry.status === "removed" ? "Base " : ""}L${decision.line}`));
+    row.append(head);
+    const conditions = decisionConditions(decision);
+    if (conditions.length) {
+        const list = el("span", "decision-conditions");
+        for (const part of conditions) {
+            const item = el("span", `decision-condition tone-${part.tone}`);
+            item.append(el("em", "", part.label));
+            part.code.forEach((code, index) => {
+                if (index) item.append(el("span", "decision-joiner", part.label === "when any of" ? "or" : "and"));
+                item.append(el("code", "", code));
+            });
+            list.append(item);
+        }
+        row.append(list);
+    }
+    if (entry.status === "changed" && entry.base) {
+        const before = el("span", "decision-note");
+        before.append(el("em", "", "Before"));
+        appendCodeText(before, ` ${decisionSentence(entry.base)} (L${entry.base.line})`);
+        row.append(before);
+    }
+    if (entry.after || entry.before || entry.moved) {
+        const order = el("span", "decision-note decision-order");
+        order.append(el("em", "", "Order"));
+        if (entry.moved) order.append(" Moved relative to other decisions.");
+        if (entry.after) appendCodeText(order, ` After ${entry.after.label} (L${entry.after.line}).`);
+        if (entry.before) appendCodeText(order, ` Before ${entry.before.label} (L${entry.before.line}).`);
+        row.append(order);
+    }
+    row.addEventListener("click", () => open(callable, entry));
+    return row;
+}
+
+function decisionCounts(item) {
+    const counts = el("span", "decision-counts");
+    for (const [status, symbol, className] of [["added", "+", "delta-add"], ["changed", "~", "delta-modified"],
+        ["moved", "↕", "delta-modified"], ["removed", "−", "delta-remove"]]) {
+        if (item.counts?.[status]) {
+            const value = el("span", className, `${symbol}${item.counts[status]}`);
+            value.title = status;
+            counts.append(value);
+        }
+    }
+    return counts;
+}
+
+async function openDecision(callable, entry, { select = true } = {}) {
+    const node = state.payload?.model?.nodes.find((candidate) => candidate.id === callable.id);
+    if (select && node) {
+        state.selected = node;
+        markSelectedCards();
+        renderDetail(node);
+    }
+    const epoch = ++state.selectionEpoch;
+    const decision = entry.decision;
+    const side = entry.status === "removed" ? "base" : "current";
+    const query = `path=${encodeURIComponent(callable.path)}&line=${decision.line}&end=${decision.end_line || decision.line}&side=${side}`;
+    try {
+        if (await loadSource(query, epoch, side, select ? "reset" : "push") && state.selected) ensureAnnotation(state.selected, epoch);
+    } catch (error) {
+        if (epoch === state.selectionEpoch) showError(error);
+    }
+}
+
+function renderDecisionView(model) {
+    const map = state.payload?.decision_map;
+    const view = el("div", "collection-list decision-view");
+    view.append(el("p", "muted decision-note-intro",
+        "Exits, error handling, and name-based wiring extracted statically from changed production callables. "
+        + "“Only if” marks gates that apply only when a value is present. Static extraction does not prove runtime reachability."));
+    elements.graph.replaceChildren(view);
+    if (!map || map.status !== "complete") {
+        view.append(el("p", "collection-empty", map?.status === "loading" ? "Extracting decision changes…"
+            : map?.error || "Decision changes are unavailable for this review."));
+        return;
+    }
+    if (map.limited) view.append(el("p", "flash", "Large review: decision extraction covered a bounded set of files and callables."));
+    for (const warning of map.warnings || []) view.append(el("p", "flash", warning));
+    const query = state.query.toLowerCase();
+    const matches = (item) => !query || `${item.qualname} ${item.path} ${JSON.stringify(item.entries)}`.toLowerCase().includes(query);
+    const changed = changedCallables(map).filter(matches).sort((a, b) =>
+        (b.entries?.length || 0) - (a.entries?.length || 0) || a.path.localeCompare(b.path) || (a.line || 0) - (b.line || 0));
+    const quiet = (map.callables || []).filter((item) => !changed.includes(item) && !(item.entries?.length) && matches(item));
+    if (!changed.length) {
+        view.append(el("p", "collection-empty", map.callables?.length
+            ? "No decision changes: changed callables keep the same exits, error handling, and wiring."
+            : "No changed production Python callables in this review."));
+    }
+    for (const item of changed) {
+        const group = el("section", "decision-group");
+        const header = el("button", "decision-group-heading");
+        header.type = "button";
+        const title = el("span", "decision-group-title");
+        title.append(el("strong", "", callableName(item)),
+            el("small", "", `${item.path}:${item.line || item.base_line}`));
+        header.append(title, decisionCounts(item), el("span", `label label-${item.change} row-label`, item.change));
+        header.addEventListener("click", () => {
+            const node = model.nodes.find((candidate) => candidate.id === item.id);
+            if (node) selectItem(node);
+        });
+        group.append(header);
+        const rows = el("div", "decision-rows");
+        rows.append(...(item.entries || []).map((entry) => decisionRow(item, entry, openDecision)));
+        if (item.omitted_entries) rows.append(el("p", "muted decision-omitted", `${item.omitted_entries} more decision changes not shown.`));
+        if (item.truncated) rows.append(el("p", "muted decision-omitted", "Very large callable: only the first decisions were extracted."));
+        group.append(rows);
+        view.append(group);
+    }
+    if (quiet.length) {
+        const same = quiet.filter((item) => item.change === "modified").length;
+        const none = quiet.length - same;
+        const details = el("details", "decision-unchanged");
+        details.append(el("summary", "", [
+            same ? `${same} modified callable${same === 1 ? " keeps" : "s keep"} the same decisions` : null,
+            none ? `${none} added or removed callable${none === 1 ? " has" : "s have"} no exits, handlers, or wiring` : null,
+        ].filter(Boolean).join(" · ")));
+        const list = el("div", "decision-unchanged-list");
+        for (const item of quiet) {
+            const button = el("button", "link-button", callableName(item));
+            button.type = "button";
+            button.title = `${item.path}:${item.line || item.base_line}`;
+            button.addEventListener("click", () => {
+                const node = model.nodes.find((candidate) => candidate.id === item.id);
+                if (node) selectItem(node);
+            });
+            list.append(button);
+        }
+        details.append(list);
+        view.append(details);
+    }
+}
+
+function renderSourceDecisions() {
+    const panel = elements.source_decisions;
+    const map = state.payload?.decision_map;
+    const model = state.payload?.model;
+    const selected = state.selected;
+    const subject = !selected ? null : selected.kind === "file" ? selected
+        : model?.nodes.find((node) => node.id === (selected.node_id || selected.id)) || null;
+    const callables = map?.status === "complete" ? callablesForSubject(map, model, subject) : [];
+    const loading = map?.status === "loading" && subject?.path?.endsWith(".py")
+        && ["function", "method", "class", "module", "file"].includes(subject.kind || subject.type);
+    const key = JSON.stringify([map?.status, map?.total_ms, subject?.id, subject?.path, state.source?.path]);
+    if (key === state.sourceDecisionsKey && panel.childElementCount) return;
+    state.sourceDecisionsKey = key;
+    panel.replaceChildren();
+    if (!state.source || !subject || subject.path !== state.source.path || (!callables.length && !loading)) {
+        panel.classList.add("hidden");
+        return;
+    }
+    panel.classList.remove("hidden");
+    const heading = el("div", "decisions-heading");
+    heading.append(el("strong", "", "Decision changes"));
+    const totals = { added: 0, changed: 0, moved: 0, removed: 0 };
+    for (const item of callables) for (const status of Object.keys(totals)) totals[status] += item.counts?.[status] || 0;
+    heading.append(decisionCounts({ counts: totals }));
+    panel.append(heading);
+    if (loading) {
+        panel.append(el("p", "muted", "Extracting decision changes…"));
+        return;
+    }
+    for (const item of callables) {
+        if (callables.length > 1) panel.append(el("p", "decisions-callable", callableName(item)));
+        if (!item.entries?.length) {
+            panel.append(el("p", "muted decisions-same", item.change === "modified"
+                ? "Same exits, error handling, and wiring as the base." : "No exits, error handling, or wiring."));
+            continue;
+        }
+        const rows = el("div", "decision-rows");
+        rows.append(...item.entries.map((entry) => decisionRow(item, entry, (callable, value) => openDecision(callable, value, { select: false }))));
+        if (item.omitted_entries) rows.append(el("p", "muted decision-omitted", `${item.omitted_entries} more in Decision changes view.`));
+        panel.append(rows);
+    }
 }
 
 function packageVersion(item) {
@@ -2134,6 +2356,7 @@ function render() {
     if (state.selected && payload.annotations?.[state.selected.id]) {
         renderAnnotation(state.selected, payload.annotations[state.selected.id]);
     }
+    if (state.source && !elements.source_panel.classList.contains("hidden")) renderSourceDecisions();
     if (!state.selected) renderEmptyDetail();
 }
 

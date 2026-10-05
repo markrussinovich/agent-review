@@ -26,6 +26,19 @@ modified, and removed items have distinct styling; graph edges expose callers
 and dependencies. A ranked attention queue highlights rule-based concerns,
 with evidence, exact source locations, and persistent **Close / Reopen** controls.
 
+### Follow behavior decisions
+
+The **Decisions** metric maps how each changed production function decides:
+its returns, raises, skipped iterations, error handlers, and name-based wiring
+(for example, a checker loaded from a class-name string), each with its
+governing condition. **Only if** marks gates that apply only when a value is
+present, thresholds are called out, and added exits show which existing exit
+runs before and after them, revealing fallbacks an earlier return can preempt.
+Compared with the base, decisions are added, removed, changed (such as a
+threshold moving from 0.9 to 0.95), or moved. Select any decision to open its
+line; the source pane lists the decisions for the selected function, class, or
+file. Copilot summaries and briefings receive the same deterministic map.
+
 ### Inspect the actual code
 
 Open **Diff**, **Current**, or **Base** for the selected snapshot. Findings
@@ -103,6 +116,9 @@ Returning to a target reuses its results while the provider remains running.
 - Structural analysis and rule-based checks focus on Python. Other text files
   remain reviewable as diffs. No findings is **not** a correctness guarantee;
   **Priority** ranks attention, not security.
+- Decision maps are static and cover changed, non-test Python functions after
+  analysis finishes, so they never lengthen the scan. They show conditions, not
+  runtime reachability; very large reviews are bounded and labeled as partial.
 - Worktree coverage accepts matching `coverage.json`, `coverage.xml`, or legacy
   JSON `.coverage` reports; a SQLite `.coverage` database alone is unsupported.
   Historical commit/PR reviews do not reuse live-worktree coverage.

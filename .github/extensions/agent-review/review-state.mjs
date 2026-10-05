@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -12,10 +13,12 @@ import { resolveReviewTarget } from "./review-target.mjs";
 import { buildSessionContext, findSessionAttribution, mergeSessionContexts } from "./session-context.mjs";
 import { spawnOwnedAnalyzer } from "./ownership-guard.mjs";
 import { fingerprintWorktree } from "./worktree-changes.mjs";
+import { callablesForSubject, decisionPromptContext } from "./web/decision-map.mjs";
 
 const execFileAsync = promisify(execFile);
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const analyzerPath = join(extensionRoot, "analyzer", "analyze.py");
+const decisionsPath = join(extensionRoot, "analyzer", "decisions.py");
 
 export function isTestPath(path) {
     return /(^|\/)(tests?|__tests__)\//i.test(path) || /(^|\/)test_[^/]+\.py$|_test\.py$/i.test(path);
@@ -155,6 +158,56 @@ export async function runAnalyzer(repoRoot, baseRef, onProgress, currentRef = nu
     throw new Error(`Unable to run the Python 3.11+ analyzer:\n${failures.join("\n")}`);
 }
 
+// Changed production callables only; tests and unchanged code stay out of the decision map.
+export function buildDecisionRequest(model, repoRoot) {
+    const byPath = new Map();
+    const knownClasses = {};
+    for (const symbol of model?.symbols || []) {
+        if (symbol.kind === "class" && symbol.name && symbol.module) {
+            const modules = knownClasses[symbol.name] ||= [];
+            if (!modules.includes(symbol.module)) modules.push(symbol.module);
+        }
+        if (!["function", "method"].includes(symbol.kind) || !["added", "modified", "removed"].includes(symbol.classification)
+            || !symbol.path?.endsWith(".py") || isTestPath(symbol.path)) continue;
+        if (!byPath.has(symbol.path)) byPath.set(symbol.path, []);
+        byPath.get(symbol.path).push({ id: symbol.id, qualname: symbol.qualname, change: symbol.classification });
+    }
+    if (!byPath.size) return null;
+    return {
+        repo: model.metadata?.repo_root || repoRoot,
+        base_sha: model.metadata?.base_sha || null,
+        files: [...byPath]
+            .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+            .map(([path, callables]) => {
+                const saved = model.source_files?.[path];
+                return { path, current: saved && !saved.binary ? saved.current ?? null : null, callables };
+            }),
+        known_classes: knownClasses,
+        known_modules: (model.nodes || []).filter((node) => node.kind === "module").map((node) => node.name),
+    };
+}
+
+export async function runDecisionExtractor(request, options = {}) {
+    const directory = await mkdtemp(join(tmpdir(), "agent-review-decisions-"));
+    const input = join(directory, "request.json");
+    try {
+        await writeFile(input, JSON.stringify(request));
+        const failures = [];
+        for (const [executable, prefix] of pythonCandidates()) {
+            try {
+                return await runAnalyzerProcess(executable, [...prefix, decisionsPath, "--input", input], () => {}, options);
+            } catch (error) {
+                options.signal?.throwIfAborted();
+                if (error.code !== "ENOENT") throw error;
+                failures.push(`${executable}: ${error.message}`);
+            }
+        }
+        throw new Error(`Unable to run the Python 3.11+ decision extractor:\n${failures.join("\n")}`);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+}
+
 function safePath(repoRoot, path) {
     if (!path || isAbsolute(path)) throw new Error("A repository-relative path is required.");
     const fullPath = resolve(repoRoot, normalize(path));
@@ -178,6 +231,10 @@ export class ReviewState {
         this.activeRun = null;
         this.cancelPromise = null;
         this.runAnalyzer = options.runAnalyzer || runAnalyzer;
+        this.runDecisions = options.runDecisions || (this.runAnalyzer === runAnalyzer ? runDecisionExtractor : null);
+        this.decisionMap = null;
+        this.decisionPromise = null;
+        this.decisionController = null;
         this.readWorktreeFingerprint = options.readWorktreeFingerprint
             || (this.runAnalyzer === runAnalyzer ? fingerprintWorktree : null);
         this.worktreeFingerprint = null;
@@ -240,6 +297,7 @@ export class ReviewState {
             saved_review_targets: [...this.reviewCache.values()].map((entry) => entry.target),
             custom_analyses: this.customAnalyses,
             custom_prompt_error: this.customPromptError,
+            decision_map: this.decisionMap,
         };
     }
 
@@ -324,6 +382,13 @@ export class ReviewState {
         const wait = (promise) => abortable(promise, signal);
         this.reviewGeneration += 1;
         this.annotationPromises = new Map();
+        // A running extraction is for the review being replaced; never let it compete with the new scan.
+        if (this.decisionMap?.status === "loading") {
+            this.decisionController?.abort();
+            this.decisionController = null;
+            this.decisionMap = null;
+            this.decisionPromise = null;
+        }
         this.loading = true;
         this.cancelled = false;
         this.error = null;
@@ -382,6 +447,7 @@ export class ReviewState {
                 this.worktreeChanged = false;
                 this.worktreeCheckError = run.worktreeCheckError || null;
                 this.progress = { phase: "complete", message: "Analysis complete", percent: 100 };
+                this.startDecisionMap();
                 this.saveCurrentReview();
                 this.broadcast("refreshed");
                 this.startCustomAnalyses();
@@ -392,6 +458,7 @@ export class ReviewState {
                 this.loading = false;
                 this.error = error.message;
                 this.progress = { phase: "failed", message: "Analysis failed", percent: 100 };
+                if (this.model && !this.decisionMap) this.startDecisionMap();
                 this.broadcast("refresh-failed");
                 throw error;
             })
@@ -418,6 +485,7 @@ export class ReviewState {
             this.loading = false;
             this.error = null;
             this.progress = { phase: "cancelled", message: "Analysis cancelled. Choose Reanalyze to try again.", percent: 0 };
+            if (this.model && !this.decisionMap && !this.disposed) this.startDecisionMap();
             this.broadcast("cancelled");
         })();
         this.cancelPromise = cancellation;
@@ -438,6 +506,11 @@ export class ReviewState {
 
     async clearDisposedReview() {
         await this.cancel();
+        const decisions = this.decisionPromise;
+        this.decisionController?.abort();
+        await decisions;
+        this.decisionMap = null;
+        this.decisionPromise = null;
         this.model = null;
         this.generatedObservations = [];
         this.annotations = {};
@@ -472,11 +545,14 @@ export class ReviewState {
             this.reviewTarget = resolved;
             this.selection = null;
             const cached = this.reviewCache.get(this.reviewCacheKey(resolved));
+            this.decisionController?.abort();
             if (cached) {
                 this.reviewGeneration += 1;
                 this.annotationPromises = new Map();
                 this.model = cached.model;
                 this.annotations = cached.annotations;
+                this.decisionMap = cached.decisionMap;
+                this.decisionPromise = cached.decisionMap ? Promise.resolve(cached.decisionMap) : null;
                 this.packageRisks = cached.packageRisks;
                 this.packageAssessments = cached.packageAssessments;
                 this.generatedObservations = cached.generatedObservations;
@@ -491,12 +567,15 @@ export class ReviewState {
                 this.loading = false;
                 this.error = null;
                 this.progress = { phase: "complete", message: "Saved review restored", percent: 100 };
+                if (!this.decisionMap) this.startDecisionMap();
                 this.broadcast("refreshed");
                 this.startCustomAnalyses();
                 return this.model;
             }
             this.model = null;
             this.annotations = {};
+            this.decisionMap = null;
+            this.decisionPromise = null;
             this.generatedObservations = [];
             return await this.refresh();
         } finally {
@@ -517,6 +596,7 @@ export class ReviewState {
             baseRef: this.baseRef,
             model: this.model,
             annotations: this.annotations,
+            decisionMap: this.decisionMap?.status === "complete" ? this.decisionMap : null,
             packageRisks: this.packageRisks,
             packageAssessments: this.packageAssessments,
             generatedObservations: this.generatedObservations,
@@ -526,6 +606,52 @@ export class ReviewState {
             worktreeCheckError: this.worktreeCheckError,
             customAnalyses: this.customAnalyses,
         });
+    }
+
+    // Runs after analysis completes so it never lengthens the repository scan.
+    startDecisionMap() {
+        const model = this.model;
+        this.decisionController?.abort();
+        this.decisionController = null;
+        if (!model || !this.runDecisions) {
+            this.decisionMap = null;
+            this.decisionPromise = null;
+            return null;
+        }
+        const controller = new AbortController();
+        this.decisionController = controller;
+        this.decisionMap = { status: "loading" };
+        const started = Date.now();
+        const current = () => this.model === model && !controller.signal.aborted && !this.disposed;
+        const promise = new Promise((resolve) => setImmediate(resolve))
+            .then(() => {
+                controller.signal.throwIfAborted();
+                const request = buildDecisionRequest(model, this.repoRoot);
+                if (!request) return { callables: [], totals: {}, limited: false, warnings: [], elapsed_ms: 0 };
+                return this.runDecisions(request, { signal: controller.signal, workspacePath: this.workspacePath });
+            })
+            .then((result) => ({ ...result, status: "complete", total_ms: Date.now() - started }),
+                (error) => ({ status: "error", error: `Decision extraction failed: ${error.message}` }))
+            .then((map) => {
+                if (this.decisionController === controller) this.decisionController = null;
+                if (!current()) return null;
+                if (map.status === "error") console.error("[agent-review decisions]", map.error);
+                this.decisionMap = map;
+                this.saveCurrentReview();
+                this.broadcast("decisions");
+                return map;
+            });
+        this.decisionPromise = promise;
+        return promise;
+    }
+
+    async decisionMapFor(timeoutMs = 20_000) {
+        const pending = this.decisionPromise;
+        if (pending && this.decisionMap?.status === "loading") {
+            try { await withTimeout(pending, timeoutMs, "Decision extraction timed out."); }
+            catch { /* Explanations proceed without decisions rather than wait indefinitely. */ }
+        }
+        return this.decisionMap;
     }
 
     promptStore() {
@@ -821,7 +947,12 @@ export class ReviewState {
             context.session_attribution = this.attributionForPath(attributionPath);
             context.session_intent = this.intentForReview(context.session_attribution).slice(-6);
             context.code_context = await this.codeContextFor(context);
+            if (this.decisionMap?.status === "loading") await this.decisionMapFor();
             if (generation !== this.reviewGeneration) throw new Error("The review changed while loading annotation context.");
+            const subjectCallables = callablesForSubject(this.decisionMap, this.model, context.subject);
+            context.decision_changes = subjectCallables.length
+                ? decisionPromptContext(this.decisionMap, subjectCallables, { maxCallables: 12, maxEntries: 20, maxCharacters: 6000 })
+                : null;
             return this.generateAnnotation(context);
         })()
             .then((body) => {
@@ -859,6 +990,7 @@ export class ReviewState {
         const promise = (async () => {
             const history = this.refreshHistoricalSessionContexts();
             if (history) await history;
+            if (this.decisionMap?.status === "loading") await this.decisionMapFor();
             if (generation !== this.reviewGeneration) throw new Error("The review changed while loading summary context.");
             return this.generateAnnotation(this.overviewContext());
         })()
@@ -946,6 +1078,7 @@ export class ReviewState {
             session_attribution: attribution,
             code_context: savedCode.files,
             evidence_limits: savedCode.evidence_limits,
+            decision_map: decisionPromptContext(this.decisionMap),
             analysis_quality: {
                 coverage_available: Boolean(model.coverage?.available),
                 warnings: model.warnings || [],

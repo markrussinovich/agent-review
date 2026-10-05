@@ -15,6 +15,7 @@ const staticFiles = new Map([
     ["/package-presentation.mjs", "package-presentation.mjs"],
     ["/source-references.mjs", "source-references.mjs"],
     ["/diff-context.mjs", "diff-context.mjs"],
+    ["/decision-map.mjs", "decision-map.mjs"],
     ["/styles.css", "styles.css"],
 ]);
 const contentTypes = {
@@ -96,10 +97,17 @@ export function startReviewServer(state, options = {}) {
             if (req.method === "GET" && pathname === "/api/source") {
                 const path = requestUrl.searchParams.get("path");
                 const line = Number(requestUrl.searchParams.get("line"));
+                const end = Number(requestUrl.searchParams.get("end"));
+                const side = requestUrl.searchParams.get("side");
                 const packageName = requestUrl.searchParams.get("package");
+                const start = Number.isInteger(line) && line > 0 ? line : null;
+                if (path && !packageName) {
+                    const source = await state.sourceForPath(path, start, start && Number.isInteger(end) && end >= start ? end : start);
+                    sendJson(res, ["base", "current"].includes(side) ? { ...source, focus_side: side } : source);
+                    return;
+                }
                 sendJson(res, path
-                    ? packageName ? await state.sourceForPackageDeclaration(path, packageName)
-                        : await state.sourceForPath(path, Number.isInteger(line) && line > 0 ? line : null)
+                    ? await state.sourceForPackageDeclaration(path, packageName)
                     : await state.sourceFor(requestUrl.searchParams.get("id")));
                 return;
             }
