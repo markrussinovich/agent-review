@@ -113,31 +113,29 @@ def current_files(
     last_update = time.monotonic()
     total_bytes = 0
     if on_progress:
-        on_progress("Reading working-tree files; excluded directories are skipped")
+        on_progress("Listing tracked and non-ignored working-tree files")
+    pathspecs = [":/"]
+    for pattern in DEFAULT_EXCLUDES:
+        prefix = "**/" if "/" not in pattern and not any(char in pattern for char in "*?[") else ""
+        pathspecs.extend((f":(exclude,glob){prefix}{pattern}", f":(exclude,glob){prefix}{pattern}/**"))
+    paths = [
+        repo / name
+        for name in sorted(set(run_git(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *pathspecs).split("\0")))
+        if name and not _excluded(name, patterns) and (repo / name).is_file()
+    ]
     # Limit concurrent opens and queued content while overlapping filesystem latency.
     with ThreadPoolExecutor(max_workers=8) as readers:
-        for directory, directories, filenames in os.walk(repo):
-            parent = Path(directory)
-            directories[:] = [
-                name for name in directories
-                if not _excluded((parent / name).relative_to(repo).as_posix(), patterns)
-            ]
-            paths = [
-                parent / filename for filename in filenames
-                if not _excluded((parent / filename).relative_to(repo).as_posix(), patterns)
-                and (parent / filename).is_file()
-            ]
-            for offset in range(0, len(paths), 64):
-                batch = paths[offset:offset + 64]
-                for path, content in zip(batch, readers.map(_read_worktree_file, batch)):
-                    if content is None:
-                        continue
-                    relative = path.relative_to(repo).as_posix()
-                    result[relative] = content
-                    total_bytes += len(content)
-                    if on_progress and time.monotonic() - last_update >= .25:
-                        on_progress(f"Working tree: {len(result):,} files, {total_bytes / 1048576:.1f} MiB read · {relative}")
-                        last_update = time.monotonic()
+        for offset in range(0, len(paths), 64):
+            batch = paths[offset:offset + 64]
+            for path, content in zip(batch, readers.map(_read_worktree_file, batch)):
+                if content is None:
+                    continue
+                relative = path.relative_to(repo).as_posix()
+                result[relative] = content
+                total_bytes += len(content)
+                if on_progress and time.monotonic() - last_update >= .25:
+                    on_progress(f"Working tree: {len(result):,} files, {total_bytes / 1048576:.1f} MiB read · {relative}")
+                    last_update = time.monotonic()
     if on_progress:
         on_progress(f"Working tree complete: {len(result):,} files, {total_bytes / 1048576:.1f} MiB")
     return result

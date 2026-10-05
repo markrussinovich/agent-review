@@ -48,7 +48,16 @@ async function readJson(req) {
 export function startReviewServer(state, options = {}) {
     const clients = new Set();
     const unsubscribe = state.subscribe((event) => {
-        const payload = `event: state\ndata: ${JSON.stringify(event)}\n\n`;
+        if (!clients.size) return;
+        let update = event;
+        if (["progress", "refresh-started", "worktree-changed"].includes(event.type)) {
+            update = Object.fromEntries(["type", "loading", "cancelled", "disposed", "error", "progress",
+                "review_target", "review_generation", "analyzed_at", "restored_from_cache",
+                "worktree_changed", "worktree_check_error"].map((key) => [key, event[key]]));
+            update.partial = true;
+            if (event.model === null) update.model = null;
+        }
+        const payload = `event: state\ndata: ${JSON.stringify(update)}\n\n`;
         for (const client of clients) client.write(payload);
     });
 

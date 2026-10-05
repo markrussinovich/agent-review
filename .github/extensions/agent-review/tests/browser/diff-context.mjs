@@ -69,6 +69,9 @@ try {
         assert.match(await definition.getAttribute("class"), /context.*focus-line/);
         assert.equal(await page.locator('#source .code-row[data-new-line="1"]').count(), 1);
         assert.equal(await page.locator("#source-context-notice").isVisible(), false);
+        const bothGutters = await definition.evaluate((row) =>
+            row.querySelector("code").getBoundingClientRect().left - row.getBoundingClientRect().left);
+        assert.ok(bothGutters <= 100, `two-sided gutter stays compact: ${bothGutters}px`);
         for (const tab of ["base", "current", "diff"]) {
             await page.locator(`.tab[data-tab="${tab}"]`).click();
             assert.match(await page.locator("#source .focus-start").textContent(), /def report\(value\)/);
@@ -98,6 +101,18 @@ try {
         assert.doesNotMatch(panel, /Pin or resolve|Affects reviewed version null/);
         assert.equal(await page.locator("#package-detail .annotation-error").count(), 0);
         assert.equal(await page.locator('#package-detail a[href*="/null/"]').count(), 0);
+        await page.locator("#package-detail .package-declaration-note .source-reference").click();
+        await page.locator('.tab[data-tab="diff"]').click();
+        const gutter = await page.locator('#source .code-row[data-new-line="1"]').evaluate((row) => ({
+            width: row.querySelector("code").getBoundingClientRect().left - row.getBoundingClientRect().left,
+            unused: row.querySelector(".line-number").getBoundingClientRect().width,
+        }));
+        assert.equal(gutter.unused, 0, "new files have no empty baseline gutter");
+        assert.ok(gutter.width <= 60, `added-file code starts within 60px: ${gutter.width}px`);
+        if (process.env.AGENT_REVIEW_SCREENSHOT_DIR) await page.screenshot({
+            path: join(process.env.AGENT_REVIEW_SCREENSHOT_DIR, `compact-gutter-${theme}.png`), fullPage: true,
+        });
+        await page.click("#source-close");
         await page.setViewportSize({ width: 560, height: 900 });
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
         assert.deepEqual(errors, []);

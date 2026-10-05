@@ -1,331 +1,128 @@
-# Agent Review Canvas
+# Agent Review
 
-Agent Review is a project-scoped GitHub Copilot Canvas extension for reviewing
-changes made to Python repositories. It deterministically compares the current
-worktree (including staged and unstaged edits) with the merge base of the
-repository's default branch, then presents the result with progressive semantic
-zoom from architecture to modules, symbols, and source evidence.
+A GitHub Copilot Canvas extension for reviewing agent-made changes in Python
+repositories. Start with the change's intent and architecture, then follow its
+impact down to findings, dependency evidence, and source diffs.
 
-## Requirements
+[![Agent Review: change brief, architecture graph, attention queue, package changes, source diff, originating prompt, and AI briefing](docs/agent-review.png)](docs/agent-review.png)
 
-- Git repository
-- Python 3.11 or newer
-- GitHub Copilot app with Canvas extension support
-- Node.js 20+ on PATH when Copilot uses an embedded runtime (for analysis
-  ownership guards)
+*Two views of the same demo review: architecture and attention above; source,
+prompt provenance, and briefing below. AI text and prompt provenance are
+illustrative; changes, graph, and findings come from the analyzer. Click to enlarge.*
 
-No hosted backend, database, separate model API key, or Python package install is
-required.
+## Features and insights
 
-## Install and use
+### Understand the change
 
-For project scope, copy `.github/extensions/agent-review` into the repository
-that you want to review and commit it. For personal scope, copy that directory
-to `~/.copilot/extensions/agent-review`. Start a new Copilot app session after
-installing the extension, then ask Copilot to `Open the Agent Review canvas`.
+A change brief shows file mix, source/test churn, coverage availability, and the
+originating request. Copilot summarizes the change, suggests a review order, and
+calls out gaps. Clickable metrics include all reviewable files, not just Python.
 
-The extension prefers `COPILOT_WORKSPACE_PATH`, `COPILOT_ROOT_PATH`, and
-`COPILOT_DEFAULT_BRANCH`. Pass `repoPath` or `baseRef` when opening the canvas to
-override discovery. Set `AGENT_REVIEW_PYTHON` only if Python 3.11+ is not
-available as `py -3.11`, `python3`, or `python`.
+### Follow architecture and impact
 
-The Copilot app can restart extension processes several times while a session
-resumes, which would otherwise leave an open Canvas pointing at a stopped
-server ("Reconnecting…"). Each Canvas therefore uses a stable loopback port that
-is recorded under `~/.copilot/agent-review/canvases`; a replacement provider
-for the same session re-serves that URL and the page reconnects on its own.
-Set `AGENT_REVIEW_STATE_DIR` to relocate the records.
-Closing the last Canvas for a review stops its analyzer and releases its saved
-review data. Deleting the owning session workspace also stops analysis and
-removes that session's Canvas records. Provider-only restarts stop running
-analyzers but preserve records for recovery; no repository files are deleted.
+Drill from components to modules, classes, functions, and relationships. Added,
+modified, and removed items have distinct styling; graph edges expose callers
+and dependencies. A ranked attention queue highlights rule-based concerns,
+with evidence, exact source locations, and persistent **Close / Reopen** controls.
 
-The analyzer can also run independently:
+### Inspect the actual code
 
-```text
-python .github/extensions/agent-review/analyzer/analyze.py --repo <repository>
-```
+Open **Diff**, **Current**, or **Base** for the selected snapshot. Findings
+highlight relevant lines; references outside diff hunks show verified,
+explicitly labeled unchanged context. Compact gutters, clickable source links,
+and back/forward navigation keep the code central. Copilot briefings explain
+usage, behavior changes, motivation, risk, and what to verify.
 
-Its stdout is the stable `ReviewModel` JSON consumed by both the Canvas and
-Copilot actions.
+### Recover the agent's intent
 
-## Review experience
+When matching Copilot session history is available, source views show the
+authoring request, follow-up activity, and a linked transcript. Provenance is
+repository- and snapshot-scoped: later work cannot explain an earlier commit.
+Missing history is explicit; intent supplements rather than replaces code evidence.
 
-The top toolbar's **Review** selector supports:
+### Review dependency decisions
 
-- **Worktree**: staged, unstaged, and untracked changes against the configured baseline.
-- **Commit**: choose from recent commits on the current branch, labeled with SHA,
-  subject, author, and date; compare its immutable tree
-  with its first parent. A root commit compares with an empty tree.
-- **Pull request**: choose from the repository's PRs, labeled with number, title,
-  open/closed/merged status, author, and update date. Requires a GitHub remote,
-  the `gh` CLI and `gh auth login`. The extension fetches
-  PR objects and compares the head with the base/head merge base without checking
-  out files or modifying your worktree.
+Added, changed, and removed Python dependencies link to manifest declarations
+and consuming code. On-demand assessments explain adoption and expose PyPI
+metadata, OSV advisories, OpenSSF Scorecard, maintenance, and downloads.
+Vulnerability checks use the **exact project version**, never the latest release.
+Unresolved ranges still permit metadata and usage explanations, but
+version-specific vulnerability status remains unknown. Service failures are visible.
 
-Source, diff, graph, dependencies, and AI source context follow the selected
-snapshot. Worktree coverage is deliberately unavailable for commit/PR reviews.
-For any target with no reviewable changes, the canvas shows **No changes to review**
-without a change brief, empty metric cards, or automatic AI/custom analysis.
-The coverage banner distinguishes a missing worktree report from unavailable
-historical coverage; neither message means the AI change brief is unavailable.
-Selecting a worktree, commit, or PR loads its review automatically, restoring
-saved results when available or starting analysis otherwise. Switching to Commit
-or Pull request only loads the list and shows a selection placeholder; no review
-starts until you explicitly choose an item. Pagination and list retries preserve
-the placeholder or selected item. Switching to Worktree still loads automatically.
-While a worktree review is open, a metadata-only check runs about every five
-seconds. Later file edits/additions/deletions, HEAD/base changes, or updated
-coverage/config inputs show **Worktree changed — Reanalyze**. Saved source and
-results remain available; detection does not restart analysis or AI checks.
-This also applies when restoring a cached worktree. Commit/PR snapshots are
-immutable and are not monitored. A previously empty snapshot is labeled as such
-instead of claiming that the current worktree has no changes.
-**Reanalyze** recomputes the current snapshot and regenerates its AI summary and
-enabled custom checks. Reanalyze keeps a PR's resolved head; reselect the PR to
-resolve its latest head. **Cancel analysis** stops an in-progress deterministic
-analysis, including its child processes. Cancellation does not automatically
-restart when the page reconnects; choose **Reanalyze** to try again. Previously
-completed results remain available when cancelling a reanalysis.
-Both lists load 30 entries at a time with **Load more** for older
-items. Empty lists and missing authentication are explicit, with **Retry list**
-for failed requests. Invalid revisions and fetch errors are
-displayed explicitly. Switching waits for package assessments to finish;
-superseded AI summaries and annotations cannot overwrite the new review.
+### Add your own checks
 
-### Updating or reconnecting in the same session
+**Manage prompts** creates repository-specific or global AI checks. Enabled,
+approved checks run after analysis against bounded, saved source/diff evidence;
+results stay separate from rule-based findings. Repository prompt revisions
+require approval. Checks use isolated, tool-free Copilot sessions and cannot edit code.
 
-Repository edits and commits are separate from the Canvas and are not removed by
-closing/reopening it or reloading extensions. Do not delete the session or its
-worktree to update Agent Review.
+## Install and open
 
-Reload the session's extensions to load updated backend modules, then reopen
-Agent Review in the same session. **Reanalyze** only updates the review snapshot;
-it does not reload extension code. Closing and reopening the same Canvas instance
-is supported. If the provider has already exited, reopening starts a new provider.
+Requires a Git repository, Python **3.11+**, Node.js **20+** on PATH, and a
+**GitHub Copilot app with Canvas extension support**. PR reviews support
+**github.com only** and require the `gh` CLI and `gh auth login`; private
+repositories also need HTTPS Git credentials (for example, `gh auth setup-git`).
+No separate model API key or Python packages are needed for the analyzer.
 
-The local Canvas server belongs to the extension provider. If the Copilot host
-ends, its SDK watchdog terminates that provider too. The page keeps its last
-completed results, hides frozen progress, displays **Connection lost**, and
-retries the existing URL. **Reconnect** retries immediately. If the host does not
-restart the provider, close only the Canvas tab and reopen it in this session.
-Reanalysis requests are acknowledged immediately; progress and errors arrive over
-the event stream rather than holding an HTTP request open for the entire analysis.
-The selected immutable target is recorded with the Canvas marker so provider
-recovery restores the same review instead of reverting to the worktree.
-Switching selections resets navigation to the overview and attention queue, and
-clears the visible board while the next target loads. Each target retains its analyzed
-source/diff, summary, package assessments, annotations, and custom results in the
-running provider's memory. Returning does not silently mix saved results with
-later worktree edits. **This result cache does not survive a provider restart**;
-the selected target and browser-local closed findings do.
+Copy the [extension directory](.github/extensions/agent-review/) to either:
 
-- A change brief above the review workspace: file mix, source-versus-test churn,
-  originating prompt, and an automatically generated Copilot summary with a
-  suggested review order and gaps; refresh regenerates the summary
-- Progressive architecture, module, class, and function drilldown with edge
-  highlighting on hover for dense graphs
-  - Graph line additions, deletions, and change-state text use green, red, and
-    amber semantic colors. Expanded originating prompts wrap long paths.
-- Impact-ranked attention findings with caller, complexity, signature, coverage,
-  churn, and line-delta evidence; repeated size findings collapse into one card
-  - These are rule-based checks, primarily for Python. An empty attention queue
-    means no rule triggered, not that changes are bug-free or fully analyzed.
-  - Selecting a grouped large-change card lists every area individually, numbered
-    with its symbol type and source location. Nested scopes may overlap.
-- Graph counts include findings on the module/component itself and its descendants;
-  drilldown shows the complete scoped finding list, including module-level findings
-  that have no child-symbol badge
-- Attention queue **Close / Reopen** controls move closed findings below active
-  items and give them muted styling. State is saved in this browser for the
-  repository and comparison; changed evidence reopens a finding. Graph badges
-  count active findings, while scoped lists retain closed findings
-- Clickable summary deltas and compact file, module, relationship, and package
-  indexes with proportional churn bars
-  - The Lines index lists all changed files, including manifests and documentation,
-    so every added/deleted line in the total has a corresponding file and diff.
-  - Files and Packages show added / modified / deleted counts; `~` means modified.
-    Lines show additions/deletions, and architecture edges show added/removed relationships.
-- Code-first source and diff view with a side panel for the originating prompt
-  and a concise Copilot briefing that leads with a risk banner
-  - Diff row backgrounds span the full scrollable source width, including blank
-    space after shorter lines.
-  - Referenced lines outside the diff hunks appear as explicitly labeled
-    unchanged context, with accurate Base/Current line numbers. If the saved
-    snapshots cannot verify that context, a notice directs you to the matching
-    source tab instead. Removed symbols focus the Base snapshot.
-- Snapshot loading reads Git blobs in bounded batches rather than starting one
-  Git process per file, skips excluded worktree directories before traversal,
-  and overlaps working-tree reads with at most eight concurrent file opens.
-  Progress includes processed file counts and bytes. Python graph analysis
-  identifies the current file, module counts, and relationship-resolution
-  work, including syntax-node counts for larger modules. A compact Cancel
-  button appears at the right of the progress panel. Stage percentages are
-  not time-remaining estimates.
-- Python analysis caches UTF-8 source lines once per module and parses
-  byte-identical baseline/current files once. The AST is shared read-only;
-  mutable symbol and import records remain separate for each snapshot.
-  Architecture aggregation uses indexed symbol-to-module lookups.
-- Added, deleted, and unchanged files avoid unnecessary line matching.
-  Whole-file additions/deletions emit the same unified diffs without building
-  a matching index. Source hashes, line numbers, evidence, and reviewable files
-  are preserved; modified-file matching is unchanged.
-- Backticked file paths (including root files and line ranges), symbols, and class fields link to source. Bare fields/methods resolve within the selected class, not an unrelated globally matching member. The stated-intent label opens the originating prompt
-- Back and forward navigation (buttons, Alt+Left/Right, mouse back/forward) through followed source links
-- Package review: added, changed, and removed dependencies with a Copilot explanation of why each was added and what uses it, a security scorecard (vulnerabilities, OpenSSF Scorecard, maintenance, downloads), and provenance (author, license, source repository, registry)
-  - Vulnerability queries use the exact version pinned in the reviewed
-    `pyproject.toml` or `requirements*.txt`, never the analyzer's installed
-    packages or the registry's latest release. Ranges, wildcards, and conflicting
-    pins are unresolved rather than reported safe. Arbitrary lockfile formats
-    are not currently resolved; frozen requirements files are supported.
-    All-version advisory history is shown separately from vulnerabilities
-    affecting the reviewed version.
-    Public-service HTTP 429 responses retry up to three total attempts,
-    honoring `Retry-After` seconds or dates and otherwise using exponential
-    backoff with jitter. All attempts and waits share the existing per-request
-    timeout; a server delay beyond that budget is reported rather than retried
-    prematurely. Download cards expose the final service error when unavailable.
-- Exact source-range highlighting for findings backed by precise line evidence
-- Cached Copilot explanations generated in isolated, tool-free sessions and
-  validated for the required sections: what the code is, usage, behavior
-  changes, motivation, risk, and review focus
-- Repository-scoped prompt provenance with bounded history search and explicit
-  matched, no-match, and error states; transcripts group tool calls and show
-  the files and commands involved. The original authoring request is separated
-  from later file-specific follow-ups; AI briefings wait for the bounded history
-  search rather than prematurely claiming no intent exists. Commit/PR provenance
-  excludes turns and writes after the reviewed head commit, so a newer same-repository
-  feature cannot supply the historical review's stated goal. Saved worktree
-  provenance similarly stops at that snapshot's analysis time
-- Dependency versions and on-demand public risk indicators from PyPI, OSV,
-  OpenSSF Scorecard, and PyPI download statistics
-- GitHub-style responsive layouts, typography, controls, and graph treatment for
-  full-width and narrow side-panel Canvas sizes
+- **Personal:** `~/.copilot/extensions/agent-review`
+- **Project:** `.github/extensions/agent-review` in the repository being reviewed
 
-All UX follows the GitHub/Primer guidelines in [AGENTS.md](./AGENTS.md). Semantic
-light/dark palette values are based on Primer primitives 11.10.0; summary panels
-remain neutral, with semantic color limited to headings, states, and evidence.
+Start a session after installation, or reload extensions in your existing
+session, then ask Copilot:
 
-Package lookups send only the public package name/version and public repository
-URL to those services. Repository source and credentials are never sent.
+> Open the Agent Review canvas for this session's existing repository.
 
-### Package labels and evidence
+When updating, reload extensions and reopen only the Canvas in the same session.
+**Do not delete the session or worktree.** Reanalyze updates a snapshot; it does
+not reload extension code.
 
-- **Version** / **Reviewed version** identifies the dependency version being
-  assessed; it is not a vulnerability count or proof of the runtime installation.
-- A valid range such as `reportlab>=4.0` does not block Copilot's usage/adoption
-  explanation, registry metadata, maintenance, downloads, or advisory history.
-  Without an exact saved project version, version-specific vulnerability checks
-  remain explicitly unavailable and dependency risk remains unknown; neither
-  the latest release nor the range's lower bound is used as the reviewed version.
-- **Priority N/100** ranks deterministic review attention. It is not a security
-  score. The package risk signal aggregate is a separate 0–100 measure, while
-  **OpenSSF Scorecard** is a separate 0–10 score.
-- Manifest additions/version changes are reviewable even without mapped Python
-  imports. The panel links the declaration and explains this distinction.
-- Import locations link to actual source lines. PyYAML's distribution name maps
-  to its `yaml` import; other unsupported aliases or dynamic imports can remain
-  unresolved.
-- Package AI assessments inspect bounded, line-numbered consuming implementations
-  and diffs from the selected snapshot. They explain called APIs and implemented
-  behavior rather than guessing usage from registry descriptions or imports.
-- Manifest links highlight the exact dependency declaration and package-name
-  span, including dependencies sharing a TOML array line.
-- Scorecard, weak checks, registry, vulnerability queries, release history, and
-  download evidence are links. Lookup failures display their errors instead of
-  presenting missing evidence as a reassuring result.
+## Choose a snapshot
 
-### Custom analyses
+| Review | Compared with |
+|---|---|
+| **Worktree** | Staged, unstaged, and non-ignored untracked files against the configured baseline (default: default-branch merge base) |
+| **Commit** | Selected commit's first parent; an empty tree for a root commit |
+| **Pull request** | Resolved PR head against its merge base with the PR base |
 
-Choose **Manage prompts** beneath the change brief to add, edit, disable, or
-delete checks. Select **This repository** or **All repositories** when adding a
-prompt. Enabled, approved checks run automatically after analysis; **Run again**
-repeats one check against the saved snapshot, without reanalyzing live files.
-Results are labeled AI-generated, kept separate from deterministic findings,
-and saved with each review and prompt revision. They have explicit running,
-failure, timeout, and retry states.
+Switching to Commit or Pull request loads a list, not a review. Explicitly
+selecting an item loads or analyzes it automatically; Worktree loads immediately.
+PR objects are fetched without checking out files or changing your worktree.
 
-Configuration is versioned JSON:
+Worktree selection honors Git ignore rules, including nested/global/local rules
+and negations. Tracked files remain eligible even when ignored; standard generated
+directories are excluded. Later edits show **Worktree changed — Reanalyze**,
+without automatically restarting analysis. **Cancel** stops active analysis.
+Returning to a target reuses its results while the provider remains running.
 
-```json
-{
-  "version": 1,
-  "prompts": [
-    {
-      "id": "error-handling",
-      "title": "Check error handling",
-      "prompt": "Review changed error paths for silent failures and actionable messages.",
-      "enabled": true
-    }
-  ]
-}
-```
+## Limits and data
 
-- Repository prompts: `.agent-review/prompts.json` (the `.agent-review` configuration/
-  lock directory is excluded from review changes).
-- Global prompts: `~/.copilot/agent-review/prompts.json`.
-- Repository approvals: `~/.copilot/agent-review/prompt-approvals.json`, scoped to
-  the canonical repository and exact prompt revision. Discovered/changed
-  repository instructions **never run automatically until Save and approve**.
-  Global configuration is trusted as user-owned configuration.
-- Maximum 50 prompts per scope, title 120 characters, instructions 8,000 characters.
+- Structural analysis and rule-based checks focus on Python. Other text files
+  remain reviewable as diffs. No findings is **not** a correctness guarantee;
+  **Priority** ranks attention, not security.
+- Worktree coverage accepts matching `coverage.json`, `coverage.xml`, or legacy
+  JSON `.coverage` reports; a SQLite `.coverage` database alone is unsupported.
+  Historical commit/PR reviews do not reuse live-worktree coverage.
+- Analysis runs locally. AI explanations use Copilot; public package services
+  receive package identifiers and public repository URLs, not source or credentials.
+  AI claims and package indicators require human verification.
+- Repository checks are saved in `.agent-review/prompts.json`; global checks and
+  approvals in `~/.copilot/agent-review/`. Canvas recovery records live in
+  `~/.copilot/agent-review/canvases/` (`AGENT_REVIEW_STATE_DIR` overrides this).
 
-Checks use isolated, tool-free Copilot sessions and bounded saved source/diff
-evidence, not a live worktree or an entire-repository scan. Results must contain
-**Findings** and **Verification**, stay within 250 words, and use valid supplied
-file paths and line citations. Evidence truncation is disclosed. Verify AI
-claims; a successful check is not a guarantee of correctness.
+## Development
 
-## Copilot actions
-
-- `refresh` reruns deterministic analysis after edits.
-- `get_review_context` returns the evidence for a selected item.
-- `get_session_change_context` returns intent and agent activity from the current
-  Copilot session history.
-- `focus_item` synchronizes the agent and human selection.
-- `add_review_observation` adds a model-generated observation only when it cites
-  evidence IDs that exist in the current `ReviewModel`.
-
-Session history is labeled as contextual provenance. It can explain what the
-user requested and which files/tools the agent interacted with, but it never
-replaces deterministic repository evidence for graph, metric, or source claims.
-
-CodeBoarding data in `.codeboarding/analysis.json` is optional enrichment.
-Malformed or unsupported data is reported by the analyzer and path-derived
-components remain available.
-
-## Validate
-
-```text
-python -m unittest discover -s .github/extensions/agent-review/tests -p "test_*.py" -v
-node --test .github/extensions/agent-review/tests/test-*.mjs
-node --check .github/extensions/agent-review/extension.mjs
-node --check .github/extensions/agent-review/web/app.js
-```
-
-Browser regression (requires an existing `playwright-core` installation and Edge
-on Windows, or `AGENT_REVIEW_BROWSER_EXECUTABLE`):
+The [analyzer](.github/extensions/agent-review/analyzer/analyze.py) also runs
+standalone with `--repo <repository>` and emits `ReviewModel` JSON. Override Python
+discovery with `AGENT_REVIEW_PYTHON`; Canvas inputs `repoPath` and `baseRef`
+override repository/baseline discovery. UI changes follow [AGENTS.md](AGENTS.md).
 
 ```powershell
-$env:AGENT_REVIEW_BROWSER_PACKAGE = 'C:\path\to\project\package.json'
-node .github\extensions\agent-review\tests\browser\review-target.mjs
-node .github\extensions\agent-review\tests\browser\presentation.mjs
-node .github\extensions\agent-review\tests\browser\custom-prompts.mjs
+python -m unittest discover -s .github\extensions\agent-review\tests -p "test_*.py"
+node --test .github\extensions\agent-review\tests\test-*.mjs
 ```
 
-Set `AGENT_REVIEW_LIVE_PR` to a GitHub PR URL to also exercise authenticated PR
-resolution, fetching, analysis, and UI switching against GitHub.
-
-Worktree coverage accepts standard `coverage.json`, `coverage.xml`, or legacy JSON
-`.coverage` reports generated against that checkout. Report artifacts do not count
-as code changes. A SQLite `.coverage` database alone is not a JSON/XML report.
-Do not copy coverage between different worktrees or use worktree results to claim
-coverage of a historical commit/PR snapshot.
-
-`tests/browser/sample-feature.mjs` verifies both added dependencies and genuine
-SDK session provenance in the two-import sample. Override
-`AGENT_REVIEW_SAMPLE_REPO` and `AGENT_REVIEW_SAMPLE_SESSION` for another fixture.
-Historical-session and opt-in real AI tests require the SDK supplied by the
-Copilot extension host, or an existing SDK installation on Node's module path.
-Set `AGENT_REVIEW_AI_SMOKE_REPO` before running `tests/smoke-custom-analysis.mjs`
-to validate an actual isolated custom check (uses the authenticated Copilot account).
+[Browser regressions](.github/extensions/agent-review/tests/browser/) use an
+existing `playwright-core` installation (`AGENT_REVIEW_BROWSER_PACKAGE`) and Edge
+on Windows, or `AGENT_REVIEW_BROWSER_EXECUTABLE` for another browser.

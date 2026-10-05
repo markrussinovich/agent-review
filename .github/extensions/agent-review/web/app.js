@@ -1297,6 +1297,13 @@ function renderSource() {
         }
     }
     const lines = el("div", "code-lines");
+    const oldNumbers = rows.some((row) => row.dataset?.oldLine);
+    const newNumbers = rows.some((row) => row.dataset?.newLine);
+    lines.classList.toggle("new-lines-only", newNumbers && !oldNumbers);
+    lines.classList.toggle("old-lines-only", oldNumbers && !newNumbers);
+    const largestLine = rows.reduce((largest, row) =>
+        Math.max(largest, Number(row.dataset?.oldLine) || 0, Number(row.dataset?.newLine) || 0), 0);
+    lines.style.setProperty("--source-line-digits", String(Math.max(2, String(largestLine).length)));
     lines.append(...(rows.length ? rows : [el("p", "empty-code", "(not present in this snapshot)")]));
     elements.source.replaceChildren(lines);
     let focusStart = start;
@@ -2558,7 +2565,8 @@ function connectEvents() {
     state.eventSource = events;
     events.addEventListener("state", (event) => {
         if (state.eventSource !== events) return;
-        const payload = JSON.parse(event.data);
+        const update = JSON.parse(event.data);
+        const payload = update.partial ? { ...state.payload, ...update } : update;
         if (state.payload?.review_generation !== payload.review_generation
             && payload.model && !payload.loading) resetReviewNavigation();
         state.connectionLost = false;

@@ -3,7 +3,7 @@ import test from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtemp, writeFile, mkdir, rename, rm, open } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fingerprintWorktree } from "../worktree-changes.mjs";
 import { ReviewState } from "../review-state.mjs";
@@ -58,6 +58,37 @@ test("fingerprints cover same-sized edits, additions, deletions, renames, commit
     await sparse.close();
     await changed();
     assert.equal(await fingerprintWorktree(repo), previous, "large binary is checked by metadata, without reading contents");
+});
+
+test("Git-ignored edits never change fingerprints; tracked and negated files do", async (t) => {
+    const repo = await mkdtemp(join(tmpdir(), "worktree-ignored-"));
+    t.after(() => rm(repo, { recursive: true, force: true }));
+    const git = (...args) => execute("git", ["-C", repo, ...args]);
+    await git("init", "-q");
+    await git("config", "user.name", "Test");
+    await git("config", "user.email", "test@example.invalid");
+    await writeFile(join(repo, "tracked.json"), "tracked");
+    await git("add", ".");
+    await git("commit", "-qm", "base");
+    await writeFile(join(repo, ".gitignore"), "*.json\n!keep.json\nbuild/\n");
+    await mkdir(join(repo, "nested"));
+    await writeFile(join(repo, "nested", ".gitignore"), "*.tmp\n!keep.tmp\n");
+    await writeFile(join(repo, ".git", "info", "exclude"), "local.txt\n");
+    const globalIgnore = join(repo, ".git", "global-ignore");
+    await writeFile(globalIgnore, "global.txt\n");
+    await git("config", "core.excludesFile", globalIgnore);
+    const initial = await fingerprintWorktree(repo);
+    for (const path of ["report.20261004.json", "local.txt", "global.txt", "nested\\ignored.tmp", "build\\generated.py"]) {
+        const target = join(repo, path);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, "ignored");
+        assert.equal(await fingerprintWorktree(repo), initial, `${path} is ignored before metadata checks`);
+    }
+    await writeFile(join(repo, "tracked.json"), "changed");
+    const changed = await fingerprintWorktree(repo);
+    assert.notEqual(changed, initial);
+    await writeFile(join(repo, "keep.json"), "included");
+    assert.notEqual(await fingerprintWorktree(repo), changed);
 });
 
 test("worktree changes suggest reanalysis without rerunning; reanalysis clears stale state", async () => {
@@ -187,4 +218,43 @@ test("reopening an instance waits for close and cannot revive a disposed provide
     assert.equal(lifecycle.closedInstances.has("canvas"), false);
     lifecycle.closed = true;
     await assert.rejects(lifecycle.reopenInstance("canvas"), /provider has been closed/);
+});
+
+test("progress streams use bounded patches instead of retransmitting saved source", async (t) => {
+    const state = new ReviewState("C:\\fixture", { runAnalyzer: async () => model() });
+    state.model = { ...model(), source_files: { "large.py": { current: "large-source-marker".repeat(20000) } } };
+    const server = await startReviewServer(state);
+    const controller = new AbortController();
+    t.after(async () => { controller.abort(); await state.dispose(); await server.close(); });
+    const response = await fetch(`${server.url}events`, { signal: controller.signal });
+    const reader = response.body.getReader();
+    let buffer = "";
+    const next = async () => {
+        for (;;) {
+            const end = buffer.indexOf("\n\n");
+            if (end >= 0) {
+                const frame = buffer.slice(0, end);
+                buffer = buffer.slice(end + 2);
+                const data = frame.split("\n").find((line) => line.startsWith("data: "));
+                if (data) return JSON.parse(data.slice(6));
+            } else {
+                const chunk = await reader.read();
+                assert.equal(chunk.done, false);
+                buffer += new TextDecoder().decode(chunk.value);
+            }
+        }
+    };
+    const connected = await next();
+    assert.ok(connected.model.source_files["large.py"].current.length > 300000);
+    state.progress = { phase: "python_graph", message: "Parsing files", percent: 42 };
+    state.broadcast("progress");
+    const progress = await next();
+    assert.equal(progress.partial, true);
+    assert.equal("model" in progress, false);
+    assert.deepEqual(progress.progress, state.progress);
+    assert.ok(JSON.stringify(progress).length < 2048);
+    state.model = null;
+    state.broadcast("refresh-started");
+    assert.equal((await next()).model, null, "changing target explicitly clears the previous model");
+    await reader.cancel();
 });

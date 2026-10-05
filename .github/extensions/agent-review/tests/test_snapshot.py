@@ -47,6 +47,7 @@ class SnapshotTests(unittest.TestCase):
     def test_worktree_prunes_excluded_directories_before_traversal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
+            subprocess.check_call(["git", "-C", str(repo), "init", "-q"])
             (repo / "source.py").write_bytes(b"source\n")
             for folder in ("node_modules", ".venv", ".git", "nested/node_modules"):
                 path = repo / folder
@@ -62,7 +63,7 @@ class SnapshotTests(unittest.TestCase):
             updates: list[str] = []
             with patch("git_snapshot.os.walk", side_effect=record_walk):
                 self.assertEqual({"source.py": b"source\n"}, current_files(repo, (), updates.append))
-            self.assertEqual([".", "nested"], visited)
+            self.assertEqual([], visited, "Git enumerates files without walking excluded trees")
             self.assertIn("Working tree complete: 1 files", updates[-1])
 
     def test_batch_failures_are_explicit(self) -> None:
@@ -80,6 +81,7 @@ class SnapshotTests(unittest.TestCase):
     def test_worktree_parallel_reads_are_bounded_and_keep_content_associated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
+            subprocess.check_call(["git", "-C", str(repo), "init", "-q"])
             expected = {f"file {index}.py": f"value = {index}\r\n".encode() for index in range(130)}
             for name, content in expected.items():
                 (repo / name).write_bytes(content)
@@ -108,6 +110,7 @@ class SnapshotTests(unittest.TestCase):
     def test_disappearing_worktree_files_do_not_break_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
+            subprocess.check_call(["git", "-C", str(repo), "init", "-q"])
             (repo / "removed.py").write_bytes(b"removed\n")
             (repo / "remaining.py").write_bytes(b"remaining\n")
 
@@ -119,6 +122,44 @@ class SnapshotTests(unittest.TestCase):
 
             with patch("git_snapshot._read_worktree_file", side_effect=read_file):
                 self.assertEqual({"remaining.py": b"remaining\n"}, current_files(repo, ()))
+
+    def test_git_ignore_rules_skip_untracked_artifacts_but_preserve_tracked_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            def git(*args: str) -> None:
+                subprocess.check_call(["git", "-C", str(repo), *args], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            git("init", "-q")
+            (repo / "tracked.json").write_text("tracked")
+            git("add", "tracked.json")
+            (repo / ".gitignore").write_text("*.json\nbuild/\n!keep.json\n")
+            (repo / "nested").mkdir()
+            (repo / "nested" / ".gitignore").write_text("*.tmp\n!keep.tmp\n")
+            (repo / ".git" / "info" / "exclude").write_text("local.txt\n")
+            global_ignore = repo / ".git" / "global-ignore"
+            global_ignore.write_text("global.txt\n")
+            git("config", "core.excludesFile", str(global_ignore))
+            files = {
+                "tracked.json": "modified tracked file",
+                "report.20261004.json": "ignored diagnostic",
+                "keep.json": "negated ignore",
+                "nested/ignored.tmp": "ignored nested file",
+                "nested/keep.tmp": "negated nested ignore",
+                "build/generated.py": "ignored directory",
+                "local.txt": "local exclude",
+                "global.txt": "global exclude",
+                "unicod\u00e9 name.py": "valid source",
+            }
+            for path, content in files.items():
+                target = repo / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+            with patch("git_snapshot._read_worktree_file", wraps=lambda path: path.read_bytes()) as reader:
+                actual = current_files(repo, ())
+            self.assertEqual({".gitignore", "nested/.gitignore", "tracked.json", "keep.json",
+                              "nested/keep.tmp", "unicod\u00e9 name.py"}, set(actual))
+            self.assertEqual(b"modified tracked file", actual["tracked.json"])
+            read_paths = {call.args[0].relative_to(repo).as_posix() for call in reader.call_args_list}
+            self.assertEqual(set(actual), read_paths, "ignored contents are never opened")
 
     def test_fast_line_deltas_match_sequence_matcher_for_all_statuses(self) -> None:
         snapshot = Snapshot(Path("unused"), "HEAD", {
