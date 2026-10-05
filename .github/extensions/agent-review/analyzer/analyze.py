@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
 from churn import analyze_churn
 from codeboarding_adapter import load_codeboarding
 from coverage_data import load_coverage
+from file_cache import FileScanCache
 from git_snapshot import create_snapshot, discover_base, discover_repo, run_git
 from packages import declared_import_names, import_name, resolve_declared_versions, package_diff, parse_packages
 from python_graph import analyze_python
@@ -21,7 +24,7 @@ def progress(phase: str, message: str, percent: int) -> None:
 
 def build_review(
     repo_arg: str | None, base_arg: str | None, excludes: tuple[str, ...],
-    current_arg: str | None = None,
+    current_arg: str | None = None, *, use_cache: bool = True,
 ) -> ReviewModel:
     progress("repository", "Resolving repository and comparison base", 5)
     repo = discover_repo(repo_arg)
@@ -71,14 +74,41 @@ def build_review(
         "changes": package_diff(baseline_packages, current_packages),
     }
     progress("python_graph", "Parsing Python modules, symbols, imports, calls, and inheritance", 42)
-    analyze_python(
-        snapshot.baseline,
-        snapshot.current,
-        model,
-        declared_import_names(current_packages),
-        declared_import_names(baseline_packages),
-        on_progress=lambda message, percent: progress("python_graph", message, percent),
-    )
+    graph_percent = 42
+
+    def graph_progress(message: str, percent: int) -> None:
+        nonlocal graph_percent
+        graph_percent = max(graph_percent, percent)
+        progress("python_graph", message, graph_percent)
+
+    def cache_warning(message: str) -> None:
+        model.warnings.append(message)
+        graph_progress(message, graph_percent)
+
+    cache = None
+    if use_cache:
+        common = Path(run_git(repo, "rev-parse", "--git-common-dir").strip())
+        common = (repo / common).resolve()
+        fingerprint = hashlib.sha256(sys.version.encode())
+        for name in ("python_graph.py", "complexity.py", "review_model.py", "file_cache.py"):
+            fingerprint.update(Path(__file__).with_name(name).read_bytes())
+        namespace = json.dumps([os.path.normcase(str(common)), fingerprint.hexdigest()])
+        directory = Path(os.environ.get("AGENT_REVIEW_CACHE_DIR")
+                         or Path.home() / ".copilot" / "agent-review" / "file-cache")
+        cache = FileScanCache(directory, namespace, on_warning=cache_warning)
+    try:
+        analyze_python(
+            snapshot.baseline,
+            snapshot.current,
+            model,
+            declared_import_names(current_packages),
+            declared_import_names(baseline_packages),
+            on_progress=graph_progress,
+            cache=cache,
+        )
+    finally:
+        if cache:
+            cache.close()
     progress("relationships", "Resolving package usage and aggregate architecture edges", 68)
     usage: dict[str, set[str]] = {}
     evidence_by_id = {item["id"]: item for item in model.evidence}
@@ -112,6 +142,7 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--repo", help="Path within the git repository")
     value.add_argument("--base-ref", help="Git revision used as the baseline")
     value.add_argument("--current-ref", help="Analyze a committed tree instead of the worktree")
+    value.add_argument("--no-cache", action="store_true", help="Scan Python files fresh without reading or writing the file cache")
     value.add_argument(
         "--exclude",
         action="append",
@@ -124,7 +155,7 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        model = build_review(args.repo, args.base_ref, tuple(args.exclude), args.current_ref)
+        model = build_review(args.repo, args.base_ref, tuple(args.exclude), args.current_ref, use_cache=not args.no_cache)
     except (OSError, RuntimeError, ValueError) as error:
         print(f"agent-review analyzer: {error}", file=sys.stderr)
         return 2

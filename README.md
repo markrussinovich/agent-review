@@ -29,7 +29,8 @@ with evidence, exact source locations, and persistent **Close / Reopen** control
 
 Open **Diff**, **Current**, or **Base** for the selected snapshot. Findings
 highlight relevant lines; references outside diff hunks show verified,
-explicitly labeled unchanged context. Compact gutters, clickable source links,
+explicitly labeled unchanged context. New diffs start at the top while keeping
+referenced lines highlighted. Compact gutters, clickable source links,
 and back/forward navigation keep the code central. Copilot briefings explain
 usage, behavior changes, motivation, risk, and what to verify.
 
@@ -110,6 +111,15 @@ Returning to a target reuses its results while the provider remains running.
 - Repository checks are saved in `.agent-review/prompts.json`; global checks and
   approvals in `~/.copilot/agent-review/`. Canvas recovery records live in
   `~/.copilot/agent-review/canvases/` (`AGENT_REVIEW_STATE_DIR` overrides this).
+- Unchanged Python scans are reused across worktree, commit, and PR reviews
+  (including linked worktrees). Content, file path, repository identity, Python,
+  and analyzer versions key the cache; snapshot-wide relationships, findings,
+  diffs, and coverage remain fresh. Progress reports reused/scanned counts.
+  Derived code facts persist in `~/.copilot/agent-review/file-cache/file-scans.sqlite3`
+  (`AGENT_REVIEW_CACHE_DIR` overrides the directory). LRU limits are 128 MiB of
+  payload, 8,192 entries, and 4 MiB per entry, plus SQLite overhead. Use
+  `--no-cache` for a fresh standalone comparison; close Agent Review before
+  deleting that database to clear stored facts.
 
 ## Development
 

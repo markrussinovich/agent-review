@@ -692,6 +692,9 @@ async function loadSource(query, epoch, preferredTab = null, nav = "reset") {
         : preferredTab || (source.diff ? "diff" : "current");
     recordSourceNavigation(nav, { query, tab: state.sourceTab, label: `${source.path}${source.start_line ? `:${source.start_line}` : ""}` });
     renderSource();
+    const side = elements.source_panel.querySelector(".source-side");
+    side.scrollTop = 0;
+    side.scrollLeft = 0;
     return true;
 }
 
@@ -1306,6 +1309,8 @@ function renderSource() {
     lines.style.setProperty("--source-line-digits", String(Math.max(2, String(largestLine).length)));
     lines.append(...(rows.length ? rows : [el("p", "empty-code", "(not present in this snapshot)")]));
     elements.source.replaceChildren(lines);
+    elements.source.scrollTop = 0;
+    elements.source.scrollLeft = 0;
     let focusStart = start;
     let focusEnd = Number(state.source.end_line || state.source.start_line);
     if (state.sourceTab !== "diff" && state.sourceTab !== focusSide) {
@@ -1354,7 +1359,7 @@ function renderSource() {
             if (index === 0) row.classList.add("focus-start");
             if (index === focused.length - 1) row.classList.add("focus-end");
         });
-        focused[0]?.scrollIntoView({ block: "center" });
+        if (state.sourceTab !== "diff") focused[0]?.scrollIntoView({ block: "center" });
     }
     const annotation = state.payload?.annotations?.[state.selected?.id];
     const selectedPath = state.selected?.path || state.payload?.model?.nodes?.find((node) =>

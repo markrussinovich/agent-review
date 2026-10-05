@@ -11,6 +11,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from complexity import cyclomatic
+from file_cache import FileScanCache
 from review_model import ReviewModel, stable_id
 
 
@@ -74,10 +75,12 @@ class ParsedModule:
     name: str
     source_hash: str
     ast_hash: str
-    tree: ast.Module
+    tree: ast.Module | None
     source: str
     symbols: list[dict[str, Any]] = field(default_factory=list)
     imports: list[dict[str, Any]] = field(default_factory=list)
+    references: list[dict[str, Any]] = field(default_factory=list)
+    syntax_nodes: int = 0
 
 
 class SymbolCollector(ast.NodeVisitor):
@@ -176,7 +179,8 @@ def parse_module(path: str, data: bytes) -> tuple[ParsedModule | None, str | Non
         path, module_name(path), _hash(data), _hash(normalized.encode()), tree, source
     )
     SymbolCollector(module).visit(tree)
-    for node in ast.walk(tree):
+    for index, node in enumerate(ast.walk(tree), 1):
+        module.syntax_nodes = index
         if isinstance(node, ast.Import):
             for alias in node.names:
                 module.imports.append(
@@ -187,6 +191,22 @@ def parse_module(path: str, data: bytes) -> tuple[ParsedModule | None, str | Non
                         "line": node.lineno,
                     }
                 )
+        if isinstance(node, ast.ClassDef):
+            for base in node.bases:
+                parts = _expression_parts(base)
+                if parts:
+                    module.references.append({
+                        "kind": "inherits", "parts": parts, "owner": node.name,
+                        "line": node.lineno, "detail": ast.unparse(base), "index": index,
+                    })
+        elif isinstance(node, ast.Call):
+            parts = _expression_parts(node.func)
+            if parts:
+                owner = _containing_symbol(module, node)
+                module.references.append({
+                    "kind": "calls", "parts": parts, "owner": owner["identity"] if owner else None,
+                    "line": node.lineno, "detail": ast.unparse(node.func), "index": index,
+                })
         elif isinstance(node, ast.ImportFrom):
             base = _resolve_relative(module.name, node.level, node.module) if node.level else node.module or ""
             for alias in node.names:
@@ -200,6 +220,80 @@ def parse_module(path: str, data: bytes) -> tuple[ParsedModule | None, str | Non
                 )
     module.imports.sort(key=lambda item: (item["line"], item["local"], item["target"]))
     return module, None
+
+
+def _cache_record(module: ParsedModule | None, warning: str | None) -> dict[str, Any]:
+    if module is None:
+        return {"warning": warning}
+    return {
+        "path": module.path, "name": module.name, "source_hash": module.source_hash,
+        "ast_hash": module.ast_hash, "symbols": [_public_symbol(symbol) for symbol in module.symbols],
+        "imports": module.imports, "references": module.references, "syntax_nodes": module.syntax_nodes,
+    }
+
+
+def _restore_parse(path: str, data: bytes, record: dict[str, Any]) -> tuple[ParsedModule | None, str | None]:
+    if set(record) == {"warning"} and isinstance(record["warning"], str):
+        return None, record["warning"]
+    if (set(record) != {"path", "name", "source_hash", "ast_hash", "symbols", "imports", "references", "syntax_nodes"}
+        or record.get("path") != path or record.get("name") != module_name(path)
+        or record.get("source_hash") != _hash(data)
+        or not isinstance(record.get("ast_hash"), str) or not re.fullmatch(r"[0-9a-f]{64}", record["ast_hash"])
+        or type(record.get("syntax_nodes")) is not int or record["syntax_nodes"] < 1):
+        raise ValueError("cached module identity or parser facts do not match")
+    symbols, imports, references = record["symbols"], record["imports"], record["references"]
+    if not all(isinstance(items, list) and all(isinstance(item, dict) for item in items)
+               for items in (symbols, imports, references)):
+        raise ValueError("invalid cached record collections")
+    identities = set()
+    for symbol in symbols:
+        required = {"id", "identity", "name", "qualname", "kind", "module", "path",
+                    "range", "signature", "normalized_ast_hash", "source_hash", "complexity"}
+        if (not required <= symbol.keys() or not symbol.keys() <= required | {"fields"}
+            or symbol["path"] != path or symbol["module"] != module_name(path)
+            or any(not isinstance(symbol[key], str) for key in
+                   ("id", "identity", "name", "qualname", "kind", "normalized_ast_hash", "source_hash"))
+            or symbol["kind"] not in ("class", "function", "method")
+            or symbol["identity"] != f"{module_name(path)}:{symbol['qualname']}"
+            or symbol["id"] != stable_id("symbol", symbol["identity"])
+            or not all(re.fullmatch(r"[0-9a-f]{64}", symbol[key])
+                       for key in ("normalized_ast_hash", "source_hash"))
+            or not (symbol["signature"] is None or isinstance(symbol["signature"], str))
+            or not (symbol["complexity"] is None
+                    or type(symbol["complexity"]) is int and symbol["complexity"] > 0)
+            or not isinstance(symbol["range"], dict)
+            or not all(type(symbol["range"].get(key)) is int for key in
+                       ("start_line", "end_line", "start_column", "end_column"))):
+            raise ValueError("invalid cached symbol")
+        if "fields" in symbol and (
+            not isinstance(symbol["fields"], list)
+            or not all(isinstance(item, dict) and isinstance(item.get("name"), str)
+                       and type(item.get("line")) is int and item["line"] > 0 for item in symbol["fields"])
+        ):
+            raise ValueError("invalid cached class fields")
+        identities.add(symbol["identity"])
+    for item in imports:
+        if (set(item) != {"local", "target", "member", "line"}
+            or not all(isinstance(item.get(key), str) for key in ("local", "target"))
+            or not (item.get("member") is None or isinstance(item["member"], str))
+            or type(item.get("line")) is not int or item["line"] < 1):
+            raise ValueError("invalid cached import")
+    for reference in references:
+        if (set(reference) != {"kind", "parts", "owner", "line", "detail", "index"}
+            or reference.get("kind") not in ("calls", "inherits")
+            or not isinstance(reference.get("parts"), list) or not reference["parts"]
+            or not all(isinstance(part, str) and part for part in reference["parts"])
+            or not isinstance(reference.get("detail"), str)
+            or type(reference.get("line")) is not int or reference["line"] < 1
+            or type(reference.get("index")) is not int or not 1 <= reference["index"] <= record["syntax_nodes"]
+            or (reference["kind"] == "calls" and reference.get("owner") is not None
+                and reference["owner"] not in identities)
+            or (reference["kind"] == "inherits" and not isinstance(reference.get("owner"), str))):
+            raise ValueError("invalid cached unresolved reference")
+    return ParsedModule(
+        path, record["name"], record["source_hash"], record["ast_hash"], None,
+        data.decode("utf-8-sig"), symbols, imports, references, record["syntax_nodes"],
+    ), None
 
 
 def _add_edge(
@@ -248,6 +342,7 @@ def analyze_python(
     declared_packages: set[str],
     baseline_declared_packages: set[str] | None = None,
     on_progress: Callable[[str, int], None] | None = None,
+    cache: FileScanCache | None = None,
 ) -> None:
     last_update: float | None = None
 
@@ -258,7 +353,14 @@ def analyze_python(
             on_progress(message, percent)
             last_update = now
 
-    baseline, current = _parse_sets(baseline_files, current_files, model, report)
+    baseline, current = (
+        _parse_sets(baseline_files, current_files, model, report, cache)
+        if cache else _parse_sets(baseline_files, current_files, model, report)
+    )
+    if cache:
+        cache.flush()
+        report(f"Python file cache: {cache.hits:,} reused, {cache.misses:,} scanned, "
+               f"{cache.skipped:,} too large to cache", 52, True)
     report(f"Comparing {sum(len(module.symbols) for module in current.values()):,} current Python symbols", 52, True)
     before_symbols = {
         symbol["identity"]: symbol
@@ -361,6 +463,7 @@ def analyze_python(
 def _parse_sets(
     baseline_files: dict[str, bytes], current_files: dict[str, bytes], model: ReviewModel,
     on_progress: Callable[[str, int], None] | None = None,
+    cache: FileScanCache | None = None,
 ) -> tuple[dict[str, ParsedModule], dict[str, ParsedModule]]:
     results: list[dict[str, ParsedModule]] = []
     total = sum(path.endswith(".py") for files in (baseline_files, current_files) for path in files)
@@ -384,7 +487,20 @@ def _parse_sets(
                     imports=[item.copy() for item in original.imports],
                 ) if original is not None else None
             else:
-                module, warning = parse_module(path, data)
+                record = cache.get(path, data) if cache else None
+                if record is not None:
+                    try:
+                        module, warning = _restore_parse(path, data, record)
+                    except (KeyError, TypeError, ValueError) as error:
+                        cache.hits -= 1
+                        cache.misses += 1
+                        cache.discard(path, data, str(error))
+                        module, warning = parse_module(path, data)
+                        cache.put(path, data, _cache_record(module, warning))
+                else:
+                    module, warning = parse_module(path, data)
+                    if cache:
+                        cache.put(path, data, _cache_record(module, warning))
                 if label == "baseline":
                     parsed_baseline[path] = module, warning
             if warning:
@@ -429,28 +545,33 @@ def _module_edges(
                 model, "uses_package", module_ids[module.name], f"package:{top}", 0.9,
                 module.path, item["line"], f"import {target_module}",
             )
-    for count, node in enumerate(ast.walk(module.tree), 1):
-        if on_progress and count % 256 == 0:
+    owners = {symbol["identity"]: symbol for symbol in module.symbols}
+    processed = 0
+    for reference in module.references:
+        count = reference["index"] // 256 * 256
+        if on_progress and count > processed:
             on_progress(count)
-        if isinstance(node, ast.ClassDef):
-            source = symbol_ids.get(f"{module.name}:{node.name}")
+            processed = count
+        if reference["kind"] == "inherits":
+            source = symbol_ids.get(f"{module.name}:{reference['owner']}")
             if source:
-                for base in node.bases:
-                    target = _resolve_expr(base, module, aliases, short_symbols, classes, method=False)
-                    if target:
-                        _add_edge(model, "inherits", source, target[0], target[1], module.path,
-                                  node.lineno, ast.unparse(base))
-        elif isinstance(node, ast.Call):
-            owner = _containing_symbol(module, node)
+                target = _resolve_parts(reference["parts"], module, aliases, short_symbols, classes, method=False)
+                if target:
+                    _add_edge(model, "inherits", source, target[0], target[1], module.path,
+                              reference["line"], reference["detail"])
+        else:
+            owner = owners.get(reference["owner"])
             source = owner["id"] if owner else module_ids[module.name]
-            target = _resolve_expr(node.func, module, aliases, short_symbols, classes, method=True, owner=owner)
+            target = _resolve_parts(reference["parts"], module, aliases, short_symbols, classes, method=True, owner=owner)
             if target:
                 _add_edge(model, "calls", source, target[0], target[1], module.path,
-                          node.lineno, ast.unparse(node.func))
+                          reference["line"], reference["detail"])
+    if on_progress and module.syntax_nodes // 256 * 256 > processed:
+        on_progress(module.syntax_nodes // 256 * 256)
 
 
-def _resolve_expr(
-    expression: ast.AST,
+def _resolve_parts(
+    parts: list[str],
     module: ParsedModule,
     aliases: dict[str, dict[str, Any]],
     symbols: dict[tuple[str, str], str],
@@ -458,14 +579,13 @@ def _resolve_expr(
     method: bool,
     owner: dict[str, Any] | None = None,
 ) -> tuple[str, float] | None:
-    if isinstance(expression, ast.Name):
-        if (module.name, expression.id) in symbols:
-            return symbols[(module.name, expression.id)], 1.0
-        imported = aliases.get(expression.id)
+    if len(parts) == 1:
+        if (module.name, parts[0]) in symbols:
+            return symbols[(module.name, parts[0])], 1.0
+        imported = aliases.get(parts[0])
         if imported and imported["member"]:
             target = symbols.get((imported["target"], imported["member"]))
             return (target, 1.0) if target else None
-    parts = _expression_parts(expression)
     if parts and len(parts) > 1:
         root, attributes = parts[0], parts[1:]
         if root in ("self", "cls") and owner and "." in owner["qualname"]:
