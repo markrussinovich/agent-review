@@ -1,0 +1,18 @@
+[
+  ".git",
+  ".venv",
+  "venv",
+  "__pycache__",
+  "node_modules",
+  ".tox",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".github/extensions/agent-review",
+  ".agent-review.json",
+  ".agent-review",
+  ".coverage",
+  ".coverage.*",
+  "coverage.json",
+  "coverage.xml",
+  "htmlcov"
+]

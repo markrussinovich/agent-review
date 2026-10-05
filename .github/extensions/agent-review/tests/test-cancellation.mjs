@@ -85,7 +85,8 @@ test("cancel API waits for real analyzer descendants to exit; GET and SSE never 
     await sleep(100);
     assert.equal(runs, 1);
     const restarted = await fetch(`${server.url}api/refresh`, { method: "POST" });
-    assert.equal(restarted.status, 200);
+    assert.equal(restarted.status, 202);
+    await state.refreshPromise;
     assert.equal(runs, 2);
     assert.equal(state.cancelled, false);
     assert.ok(state.model);

@@ -154,8 +154,10 @@ export function startReviewServer(state, options = {}) {
                 return;
             }
             if (req.method === "POST" && pathname === "/api/refresh") {
-                const model = await state.refresh();
-                sendJson(res, { ok: true, summary: model.summary });
+                state.refresh().catch((error) => {
+                    if (error.name !== "AbortError") console.error("[agent-review refresh]", error);
+                });
+                sendJson(res, { ok: true }, 202);
                 return;
             }
             if (req.method === "POST" && pathname === "/api/review-target") {
@@ -228,10 +230,12 @@ export function startReviewServer(state, options = {}) {
         }
         const address = server.address();
         const port = typeof address === "object" && address ? address.port : 0;
+        const stopWorktreeMonitoring = state.startWorktreeMonitoring(options.worktreeCheckIntervalMs);
         return {
             port,
             url: `http://127.0.0.1:${port}/`,
             close: async () => {
+                stopWorktreeMonitoring();
                 unsubscribe();
                 for (const client of clients) client.end();
                 await new Promise((done, fail) => server.close((error) => error ? fail(error) : done()));

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import difflib
+import json
 import os
 import subprocess
 import time
@@ -11,24 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_EXCLUDES = (
-    ".git",
-    ".venv",
-    "venv",
-    "__pycache__",
-    "node_modules",
-    ".tox",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".github/extensions/agent-review",
-    ".agent-review.json",
-    ".agent-review",
-    ".coverage",
-    ".coverage.*",
-    "coverage.json",
-    "coverage.xml",
-    "htmlcov",
-)
+DEFAULT_EXCLUDES = tuple(json.loads(
+    Path(__file__).with_name("snapshot-excludes.json").read_text(encoding="utf-8")
+))
 
 
 def _content_equal(before: bytes, after: bytes) -> bool:

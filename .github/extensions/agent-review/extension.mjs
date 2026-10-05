@@ -104,6 +104,7 @@ const canvas = createCanvas({
         },
     ],
     open: async (ctx) => {
+        await lifecycle.reopenInstance(ctx.instanceId);
         let instance = instances.get(ctx.instanceId);
         if (!instance && pendingInstances.has(ctx.instanceId)) {
             const wait = new Promise((resolve) => setTimeout(() => resolve(null), 4_000));

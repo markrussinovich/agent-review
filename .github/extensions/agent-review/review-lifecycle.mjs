@@ -8,6 +8,7 @@ export class ReviewLifecycle {
         this.reviewStates = reviewStates;
         this.pendingInstances = pendingInstances;
         this.closedInstances = new Set();
+        this.closingInstances = new Map();
         this.closed = false;
         this.owners = new Map();
         // The SDK reports Canvas closes, but session deletion has no provider event.
@@ -22,7 +23,22 @@ export class ReviewLifecycle {
         this.owners.set(instanceId, state);
     }
 
-    async closeInstance(instanceId, { preserveMarker = false } = {}) {
+    async reopenInstance(instanceId) {
+        await this.closingInstances.get(instanceId);
+        if (this.closed) throw new Error("This Agent Review provider has been closed.");
+        this.closedInstances.delete(instanceId);
+    }
+
+    closeInstance(instanceId, options = {}) {
+        if (this.closingInstances.has(instanceId)) return this.closingInstances.get(instanceId);
+        const promise = this.releaseInstance(instanceId, options).finally(() => {
+            if (this.closingInstances.get(instanceId) === promise) this.closingInstances.delete(instanceId);
+        });
+        this.closingInstances.set(instanceId, promise);
+        return promise;
+    }
+
+    async releaseInstance(instanceId, { preserveMarker = false } = {}) {
         this.closedInstances.add(instanceId);
         const pending = this.pendingInstances.get(instanceId);
         if (pending) {

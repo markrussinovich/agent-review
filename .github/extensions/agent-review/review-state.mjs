@@ -11,6 +11,7 @@ import { customAnalysisContext, validateCustomAnalysis } from "./custom-analysis
 import { resolveReviewTarget } from "./review-target.mjs";
 import { buildSessionContext, findSessionAttribution, mergeSessionContexts } from "./session-context.mjs";
 import { spawnOwnedAnalyzer } from "./ownership-guard.mjs";
+import { fingerprintWorktree } from "./worktree-changes.mjs";
 
 const execFileAsync = promisify(execFile);
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
@@ -177,6 +178,12 @@ export class ReviewState {
         this.activeRun = null;
         this.cancelPromise = null;
         this.runAnalyzer = options.runAnalyzer || runAnalyzer;
+        this.readWorktreeFingerprint = options.readWorktreeFingerprint
+            || (this.runAnalyzer === runAnalyzer ? fingerprintWorktree : null);
+        this.worktreeFingerprint = null;
+        this.worktreeChanged = false;
+        this.worktreeCheckError = null;
+        this.worktreeMonitorOwners = 0;
         this.workspacePath = options.workspacePath;
         this.generatedObservations = [];
         this.selection = null;
@@ -228,6 +235,8 @@ export class ReviewState {
             review_generation: `${this.reviewInstanceId}:${this.reviewGeneration}`,
             analyzed_at: this.lastAnalyzedAt,
             restored_from_cache: this.restoredFromCache,
+            worktree_changed: this.reviewTarget.mode === "worktree" && this.worktreeChanged,
+            worktree_check_error: this.reviewTarget.mode === "worktree" ? this.worktreeCheckError : null,
             saved_review_targets: [...this.reviewCache.values()].map((entry) => entry.target),
             custom_analyses: this.customAnalyses,
             custom_prompt_error: this.customPromptError,
@@ -242,6 +251,58 @@ export class ReviewState {
     broadcast(type = "state") {
         const event = { type, ...this.snapshot() };
         for (const listener of this.listeners) listener(event);
+    }
+
+    startWorktreeMonitoring(intervalMs = 5000) {
+        this.worktreeMonitorOwners++;
+        if (!this.worktreeMonitorTimer) {
+            this.worktreeMonitorTimer = setInterval(() => this.checkWorktreeChanges(), intervalMs);
+            this.worktreeMonitorTimer.unref();
+            this.checkWorktreeChanges();
+        }
+        let released = false;
+        return () => {
+            if (released) return;
+            released = true;
+            if (--this.worktreeMonitorOwners === 0) {
+                clearInterval(this.worktreeMonitorTimer);
+                this.worktreeMonitorTimer = null;
+                this.worktreeCheckController?.abort();
+            }
+        };
+    }
+
+    async checkWorktreeChanges() {
+        if (this.disposed || this.loading || this.refreshPromise || this.switchingTarget
+            || this.reviewTarget.mode !== "worktree" || !this.model || !this.readWorktreeFingerprint) return;
+        if (this.worktreeCheckPromise) return this.worktreeCheckPromise;
+        const generation = this.reviewGeneration;
+        const controller = new AbortController();
+        this.worktreeCheckController = controller;
+        const timer = setTimeout(() => controller.abort(new Error("Worktree change check timed out.")), 5000);
+        this.worktreeCheckPromise = Promise.resolve().then(async () => {
+            let changed = this.worktreeChanged, message = null;
+            try {
+                if (!this.worktreeFingerprint) throw new Error("Reanalyze this saved review to enable worktree change detection.");
+                const fingerprint = await this.readWorktreeFingerprint(this.repoRoot, { baseRef: this.baseRef, signal: controller.signal });
+                changed = fingerprint !== this.worktreeFingerprint;
+            } catch (error) {
+                if (controller.signal.aborted && !this.worktreeMonitorOwners) return;
+                message = `Unable to check worktree changes: ${error.message}`;
+            }
+            if (this.disposed || generation !== this.reviewGeneration || this.reviewTarget.mode !== "worktree") return;
+            if (changed !== this.worktreeChanged || message !== this.worktreeCheckError) {
+                this.worktreeChanged = changed;
+                this.worktreeCheckError = message;
+                if (message) console.error("[agent-review worktree changes]", message);
+                this.broadcast("worktree-changed");
+            }
+        }).finally(() => {
+            clearTimeout(timer);
+            this.worktreeCheckPromise = null;
+            if (this.worktreeCheckController === controller) this.worktreeCheckController = null;
+        });
+        return this.worktreeCheckPromise;
     }
 
     failInitialization(error) {
@@ -281,9 +342,19 @@ export class ReviewState {
                 return wait(this.reviewTarget.mode !== "worktree" ? this.reviewTarget.baseRef
                     : this.resolveBaseRef ? this.resolveBaseRef() : this.worktreeBaseRef);
             })
-            .then((baseRef) => {
+            .then(async (baseRef) => {
                 signal.throwIfAborted();
                 this.baseRef = baseRef ?? null;
+                if (this.reviewTarget.mode === "worktree" && this.readWorktreeFingerprint) {
+                    try {
+                        run.worktreeFingerprint = await this.readWorktreeFingerprint(this.repoRoot, { baseRef: this.baseRef, signal });
+                    } catch (error) {
+                        signal.throwIfAborted();
+                        run.worktreeCheckError = `Unable to check worktree changes: ${error.message}`;
+                        console.error("[agent-review worktree changes]", run.worktreeCheckError);
+                    }
+                }
+                signal.throwIfAborted();
                 return this.runAnalyzer(this.repoRoot, this.baseRef, (progress) => {
                     if (signal.aborted || this.activeRun !== run) return;
                     this.progress = { ...this.progress, ...progress, updated_at: new Date().toISOString() };
@@ -307,6 +378,9 @@ export class ReviewState {
                 this.loading = false;
                 this.lastAnalyzedAt = new Date().toISOString();
                 this.restoredFromCache = false;
+                this.worktreeFingerprint = run.worktreeFingerprint || null;
+                this.worktreeChanged = false;
+                this.worktreeCheckError = run.worktreeCheckError || null;
                 this.progress = { phase: "complete", message: "Analysis complete", percent: 100 };
                 this.saveCurrentReview();
                 this.broadcast("refreshed");
@@ -325,6 +399,7 @@ export class ReviewState {
                 if (this.activeRun === run) {
                     this.refreshPromise = null;
                     this.activeRun = null;
+                    if (this.worktreeMonitorOwners) this.checkWorktreeChanges();
                 }
             });
         return this.refreshPromise;
@@ -354,6 +429,9 @@ export class ReviewState {
     async dispose() {
         if (this.disposalPromise) return this.disposalPromise;
         this.disposed = true;
+        clearInterval(this.worktreeMonitorTimer);
+        this.worktreeMonitorTimer = null;
+        this.worktreeCheckController?.abort();
         this.disposalPromise = this.clearDisposedReview();
         return this.disposalPromise;
     }
@@ -405,7 +483,11 @@ export class ReviewState {
                 this.customAnalyses = cached.customAnalyses;
                 this.customPromptError = null;
                 this.lastAnalyzedAt = cached.analyzedAt;
+                this.baseRef = cached.baseRef ?? this.worktreeBaseRef;
                 this.restoredFromCache = true;
+                this.worktreeFingerprint = cached.worktreeFingerprint || null;
+                this.worktreeChanged = cached.worktreeChanged || false;
+                this.worktreeCheckError = cached.worktreeCheckError || null;
                 this.loading = false;
                 this.error = null;
                 this.progress = { phase: "complete", message: "Saved review restored", percent: 100 };
@@ -419,6 +501,7 @@ export class ReviewState {
             return await this.refresh();
         } finally {
             this.switchingTarget = false;
+            if (this.worktreeMonitorOwners) this.checkWorktreeChanges();
         }
     }
 
@@ -431,12 +514,16 @@ export class ReviewState {
         if (!this.model || this.loading || this.error) return;
         this.reviewCache.set(this.reviewCacheKey(), {
             target: { ...this.reviewTarget },
+            baseRef: this.baseRef,
             model: this.model,
             annotations: this.annotations,
             packageRisks: this.packageRisks,
             packageAssessments: this.packageAssessments,
             generatedObservations: this.generatedObservations,
             analyzedAt: this.lastAnalyzedAt,
+            worktreeFingerprint: this.worktreeFingerprint,
+            worktreeChanged: this.worktreeChanged,
+            worktreeCheckError: this.worktreeCheckError,
             customAnalyses: this.customAnalyses,
         });
     }

@@ -7,6 +7,9 @@ import { unchangedDiffContext } from "/diff-context.mjs";
 
 const state = {
     payload: null,
+    connectionLost: false,
+    eventSource: null,
+    reconnectTimer: null,
     stack: [],
     mode: "graph",
     areaGroup: null,
@@ -29,7 +32,7 @@ const state = {
 };
 const elements = Object.fromEntries([
     "review-target-form", "review-mode", "review-ref", "review-target-label", "repository-identity", "review-more", "review-options-status", "review-picker-notice", "clean-review", "change-brief",
-    "status", "refresh", "cancel-analysis", "analysis-cancelled", "source-context-notice", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
+    "status", "refresh", "cancel-analysis", "analysis-cancelled", "source-context-notice", "connection-notice", "reconnect", "worktree-notice", "worktree-notice-text", "worktree-reanalyze", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "rail-resize",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail-toggle", "detail", "detail-close", "source-panel", "source-title",
     "source-provenance", "source-annotation", "source-close", "source", "source-back", "source-forward",
@@ -66,10 +69,18 @@ function churnBar(fraction, kind) {
 }
 
 async function api(path, options = {}) {
-    const response = await fetch(path, {
-        ...options,
-        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    });
+    let response;
+    try {
+        response = await fetch(path, {
+            ...options,
+            headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+        });
+    } catch (cause) {
+        markDisconnected();
+        const error = new Error("Connection to Agent Review was interrupted.", { cause });
+        error.code = "connection_lost";
+        throw error;
+    }
     const body = await response.json();
     if (!response.ok) {
         const error = new Error(body.error || `Request failed (${response.status})`);
@@ -1957,6 +1968,12 @@ function render() {
     }
     const payload = state.payload;
     const model = payload?.model;
+    const worktreeNotice = !state.reviewPickerPending && !state.reviewSubmitting && !payload?.loading
+        && payload?.review_target?.mode === "worktree" && (payload.worktree_changed || payload.worktree_check_error);
+    elements.worktree_notice.classList.toggle("hidden", !worktreeNotice);
+    elements.worktree_notice_text.textContent = payload?.worktree_check_error
+        || "Worktree changed since this review. Reanalyze to include the latest edits.";
+    elements.worktree_reanalyze.disabled = Boolean(payload?.loading || state.connectionLost);
     elements.repository_identity.textContent = model?.metadata?.repo_root
         ? `${model.metadata.repo_root} · ${state.reviewPickerPending ? "Choose a comparison" : `Base ${model.metadata.base_sha?.slice(0, 8) || "empty tree"}`}` : "";
     const progress = payload?.progress;
@@ -1965,7 +1982,9 @@ function render() {
     elements.status.title = payload.loading ? progress?.message || "Analyzing repository"
         : payload.analyzed_at ? `Analyzed ${new Date(payload.analyzed_at).toLocaleString()}${payload.restored_from_cache ? ". Reanalyze to update." : ""}` : "";
     elements.status.classList.toggle("working", Boolean(payload?.loading));
-    elements.refresh.disabled = Boolean(payload?.loading || state.reviewPickerPending);
+    elements.status.classList.toggle("stale", Boolean(worktreeNotice));
+    if (worktreeNotice) elements.status.textContent = payload.worktree_changed ? "Worktree changed" : "Freshness unknown";
+    elements.refresh.disabled = Boolean(payload?.loading || state.reviewPickerPending || state.connectionLost);
     elements.cancel_analysis.classList.toggle("hidden", !payload?.loading);
     elements.cancel_analysis.disabled = Boolean(state.cancelling);
     elements.cancel_analysis.textContent = state.cancelling ? "Cancelling…" : "Cancel";
@@ -1973,7 +1992,7 @@ function render() {
     updateReviewApply();
     elements.error.classList.toggle("hidden", !payload?.error);
     elements.error.textContent = payload?.error || "";
-    elements.analysis_progress.classList.toggle("hidden", !payload?.loading);
+    elements.analysis_progress.classList.toggle("hidden", !payload?.loading || state.connectionLost);
     if (payload?.loading) {
         const percent = Math.max(0, Math.min(100, Number(progress?.percent || 0)));
         elements.progress_phase.textContent = String(progress?.phase || "starting").replaceAll("_", " ").toUpperCase();
@@ -1983,11 +2002,18 @@ function render() {
         elements.analysis_progress.querySelector(".progress-track").setAttribute("aria-valuenow", String(percent));
     }
     renderReviewPickerNotice();
+    renderConnectionNotice();
     renderCustomAnalyses();
     const clean = !state.reviewPickerPending && !state.reviewSubmitting && isEmptyReview(payload);
     elements.clean_review.classList.toggle("hidden", !clean);
     if (clean) {
-        elements.status.textContent = "No changes";
+        if (!worktreeNotice && !state.connectionLost) elements.status.textContent = "No changes";
+        elements.clean_review.querySelector("h2").textContent = worktreeNotice || state.connectionLost
+            ? "Previous snapshot had no changes" : "No changes to review";
+        elements.clean_review.querySelector("p").textContent = worktreeNotice
+            ? "Reanalyze to check the latest worktree. This saved snapshot does not include later edits."
+            : state.connectionLost ? "This is the last saved result; it cannot confirm the current worktree while disconnected."
+                : "The selected snapshot has no reviewable changes against its baseline.";
         for (const element of [elements.change_brief, elements.custom_analyses, elements.summary,
             elements.breadcrumbs, document.querySelector(".workspace"), elements.source_panel, elements.session_history_panel]) {
             element.classList.add("hidden");
@@ -2001,7 +2027,7 @@ function render() {
     }
     loadClosedFindingKeys(model);
     if (state.queueError) showError(new Error(state.queueError));
-    if (!payload.loading && !payload.cancelled) {
+    if (!state.connectionLost && !payload.loading && !payload.cancelled) {
         const summaryKey = JSON.stringify([model.metadata?.repo_root, payload.review_generation, payload.review_target]);
         if (state.summaryKey !== summaryKey) {
             state.summaryKey = summaryKey;
@@ -2096,17 +2122,23 @@ function render() {
 }
 
 function showError(error) {
+    if (error.code === "connection_lost") {
+        markDisconnected();
+        return;
+    }
     elements.error.textContent = error.message;
     elements.error.classList.remove("hidden");
 }
 
-elements.refresh.addEventListener("click", async () => {
+async function reanalyze() {
     try {
         await api("/api/refresh", { method: "POST" });
     } catch (error) {
         if (!state.cancelling && !state.payload?.cancelled) showError(error);
     }
-});
+}
+elements.refresh.addEventListener("click", reanalyze);
+elements.worktree_reanalyze.addEventListener("click", reanalyze);
 elements.cancel_analysis.addEventListener("click", async () => {
     state.cancelling = true;
     render();
@@ -2261,7 +2293,7 @@ document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click",
 }));
 
 function updateReviewApply() {
-    const busy = Boolean(state.reviewSubmitting || state.payload?.loading);
+    const busy = Boolean(state.connectionLost || state.reviewSubmitting || state.payload?.loading);
     elements.review_mode.disabled = busy;
     elements.review_ref.disabled = busy || Boolean(state.reviewOptionsLoading)
         || elements.review_mode.value === "worktree" || ![...elements.review_ref.options].some((option) => option.value);
@@ -2490,10 +2522,47 @@ api("/api/state").then((payload) => {
     state.payload = payload;
     render();
 }).catch(showError);
+
+function renderConnectionNotice() {
+    elements.connection_notice.classList.toggle("hidden", !state.connectionLost);
+    if (state.connectionLost) {
+        elements.status.textContent = "Connection lost";
+        elements.status.classList.add("working");
+        elements.analysis_progress.classList.add("hidden");
+        elements.refresh.disabled = true;
+        elements.worktree_reanalyze.disabled = true;
+        elements.cancel_analysis.disabled = true;
+        updateReviewApply();
+    }
+}
+
+function markDisconnected() {
+    state.connectionLost = true;
+    renderConnectionNotice();
+    if (!elements.clean_review.classList.contains("hidden")) {
+        elements.clean_review.querySelector("h2").textContent = "Previous snapshot had no changes";
+        elements.clean_review.querySelector("p").textContent = "This is the last saved result; it cannot confirm the current worktree while disconnected.";
+    }
+}
+
+elements.reconnect.addEventListener("click", () => {
+    clearTimeout(state.reconnectTimer);
+    state.eventSource?.close();
+    connectEvents();
+});
+
 function connectEvents() {
+    clearTimeout(state.reconnectTimer);
+    state.eventSource?.close();
     const events = new EventSource("/events");
+    state.eventSource = events;
     events.addEventListener("state", (event) => {
-        state.payload = JSON.parse(event.data);
+        if (state.eventSource !== events) return;
+        const payload = JSON.parse(event.data);
+        if (state.payload?.review_generation !== payload.review_generation
+            && payload.model && !payload.loading) resetReviewNavigation();
+        state.connectionLost = false;
+        state.payload = payload;
         if (["connected", "refreshed"].includes(state.payload.type)) loadCustomPrompts();
         render();
         if (state.payload.type === "session-history" && state.source?.path) {
@@ -2507,14 +2576,11 @@ function connectEvents() {
         }
     });
     events.onerror = () => {
-        elements.status.textContent = "Reconnecting…";
-        elements.status.classList.add("working");
-        // The host can restart the provider that serves this page; a replacement serves the
-        // same URL, so keep retrying instead of leaving the page permanently stale.
-        if (events.readyState === EventSource.CLOSED) {
-            events.close();
-            setTimeout(connectEvents, 2000);
-        }
+        if (state.eventSource !== events) return;
+        events.close();
+        state.eventSource = null;
+        markDisconnected();
+        state.reconnectTimer = setTimeout(connectEvents, 2000);
     };
 }
 connectEvents();

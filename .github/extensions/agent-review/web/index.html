@@ -40,6 +40,14 @@
         <section id="review-picker-notice" class="review-picker-notice hidden" role="status"></section>
         <p id="review-target-label" class="review-target-label"></p>
         <p id="repository-identity" class="repository-identity"></p>
+        <section id="connection-notice" class="flash flash-attention worktree-notice hidden" role="status">
+            <span>Connection to Agent Review was lost. Retrying automatically. If it does not return, close this canvas tab and reopen Agent Review in this same session. Your code and commits are unaffected.</span>
+            <button id="reconnect" type="button">Reconnect</button>
+        </section>
+        <section id="worktree-notice" class="flash flash-attention worktree-notice hidden" role="status" aria-live="polite">
+            <span id="worktree-notice-text"></span>
+            <button id="worktree-reanalyze" type="button">Reanalyze</button>
+        </section>
         <section id="error" class="error hidden" role="alert"></section>
         <section id="analysis-cancelled" class="review-picker-notice hidden" role="status">
             Analysis cancelled. Choose Reanalyze to try again.

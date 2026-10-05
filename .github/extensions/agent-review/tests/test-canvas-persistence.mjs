@@ -18,6 +18,7 @@ const fakeState = () => ({
     subscribe: () => () => {},
     snapshot: () => ({ model: null, loading: false }),
     refresh: async () => {},
+    startWorktreeMonitoring: () => () => {},
 });
 
 test("preferred port is stable per repository and inside the private range", () => {

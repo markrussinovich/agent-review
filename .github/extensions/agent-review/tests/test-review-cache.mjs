@@ -30,6 +30,8 @@ test("switching restores saved model, source, summary, and package results; rean
         });
         await state.promptStore().save({ scope: "global", title: "Cache check", prompt: "Check source.", enabled: true });
         await state.refresh();
+        await state.checkWorktreeChanges();
+        assert.equal(state.worktreeChanged, false, "analyzer reads do not count as edits");
         await state.runCustomAnalyses();
         const customResult = Object.values(state.customAnalyses)[0];
         const worktreeModel = state.model;
@@ -44,6 +46,8 @@ test("switching restores saved model, source, summary, and package results; rean
         await state.setReviewTarget({ mode: "worktree" });
         assert.equal(state.model, worktreeModel, "restore without rerunning analysis");
         assert.equal(state.restoredFromCache, true);
+        await state.checkWorktreeChanges();
+        assert.equal(state.worktreeChanged, true, "cached worktree remains readable but later edits suggest reanalysis");
         assert.equal(await state.overviewFor(), summary);
         assert.equal(generations, 1);
         await state.runCustomAnalyses();
@@ -58,11 +62,14 @@ test("switching restores saved model, source, summary, and package results; rean
         assert.doesNotMatch(source.diff, /999/);
         await state.setReviewTarget({ mode: "commit", ref: base });
         assert.equal(state.model, commitModel);
+        assert.equal(state.snapshot().worktree_changed, false);
         await state.setReviewTarget({ mode: "worktree" });
         await state.refresh();
         await state.runCustomAnalyses();
         assert.equal(customGenerations, 3, "explicit reanalysis reruns enabled custom checks");
         assert.equal(state.restoredFromCache, false);
+        await state.checkWorktreeChanges();
+        assert.equal(state.worktreeChanged, false);
         assert.notEqual(state.model, worktreeModel);
         assert.match((await state.sourceForPath("main.py")).current, /999/);
         assert.equal(state.annotations.overview, undefined);

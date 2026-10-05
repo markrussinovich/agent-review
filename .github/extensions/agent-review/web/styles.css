@@ -177,6 +177,13 @@ main { width: 100%; max-width: none; padding: 20px 20px 36px; }
 .progress-actions #cancel-analysis { width: auto; padding: 4px 10px; font-size: 12px; white-space: nowrap; color: var(--cp-danger); }
 .progress-actions #cancel-analysis:hover:not(:disabled) { background: var(--cp-danger); border-color: var(--cp-danger); color: var(--cp-accent-fg); }
 .source-context-notice { margin: 0; padding: 8px 16px; }
+.worktree-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.worktree-notice.flash { margin: 0 0 16px; }
+.worktree-notice > span { min-width: 0; overflow-wrap: anywhere; }
+.worktree-notice > button { flex: 0 0 auto; cursor: pointer; }
+.worktree-notice > button:disabled { cursor: default; opacity: .5; }
+.status.stale { color: var(--cp-warning); }
+.status.stale::before { background: var(--cp-warning); }
 .progress-track {
   height: 6px;
   margin-top: 12px;
@@ -1174,7 +1181,7 @@ h3 { font-size: 14px; font-weight: 600; }
 
 /* Default buttons (32px) */
 #refresh, .zoom-out, .source-close, .graph-controls button, .view-all, .brief-link,
-.source-nav-button, .pane-close, .copy-button, .graph-viewport-controls button {
+.source-nav-button, .pane-close, .copy-button, .graph-viewport-controls button, .worktree-notice button {
   height: 32px;
   padding: 0 12px;
   border: 1px solid var(--cp-border);
@@ -1190,7 +1197,7 @@ h3 { font-size: 14px; font-weight: 600; }
 .pane-close { height: 28px; width: 28px; }
 #refresh:hover:not(:disabled), .zoom-out:hover:not(:disabled), .source-close:hover, .graph-controls button:hover,
 .view-all:hover, .brief-link:hover, .source-nav-button:hover:not(:disabled), .pane-close:hover, .copy-button:hover,
-.graph-viewport-controls button:hover { background: var(--pr-hover); border-color: var(--cp-border); color: var(--cp-text); }
+.graph-viewport-controls button:hover, .worktree-notice button:hover:not(:disabled) { background: var(--pr-hover); border-color: var(--cp-border); color: var(--cp-text); }
 .graph-controls button { color: var(--cp-text); }
 .graph-viewport-controls button { min-width: 32px; padding: 0 8px; }
 .copy-button { color: var(--cp-text-muted); font-size: 14px; }

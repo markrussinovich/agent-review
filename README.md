@@ -74,6 +74,13 @@ saved results when available or starting analysis otherwise. Switching to Commit
 or Pull request only loads the list and shows a selection placeholder; no review
 starts until you explicitly choose an item. Pagination and list retries preserve
 the placeholder or selected item. Switching to Worktree still loads automatically.
+While a worktree review is open, a metadata-only check runs about every five
+seconds. Later file edits/additions/deletions, HEAD/base changes, or updated
+coverage/config inputs show **Worktree changed — Reanalyze**. Saved source and
+results remain available; detection does not restart analysis or AI checks.
+This also applies when restoring a cached worktree. Commit/PR snapshots are
+immutable and are not monitored. A previously empty snapshot is labeled as such
+instead of claiming that the current worktree has no changes.
 **Reanalyze** recomputes the current snapshot and regenerates its AI summary and
 enabled custom checks. Reanalyze keeps a PR's resolved head; reselect the PR to
 resolve its latest head. **Cancel analysis** stops an in-progress deterministic
@@ -85,6 +92,25 @@ items. Empty lists and missing authentication are explicit, with **Retry list**
 for failed requests. Invalid revisions and fetch errors are
 displayed explicitly. Switching waits for package assessments to finish;
 superseded AI summaries and annotations cannot overwrite the new review.
+
+### Updating or reconnecting in the same session
+
+Repository edits and commits are separate from the Canvas and are not removed by
+closing/reopening it or reloading extensions. Do not delete the session or its
+worktree to update Agent Review.
+
+Reload the session's extensions to load updated backend modules, then reopen
+Agent Review in the same session. **Reanalyze** only updates the review snapshot;
+it does not reload extension code. Closing and reopening the same Canvas instance
+is supported. If the provider has already exited, reopening starts a new provider.
+
+The local Canvas server belongs to the extension provider. If the Copilot host
+ends, its SDK watchdog terminates that provider too. The page keeps its last
+completed results, hides frozen progress, displays **Connection lost**, and
+retries the existing URL. **Reconnect** retries immediately. If the host does not
+restart the provider, close only the Canvas tab and reopen it in this session.
+Reanalysis requests are acknowledged immediately; progress and errors arrive over
+the event stream rather than holding an HTTP request open for the entire analysis.
 The selected immutable target is recorded with the Canvas marker so provider
 recovery restores the same review instead of reverting to the worktree.
 Switching selections resets navigation to the overview and attention queue, and
