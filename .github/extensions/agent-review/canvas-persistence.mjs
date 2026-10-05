@@ -13,7 +13,7 @@ function safe(value) {
     return String(value).replace(/[^A-Za-z0-9_.-]/g, "_").slice(0, 120);
 }
 
-function markerFile(sessionId, instanceId, directory) {
+export function markerFile(sessionId, instanceId, directory = markerDirectory()) {
     return join(directory, `${safe(sessionId)}__${safe(instanceId)}.json`);
 }
 
@@ -28,7 +28,7 @@ export async function writeCanvasMarker(marker, directory = markerDirectory()) {
     await mkdir(directory, { recursive: true });
     await writeFile(
         markerFile(marker.sessionId, marker.instanceId, directory),
-        JSON.stringify({ ...marker, updatedAt: new Date().toISOString() }),
+        JSON.stringify({ ...marker, providerPid: process.pid, updatedAt: new Date().toISOString() }),
         "utf8",
     );
 }
@@ -50,13 +50,14 @@ export async function readCanvasMarkers(sessionId, directory = markerDirectory()
         const path = join(directory, name);
         try {
             const marker = JSON.parse(await readFile(path, "utf8"));
+            if (marker.sessionId !== sessionId || path !== markerFile(marker.sessionId, marker.instanceId, directory)) continue;
             if (Date.now() - Date.parse(marker.updatedAt) > MAX_MARKER_AGE_MS) {
                 await rm(path, { force: true });
-            } else if (marker.sessionId === sessionId) {
+            } else {
                 markers.push(marker);
             }
-        } catch {
-            await rm(path, { force: true });
+        } catch (error) {
+            console.error("[agent-review] Unable to read Canvas marker:", path, error.message);
         }
     }
     return markers;

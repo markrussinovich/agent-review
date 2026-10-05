@@ -4,6 +4,9 @@ import fnmatch
 import difflib
 import os
 import subprocess
+import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -108,39 +111,102 @@ def _excluded(path: str, patterns: tuple[str, ...]) -> bool:
     )
 
 
-def current_files(repo: Path, excludes: tuple[str, ...]) -> dict[str, bytes]:
+def _read_worktree_file(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        # Files may disappear between traversal and read in active worktrees.
+        return None
+
+
+def current_files(
+    repo: Path, excludes: tuple[str, ...], on_progress: Callable[[str], None] | None = None,
+) -> dict[str, bytes]:
     result: dict[str, bytes] = {}
     patterns = DEFAULT_EXCLUDES + excludes
-    for path in repo.rglob("*"):
-        if not path.is_file():
-            continue
-        relative = path.relative_to(repo).as_posix()
-        if not _excluded(relative, patterns):
-            try:
-                result[relative] = path.read_bytes()
-            except OSError:
-                # Files may disappear between traversal and read in active worktrees.
-                continue
+    last_update = time.monotonic()
+    total_bytes = 0
+    if on_progress:
+        on_progress("Reading working-tree files; excluded directories are skipped")
+    # Limit concurrent opens and queued content while overlapping filesystem latency.
+    with ThreadPoolExecutor(max_workers=8) as readers:
+        for directory, directories, filenames in os.walk(repo):
+            parent = Path(directory)
+            directories[:] = [
+                name for name in directories
+                if not _excluded((parent / name).relative_to(repo).as_posix(), patterns)
+            ]
+            paths = [
+                parent / filename for filename in filenames
+                if not _excluded((parent / filename).relative_to(repo).as_posix(), patterns)
+                and (parent / filename).is_file()
+            ]
+            for offset in range(0, len(paths), 64):
+                batch = paths[offset:offset + 64]
+                for path, content in zip(batch, readers.map(_read_worktree_file, batch)):
+                    if content is None:
+                        continue
+                    relative = path.relative_to(repo).as_posix()
+                    result[relative] = content
+                    total_bytes += len(content)
+                    if on_progress and time.monotonic() - last_update >= .25:
+                        on_progress(f"Working tree: {len(result):,} files, {total_bytes / 1048576:.1f} MiB read · {relative}")
+                        last_update = time.monotonic()
+    if on_progress:
+        on_progress(f"Working tree complete: {len(result):,} files, {total_bytes / 1048576:.1f} MiB")
     return result
 
 
-def baseline_files(repo: Path, base_ref: str | None, excludes: tuple[str, ...]) -> dict[str, bytes]:
+def baseline_files(
+    repo: Path, base_ref: str | None, excludes: tuple[str, ...],
+    on_progress: Callable[[str], None] | None = None,
+) -> dict[str, bytes]:
     if not base_ref:
         return {}
     patterns = DEFAULT_EXCLUDES + excludes
-    names = run_git(repo, "ls-tree", "-r", "--name-only", "-z", base_ref).split("\0")
-    result: dict[str, bytes] = {}
-    for name in names:
-        if not name or _excluded(name, patterns):
+    if on_progress:
+        on_progress(f"Listing tracked files in {base_ref}")
+    entries: list[tuple[str, str]] = []
+    for record in run_git(repo, "ls-tree", "-r", "-z", base_ref).split("\0"):
+        if not record:
             continue
+        metadata, name = record.split("\t", 1)
+        _, kind, object_id = metadata.split()
+        if kind == "blob" and not _excluded(name, patterns):
+            entries.append((name, object_id))
+    result: dict[str, bytes] = {}
+    total_bytes = 0
+    started = time.monotonic()
+    # Bound each batch so progress remains visible and temporary output stays small.
+    for offset in range(0, len(entries), 100):
+        batch = entries[offset:offset + 100]
+        if on_progress:
+            on_progress(f"Snapshot {base_ref[:12]}: reading files {offset + 1:,}–{offset + len(batch):,} of {len(entries):,}; {total_bytes / 1048576:.1f} MiB read")
         process = subprocess.run(
-            ["git", "-C", str(repo), "show", f"{base_ref}:{name}"],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            ["git", "-C", str(repo), "cat-file", "--batch"],
+            input="".join(f"{object_id}\n" for _, object_id in batch).encode("ascii"),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
-        if process.returncode == 0:
-            result[name] = process.stdout
+        if process.returncode:
+            raise RuntimeError(process.stderr.decode("utf-8", errors="replace").strip() or "Git snapshot batch failed")
+        position = 0
+        for name, object_id in batch:
+            header_end = process.stdout.find(b"\n", position)
+            header = process.stdout[position:header_end].split() if header_end >= 0 else []
+            if len(header) != 3 or header[0] != object_id.encode("ascii") or header[1] != b"blob":
+                raise RuntimeError(f"Invalid Git snapshot response for {name}")
+            size = int(header[2])
+            start = header_end + 1
+            end = start + size
+            if size < 0 or end >= len(process.stdout) or process.stdout[end:end + 1] != b"\n":
+                raise RuntimeError(f"Incomplete Git snapshot response for {name}")
+            result[name] = process.stdout[start:end]
+            total_bytes += size
+            position = end + 1
+        if position != len(process.stdout):
+            raise RuntimeError("Unexpected trailing data in Git snapshot batch")
+    if on_progress:
+        on_progress(f"Snapshot complete: {len(result):,} files, {total_bytes / 1048576:.1f} MiB in {time.monotonic() - started:.1f}s")
     return result
 
 
@@ -162,10 +228,15 @@ class Snapshot:
             except UnicodeDecodeError:
                 result[path] = {"binary": True}
                 continue
-            diff = "".join(difflib.unified_diff(
-                [f"{line}\n" for line in base.splitlines()], [f"{line}\n" for line in (current or "").splitlines()],
-                fromfile=f"a/{path}", tofile=f"b/{path}", n=4,
-            ))
+            if change["status"] == "unchanged":
+                diff = ""
+            elif not base or not current:
+                diff = _complete_file_diff(path, current or base, added=not base)
+            else:
+                diff = "".join(difflib.unified_diff(
+                    [f"{line}\n" for line in base.splitlines()], [f"{line}\n" for line in current.splitlines()],
+                    fromfile=f"a/{path}", tofile=f"b/{path}", n=4,
+                ))
             result[path] = {"current": current, "diff": diff}
         return result
 
@@ -184,19 +255,29 @@ class Snapshot:
                 else "modified"
             )
             before_lines = before.decode("utf-8", errors="replace").splitlines() if before is not None else []
-            after_lines = after.decode("utf-8", errors="replace").splitlines() if after is not None else []
+            after_lines = (
+                before_lines if before is not None and before == after
+                else after.decode("utf-8", errors="replace").splitlines() if after is not None else []
+            )
             added = removed = 0
             added_lines: list[int] = []
             removed_lines: list[int] = []
-            for tag, old_start, old_end, new_start, new_end in difflib.SequenceMatcher(
-                None, before_lines, after_lines, autojunk=False
-            ).get_opcodes():
-                if tag in ("insert", "replace"):
-                    added += new_end - new_start
-                    added_lines.extend(range(new_start + 1, new_end + 1))
-                if tag in ("delete", "replace"):
-                    removed += old_end - old_start
-                    removed_lines.extend(range(old_start + 1, old_end + 1))
+            if status == "added":
+                added = len(after_lines)
+                added_lines = list(range(1, added + 1))
+            elif status == "deleted":
+                removed = len(before_lines)
+                removed_lines = list(range(1, removed + 1))
+            elif status == "modified":
+                for tag, old_start, old_end, new_start, new_end in difflib.SequenceMatcher(
+                    None, before_lines, after_lines, autojunk=False
+                ).get_opcodes():
+                    if tag in ("insert", "replace"):
+                        added += new_end - new_start
+                        added_lines.extend(range(new_start + 1, new_end + 1))
+                    if tag in ("delete", "replace"):
+                        removed += old_end - old_start
+                        removed_lines.extend(range(old_start + 1, old_end + 1))
             records.append(
                 {
                     "path": path,
@@ -214,14 +295,28 @@ class Snapshot:
         return records
 
 
+def _complete_file_diff(path: str, text: str, *, added: bool) -> str:
+    lines = text.splitlines()
+    if not lines:
+        return ""
+    extent = "1" if len(lines) == 1 else f"1,{len(lines)}"
+    old_range, new_range = ("0,0", extent) if added else (extent, "0,0")
+    prefix = "+" if added else "-"
+    return (
+        f"--- a/{path}\n+++ b/{path}\n@@ -{old_range} +{new_range} @@\n"
+        + "".join(f"{prefix}{line}\n" for line in lines)
+    )
+
+
 def create_snapshot(
-    repo: Path, base_ref: str | None, excludes: tuple[str, ...], current_ref: str | None = None
+    repo: Path, base_ref: str | None, excludes: tuple[str, ...], current_ref: str | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> Snapshot:
     return Snapshot(
         repo,
         base_ref,
-        baseline_files(repo, base_ref, excludes),
-        baseline_files(repo, current_ref, excludes) if current_ref else current_files(repo, excludes),
+        baseline_files(repo, base_ref, excludes, on_progress),
+        baseline_files(repo, current_ref, excludes, on_progress) if current_ref else current_files(repo, excludes, on_progress),
     )
 
 

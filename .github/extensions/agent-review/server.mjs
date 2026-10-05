@@ -14,6 +14,7 @@ const staticFiles = new Map([
     ["/symbol-links.mjs", "symbol-links.mjs"],
     ["/package-presentation.mjs", "package-presentation.mjs"],
     ["/source-references.mjs", "source-references.mjs"],
+    ["/diff-context.mjs", "diff-context.mjs"],
     ["/styles.css", "styles.css"],
 ]);
 const contentTypes = {
@@ -75,7 +76,11 @@ export function startReviewServer(state, options = {}) {
                 return;
             }
             if (req.method === "GET" && pathname === "/api/state") {
-                if (!state.model && !state.loading) state.refresh().catch(() => {});
+                if (!state.model && !state.loading && !state.cancelled && !state.disposed) {
+                    state.refresh().catch((error) => {
+                        if (error.name !== "AbortError") console.error("[agent-review refresh]", error);
+                    });
+                }
                 sendJson(res, state.snapshot());
                 return;
             }
@@ -130,7 +135,11 @@ export function startReviewServer(state, options = {}) {
                     Connection: "keep-alive",
                 });
                 res.write(": connected\n\n");
-                if (!state.model && !state.loading) state.refresh().catch(() => {});
+                if (!state.model && !state.loading && !state.cancelled && !state.disposed) {
+                    state.refresh().catch((error) => {
+                        if (error.name !== "AbortError") console.error("[agent-review refresh]", error);
+                    });
+                }
                 res.write(`event: state\ndata: ${JSON.stringify({ type: "connected", ...state.snapshot() })}\n\n`);
                 clients.add(res);
                 const ping = setInterval(() => res.write(": ping\n\n"), 25_000);
@@ -138,6 +147,10 @@ export function startReviewServer(state, options = {}) {
                     clearInterval(ping);
                     clients.delete(res);
                 });
+                return;
+            }
+            if (req.method === "POST" && pathname === "/api/cancel") {
+                sendJson(res, { ok: true, ...await state.cancel() });
                 return;
             }
             if (req.method === "POST" && pathname === "/api/refresh") {
@@ -175,7 +188,8 @@ export function startReviewServer(state, options = {}) {
             }
             sendJson(res, { error: "not_found" }, 404);
         } catch (error) {
-            sendJson(res, { error: error.message }, error.statusCode || 400);
+            sendJson(res, { error: error.message, cancelled: error.name === "AbortError" },
+                error.name === "AbortError" ? 409 : error.statusCode || 400);
         }
     });
 

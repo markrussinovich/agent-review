@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.metadata
 from bisect import bisect_right
 import re
 import tomllib
@@ -238,15 +237,28 @@ def parse_packages(
     return sorted(records.values(), key=lambda item: (item["name"], item["source"], item["group"]))
 
 
-def installed_versions(packages: list[dict[str, Any]]) -> None:
-    versions: dict[str, str] = {}
-    for distribution in importlib.metadata.distributions():
-        name = distribution.metadata.get("Name")
-        if name:
-            versions[normalize(name)] = distribution.version
+def resolve_declared_versions(packages: list[dict[str, Any]], warnings: list[str]) -> None:
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for package in packages:
-        if package["name"] in versions:
-            package["resolved_version"] = versions[package["name"]]
+        package.pop("resolved_version", None)
+        package.pop("resolution_error", None)
+        grouped.setdefault(package["name"], []).append(package)
+    for name, declarations in grouped.items():
+        pins = {
+            match.group(1)
+            for item in declarations
+            if (match := re.fullmatch(r"(?:===|==)\s*([^*,;<>=\s]+)", item["specifier"]))
+        }
+        if len(pins) == 1:
+            version = next(iter(pins))
+            for item in declarations:
+                item["resolved_version"] = version
+        elif len(pins) > 1:
+            message = f"{name}: conflicting project version pins ({', '.join(sorted(pins))}); vulnerability assessment requires an unambiguous version."
+            if message not in warnings:
+                warnings.append(message)
+            for item in declarations:
+                item["resolution_error"] = message
 
 
 def package_diff(

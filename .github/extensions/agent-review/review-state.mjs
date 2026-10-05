@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +10,7 @@ import { CustomPromptStore } from "./custom-prompts.mjs";
 import { customAnalysisContext, validateCustomAnalysis } from "./custom-analysis.mjs";
 import { resolveReviewTarget } from "./review-target.mjs";
 import { buildSessionContext, findSessionAttribution, mergeSessionContexts } from "./session-context.mjs";
+import { spawnOwnedAnalyzer } from "./ownership-guard.mjs";
 
 const execFileAsync = promisify(execFile);
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
@@ -26,6 +26,16 @@ function withTimeout(promise, timeoutMs, message) {
         timer = setTimeout(() => reject(new Error(message)), timeoutMs);
     });
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+function abortable(value, signal) {
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        Promise.resolve(value).then(resolve, reject)
+            .finally(() => signal.removeEventListener("abort", abort));
+    });
 }
 
 function normalizeRepoPath(value) {
@@ -68,22 +78,26 @@ function pythonCandidates() {
         : [["python3", []], ["python", []]];
 }
 
-function runAnalyzerProcess(executable, args, onProgress) {
+export function runAnalyzerProcess(executable, args, onProgress = () => {}, options = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(executable, args, {
-            env: process.env,
-            windowsHide: true,
-            stdio: ["ignore", "pipe", "pipe"],
-        });
+        options.signal?.throwIfAborted();
+        const child = spawnOwnedAnalyzer(executable, args, options);
+        const abort = () => child.stop();
+        options.signal?.addEventListener("abort", abort, { once: true });
         const stdout = [];
         const diagnostics = [];
         let stderrBuffer = "";
         let outputBytes = 0;
+        let failure;
+        child.on("message", (message) => {
+            if (message.type === "spawn-error") failure = Object.assign(new Error(message.message), { code: message.code });
+            if (message.type === "analyzer-started") options.onSpawn?.(message.pid);
+        });
         child.stdout.on("data", (chunk) => {
             outputBytes += chunk.length;
             if (outputBytes > 128 * 1024 * 1024) {
-                child.kill();
-                reject(new Error("Analyzer output exceeded 128 MB."));
+                failure = new Error("Analyzer output exceeded 128 MB.");
+                child.stop();
                 return;
             }
             stdout.push(chunk);
@@ -106,6 +120,9 @@ function runAnalyzerProcess(executable, args, onProgress) {
         });
         child.once("error", reject);
         child.once("close", (code) => {
+            options.signal?.removeEventListener("abort", abort);
+            if (options.signal?.aborted) { reject(options.signal.reason); return; }
+            if (failure) { reject(failure); return; }
             if (stderrBuffer.trim() && !stderrBuffer.startsWith("AGENT_REVIEW_PROGRESS ")) diagnostics.push(stderrBuffer);
             if (code !== 0) {
                 reject(new Error(diagnostics.join("\n") || `${executable} exited with code ${code}`));
@@ -120,15 +137,17 @@ function runAnalyzerProcess(executable, args, onProgress) {
     });
 }
 
-async function runAnalyzer(repoRoot, baseRef, onProgress, currentRef = null) {
+export async function runAnalyzer(repoRoot, baseRef, onProgress, currentRef = null, options = {}) {
     const args = [analyzerPath, "--repo", repoRoot];
     if (baseRef) args.push("--base-ref", baseRef);
     if (currentRef) args.push("--current-ref", currentRef);
     const failures = [];
     for (const [executable, prefix] of pythonCandidates()) {
         try {
-            return await runAnalyzerProcess(executable, [...prefix, ...args], onProgress);
+            return await runAnalyzerProcess(executable, [...prefix, ...args], onProgress, options);
         } catch (error) {
+            options.signal?.throwIfAborted();
+            if (error.code !== "ENOENT") throw error;
             failures.push(`${executable}: ${error.message}`);
         }
     }
@@ -153,6 +172,12 @@ export class ReviewState {
         this.model = null;
         this.error = null;
         this.loading = false;
+        this.cancelled = false;
+        this.disposed = false;
+        this.activeRun = null;
+        this.cancelPromise = null;
+        this.runAnalyzer = options.runAnalyzer || runAnalyzer;
+        this.workspacePath = options.workspacePath;
         this.generatedObservations = [];
         this.selection = null;
         this.listeners = new Set();
@@ -190,6 +215,8 @@ export class ReviewState {
         return {
             model: this.model,
             loading: this.loading,
+            cancelled: this.cancelled,
+            disposed: this.disposed,
             error: this.error,
             generated_observations: this.generatedObservations,
             selection: this.selection,
@@ -201,6 +228,7 @@ export class ReviewState {
             review_generation: `${this.reviewInstanceId}:${this.reviewGeneration}`,
             analyzed_at: this.lastAnalyzedAt,
             restored_from_cache: this.restoredFromCache,
+            saved_review_targets: [...this.reviewCache.values()].map((entry) => entry.target),
             custom_analyses: this.customAnalyses,
             custom_prompt_error: this.customPromptError,
         };
@@ -217,6 +245,7 @@ export class ReviewState {
     }
 
     failInitialization(error) {
+        if (this.disposed || this.cancelled) return;
         this.loading = false;
         this.error = error.message;
         this.progress = { phase: "failed", message: "Repository initialization failed", percent: 100 };
@@ -225,10 +254,17 @@ export class ReviewState {
 
 
     async refresh() {
+        if (this.disposed) throw new Error("This review has been closed.");
+        if (this.cancelPromise) await this.cancelPromise;
         if (this.refreshPromise) return this.refreshPromise;
+        const run = { controller: new AbortController() };
+        this.activeRun = run;
+        const signal = run.controller.signal;
+        const wait = (promise) => abortable(promise, signal);
         this.reviewGeneration += 1;
         this.annotationPromises = new Map();
         this.loading = true;
+        this.cancelled = false;
         this.error = null;
         this.progress = {
             phase: "starting",
@@ -237,18 +273,27 @@ export class ReviewState {
             started_at: new Date().toISOString(),
         };
         this.broadcast("refresh-started");
-        const sessionContextPromise = this.refreshSessionContext(false);
+        const sessionContextPromise = wait(this.refreshSessionContext(false));
+        sessionContextPromise.catch(() => {});
         this.refreshPromise = Promise.resolve()
-            .then(() => this.reviewTarget.mode !== "worktree" ? this.reviewTarget.baseRef
-                : this.resolveBaseRef ? this.resolveBaseRef() : this.worktreeBaseRef)
-            .then((baseRef) => {
-                this.baseRef = baseRef ?? null;
-                return runAnalyzer(this.repoRoot, this.baseRef, (progress) => {
-                    this.progress = { ...this.progress, ...progress };
-                    this.broadcast("progress");
-                }, this.reviewTarget.currentRef);
+            .then(() => {
+                signal.throwIfAborted();
+                return wait(this.reviewTarget.mode !== "worktree" ? this.reviewTarget.baseRef
+                    : this.resolveBaseRef ? this.resolveBaseRef() : this.worktreeBaseRef);
             })
-            .then((model) => {
+            .then((baseRef) => {
+                signal.throwIfAborted();
+                this.baseRef = baseRef ?? null;
+                return this.runAnalyzer(this.repoRoot, this.baseRef, (progress) => {
+                    if (signal.aborted || this.activeRun !== run) return;
+                    this.progress = { ...this.progress, ...progress, updated_at: new Date().toISOString() };
+                    this.broadcast("progress");
+                }, this.reviewTarget.currentRef, { signal, workspacePath: this.workspacePath });
+            })
+            .then(async (model) => {
+                await sessionContextPromise;
+                signal.throwIfAborted();
+                if (this.activeRun !== run) throw new Error("The review changed during analysis.");
                 this.model = model;
                 this.generatedObservations = this.generatedObservations.filter((observation) =>
                     observation.evidence_ids.every((id) => model.evidence?.[id])
@@ -264,13 +309,12 @@ export class ReviewState {
                 this.restoredFromCache = false;
                 this.progress = { phase: "complete", message: "Analysis complete", percent: 100 };
                 this.saveCurrentReview();
-                return sessionContextPromise.then(() => {
-                    this.broadcast("refreshed");
-                    this.startCustomAnalyses();
-                    return model;
-                });
+                this.broadcast("refreshed");
+                this.startCustomAnalyses();
+                return model;
             })
             .catch((error) => {
+                if (signal.aborted || this.activeRun !== run || this.disposed) throw error;
                 this.loading = false;
                 this.error = error.message;
                 this.progress = { phase: "failed", message: "Analysis failed", percent: 100 };
@@ -278,9 +322,64 @@ export class ReviewState {
                 throw error;
             })
             .finally(() => {
-                this.refreshPromise = null;
+                if (this.activeRun === run) {
+                    this.refreshPromise = null;
+                    this.activeRun = null;
+                }
             });
         return this.refreshPromise;
+    }
+
+    // Keep the run promise until its ownership guard has confirmed process-tree exit.
+    async cancel() {
+        if (this.cancelPromise) return this.cancelPromise;
+        this.cancelled = true;
+        this.reviewGeneration += 1;
+        const pending = this.refreshPromise;
+        this.activeRun?.controller.abort(new DOMException("Analysis cancelled.", "AbortError"));
+        const cancellation = (async () => {
+            try { await pending; }
+            catch (error) { if (error.name !== "AbortError") console.error("[agent-review cancellation]", error); }
+            this.loading = false;
+            this.error = null;
+            this.progress = { phase: "cancelled", message: "Analysis cancelled. Choose Reanalyze to try again.", percent: 0 };
+            this.broadcast("cancelled");
+        })();
+        this.cancelPromise = cancellation;
+        try { await cancellation; }
+        finally { if (this.cancelPromise === cancellation) this.cancelPromise = null; }
+        return this.snapshot();
+    }
+
+    async dispose() {
+        if (this.disposalPromise) return this.disposalPromise;
+        this.disposed = true;
+        this.disposalPromise = this.clearDisposedReview();
+        return this.disposalPromise;
+    }
+
+    async clearDisposedReview() {
+        await this.cancel();
+        this.model = null;
+        this.generatedObservations = [];
+        this.annotations = {};
+        this.selection = null;
+        this.sessionContext = null;
+        this.customAnalyses = {};
+        this.customPromptError = null;
+        this.packageRisks = {};
+        this.reviewCache.clear();
+        this.annotationPromises.clear();
+        this.packageRiskPromises.clear();
+        this.packageAssessments.clear();
+        this.packageAssessmentPromises.clear();
+        this.customAnalysisPromises = new WeakMap();
+        this.sessionHistories.clear();
+        this.historicalContextPromise = null;
+        this.restoredFromCache = false;
+        this.lastAnalyzedAt = null;
+        this.progress = null;
+        this.listeners.clear();
     }
 
     async setReviewTarget(input) {
@@ -331,6 +430,7 @@ export class ReviewState {
     saveCurrentReview() {
         if (!this.model || this.loading || this.error) return;
         this.reviewCache.set(this.reviewCacheKey(), {
+            target: { ...this.reviewTarget },
             model: this.model,
             annotations: this.annotations,
             packageRisks: this.packageRisks,
@@ -350,6 +450,8 @@ export class ReviewState {
 
     startCustomAnalyses() {
         const model = this.model;
+        if (model
+            && !(model.changes || []).some((change) => change.status !== "unchanged")) return;
         this.runCustomAnalyses().catch((error) => {
             if (this.model !== model) return;
             this.customPromptError = error.message;
@@ -389,6 +491,7 @@ export class ReviewState {
             const result = { id: prompt.id, scope: prompt.scope, revision: prompt.revision, title: prompt.title, status: "queued" };
             results[key] = result;
             const task = chain.then(async () => {
+                if (this.disposed || this.customAnalyses !== results || this.model !== model) return;
                 result.status = "running";
                 if (this.customAnalyses === results) this.broadcast("custom-analysis");
                 try {
@@ -416,9 +519,11 @@ export class ReviewState {
     }
 
     async refreshSessionContext(broadcast = true) {
-        if (!this.getSessionEvents) return null;
+        if (!this.getSessionEvents || this.disposed) return null;
+        const generation = this.reviewGeneration;
         try {
             const current = buildSessionContext(await this.getSessionEvents(), this.repoRoot);
+            if (this.disposed || generation !== this.reviewGeneration) return null;
             current.session_id = this.currentSessionId;
             current.session_summary = "Current Agent Review session";
             for (const turn of current.turns) {
@@ -433,6 +538,7 @@ export class ReviewState {
             }
             this.refreshHistoricalSessionContexts();
         } catch (error) {
+            if (this.disposed || generation !== this.reviewGeneration) return null;
             this.sessionContext = {
                 provenance: "copilot_session_history",
                 factual_status: "context_only",
@@ -449,16 +555,18 @@ export class ReviewState {
     }
 
     refreshHistoricalSessionContexts() {
-        if (!this.getHistoricalSessionContexts) return null;
+        if (!this.getHistoricalSessionContexts || this.disposed) return null;
         if (this.historicalContextPromise) return this.historicalContextPromise;
         if (this.sessionContext?.historical_search_complete) return null;
         if (!this.sessionContext) this.sessionContext = mergeSessionContexts([...this.sessionHistories.values()]);
-        this.historicalContextPromise = withTimeout(
+        const generation = this.reviewGeneration;
+        const pending = withTimeout(
             Promise.resolve().then(() => this.getHistoricalSessionContexts()),
             this.historicalSessionTimeoutMs,
             `Historical Copilot session search exceeded ${this.historicalSessionTimeoutMs >= 1000 ? `${Math.round(this.historicalSessionTimeoutMs / 1000)} seconds` : `${this.historicalSessionTimeoutMs} milliseconds`}.`,
         )
             .then(({ contexts, failures }) => {
+                if (this.disposed || generation !== this.reviewGeneration) return;
                 for (const context of contexts) {
                     this.sessionHistories.set(context.session_id, context);
                 }
@@ -469,13 +577,15 @@ export class ReviewState {
                 this.broadcast("session-history");
             })
             .catch((error) => {
+                if (this.disposed || generation !== this.reviewGeneration) return;
                 this.sessionContext.history_error = `Unable to read historical sessions: ${error.message}`;
                 this.sessionContext.historical_search_complete = true;
                 this.broadcast("session-history-failed");
             })
             .finally(() => {
-                this.historicalContextPromise = null;
+                if (this.historicalContextPromise === pending) this.historicalContextPromise = null;
             });
+        this.historicalContextPromise = pending;
         return this.historicalContextPromise;
     }
 
@@ -650,6 +760,10 @@ export class ReviewState {
 
     async overviewFor() {
         if (this.loading) throw new Error("Wait for analysis to complete before generating the summary.");
+        if (this.model
+            && !(this.model.changes || []).some((change) => change.status !== "unchanged")) {
+            throw new Error("This review has no changes to summarize.");
+        }
         if (this.annotations.overview) return this.annotations.overview;
         if (!this.generateAnnotation) throw new Error("Copilot annotation is unavailable.");
         if (!this.model) throw new Error("Analysis is not complete.");
@@ -855,22 +969,28 @@ export class ReviewState {
     }
 
     async packageRiskFor(name, requestedVersion = null, { explain = true } = {}) {
+        if (this.disposed) throw new Error("This review has been closed.");
+        const generation = this.reviewGeneration;
         const dependency = this.model?.package_dependencies?.find((item) => item.name === name);
         if (!dependency) throw new Error(`Unknown package dependency: ${name}`);
         const declared = dependency.declared_current?.map((item) => item.specifier).filter(Boolean) || [];
-        const exactDeclared = declared
-            .map((value) => /^(?:===|==)\s*([^,;\s]+)$/.exec(value)?.[1])
-            .find(Boolean);
-        const version = requestedVersion || dependency.resolved_current || exactDeclared;
-        if (!version) {
-            throw new Error(`An exact or installed version is required to assess ${name}; declared ${declared.join(", ") || "without a version"}.`);
+        const resolutionError = dependency.declared_current?.find((item) => item.resolution_error)?.resolution_error;
+        if (resolutionError) throw new Error(resolutionError);
+        const exactPins = [...new Set(declared
+            .map((value) => /^(?:===|==)\s*([^*,;<>=\s]+)$/.exec(value)?.[1])
+            .filter(Boolean))];
+        if (exactPins.length > 1) throw new Error(`Conflicting project version pins for ${name}: ${exactPins.join(", ")}.`);
+        const version = exactPins[0] || dependency.resolved_current || null;
+        if ((version && /[*,;<>=~^\s]/.test(version)) || (!version && requestedVersion)) {
+            throw new Error(`An exact project version is required to assess ${name}; declared ${declared.join(", ") || "without a version"}. Pin or resolve the dependency, then reanalyze.`);
         }
-        const cacheKey = `${name}@${version}`;
+        if (requestedVersion && requestedVersion !== version) throw new Error(`Requested version ${requestedVersion} does not match the reviewed project version ${name}@${version}.`);
+        const cacheKey = `${name}@${version ?? "<unresolved>"}`;
         const assessment = await this.packageAssessmentFor(cacheKey, name, version);
+        if (this.disposed || generation !== this.reviewGeneration) throw new Error("The review changed while assessing this package.");
         if (!explain) return { assessment, explanation: this.packageRisks[cacheKey]?.explanation ?? null };
         if (this.packageRisks[cacheKey]) return this.packageRisks[cacheKey];
         if (this.packageRiskPromises.has(cacheKey)) return this.packageRiskPromises.get(cacheKey);
-        const generation = this.reviewGeneration;
         const usageContext = buildPackageUsageContext(this.model, dependency, isTestPath);
         const promise = Promise.resolve()
             .then(() => this.generatePackageExplanation
@@ -890,10 +1010,13 @@ export class ReviewState {
 
     // Public-registry indicators are fast and independent of the slower Copilot explanation.
     packageAssessmentFor(cacheKey, name, version) {
+        if (this.disposed) return Promise.reject(new Error("This review has been closed."));
         if (this.packageAssessments.has(cacheKey)) return Promise.resolve(this.packageAssessments.get(cacheKey));
         if (!this.packageAssessmentPromises.has(cacheKey)) {
-            const promise = assessPackageRisk(name, version, { includePopularity: true })
+            const generation = this.reviewGeneration;
+            const promise = assessPackageRisk(name, version, { includePopularity: true, metadataOnly: version === null })
                 .then((assessment) => {
+                    if (this.disposed || generation !== this.reviewGeneration) throw new Error("The review changed while assessing this package.");
                     this.packageAssessments.set(cacheKey, assessment);
                     return assessment;
                 })
@@ -914,11 +1037,13 @@ export class ReviewState {
         const endLine = item?.path
             ? item.end_line || startLine
             : startLine;
-        return this.sourceForPath(
+        const source = await this.sourceForPath(
             evidence.path,
             startLine,
             endLine,
         );
+        return { ...source, focus_side: item?.change === "removed" || context.subject?.change === "removed"
+            || source.current === null ? "base" : "current" };
     }
 
     async sourceForPackageDeclaration(path, name) {

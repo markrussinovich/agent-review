@@ -80,14 +80,14 @@ try {
     await page.waitForFunction(() => document.querySelector("#source-title").textContent === "main.py:2");
     await page.click("#source-close");
     await page.selectOption("#review-mode", "commit");
-    await page.waitForFunction(() => !document.querySelector("#review-apply").disabled);
-    await page.click("#review-apply");
+    await page.waitForFunction(() => !document.querySelector("#review-ref").disabled);
+    const commit = await page.locator("#review-ref option").nth(1).getAttribute("value");
+    await page.selectOption("#review-ref", commit);
     await page.waitForFunction(() => document.querySelector("#review-target-label").textContent.startsWith("Commit ")
         && document.querySelector("#status").textContent === "Analysis current"
         && document.querySelectorAll(".custom-complete").length === 2);
     const beforeRestore = calls;
     await page.selectOption("#review-mode", "worktree");
-    await page.click("#review-apply");
     await page.waitForFunction(() => document.querySelector("#status").textContent === "Saved review");
     assert.equal(calls, beforeRestore, "returning to a saved review reuses custom results");
     await page.click("#custom-manage");

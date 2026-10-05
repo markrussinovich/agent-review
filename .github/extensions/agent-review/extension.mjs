@@ -11,13 +11,15 @@ import {
 } from "./ai-prompts.mjs";
 import { loadHistoricalSessionContexts } from "./historical-sessions.mjs";
 import { loadReviewConfig, resolveRepoRoot, ReviewState } from "./review-state.mjs";
-import { preferredPort, readCanvasMarkers, removeCanvasMarker, writeCanvasMarker } from "./canvas-persistence.mjs";
+import { preferredPort, readCanvasMarkers, writeCanvasMarker } from "./canvas-persistence.mjs";
 import { startReviewServer } from "./server.mjs";
+import { ReviewLifecycle } from "./review-lifecycle.mjs";
 
 const instances = new Map();
 const pendingInstances = new Map();
 const reviewStates = new Map();
 let session;
+let lifecycle;
 
 function instanceFor(ctx) {
     const instance = instances.get(ctx.instanceId);
@@ -38,6 +40,11 @@ const canvas = createCanvas({
         additionalProperties: false,
     },
     actions: [
+        {
+            name: "cancel",
+            description: "Cancel the active deterministic analysis. Reanalyze explicitly to start again.",
+            handler: async (ctx) => ({ ok: true, ...await instanceFor(ctx).state.cancel() }),
+        },
         {
             name: "refresh",
             description: "Re-analyze the selected worktree, commit, or PR snapshot and update the open Agent Review canvas.",
@@ -106,12 +113,7 @@ const canvas = createCanvas({
         return { title: "Agent Review", status: "Architecture-to-source change review", url: instance.server.url };
     },
     onClose: async (ctx) => {
-        await removeCanvasMarker(session.sessionId, ctx.instanceId).catch(() => {});
-        const instance = instances.get(ctx.instanceId);
-        if (!instance) return;
-        instances.delete(ctx.instanceId);
-        instance.unsubscribeMarker?.();
-        await instance.server.close();
+        await lifecycle.closeInstance(ctx.instanceId);
     },
 });
 
@@ -132,6 +134,7 @@ function createReviewState(requestedPath, input) {
         },
         getSessionEvents: () => session.getEvents(),
         currentSessionId: session.sessionId,
+        workspacePath: session.workspacePath,
         getHistoricalSessionContexts: () => loadHistoricalSessionContexts(state.repoRoot, session.sessionId),
         generateAnnotation: async (context) => {
             const overview = context.kind === "overview";
@@ -160,6 +163,9 @@ function createReviewState(requestedPath, input) {
 }
 
 function createInstance(instanceId, input, serverOptions = {}) {
+    if (lifecycle.closed || lifecycle.closedInstances.has(instanceId)) {
+        throw new CanvasError("canvas_not_open", "This Agent Review canvas has been closed.");
+    }
     const pending = buildInstance(instanceId, input, serverOptions)
         .finally(() => pendingInstances.delete(instanceId));
     pendingInstances.set(instanceId, pending);
@@ -178,10 +184,21 @@ async function buildInstance(instanceId, input, serverOptions) {
         state = createReviewState(requestedPath, input);
         reviewStates.set(stateKey, state);
     }
-    const server = await startReviewServer(state, {
-        port: preferredPort(requestedPath, input.baseRef),
-        ...serverOptions,
-    });
+    lifecycle.acquire(instanceId, state);
+    let server;
+    try {
+        server = await startReviewServer(state, {
+            port: preferredPort(requestedPath, input.baseRef),
+            ...serverOptions,
+        });
+    } catch (error) {
+        lifecycle.owners.delete(instanceId);
+        if (![...lifecycle.owners.values()].includes(state)) {
+            reviewStates.delete(stateKey);
+            await state.dispose();
+        }
+        throw error;
+    }
     const existing = instances.get(instanceId);
     if (existing) {
         await server.close();
@@ -199,21 +216,37 @@ async function buildInstance(instanceId, input, serverOptions) {
         }
     }) };
     instances.set(instanceId, instance);
+    try {
+        await lifecycle.register(instanceId);
+    } catch (error) {
+        instances.delete(instanceId);
+        instance.unsubscribeMarker();
+        lifecycle.owners.delete(instanceId);
+        if (![...lifecycle.owners.values()].includes(state)) {
+            reviewStates.delete(stateKey);
+            await state.dispose();
+        }
+        await server.close();
+        throw error;
+    }
     await persistMarker().catch((error) => console.error("[agent-review] Unable to persist Canvas marker:", error));
     if (isNewState) {
         resolveRepoRoot(requestedPath)
             .then(async (repoRoot) => {
+                if (state.disposed || state.cancelled) return;
                 state.repoRoot = repoRoot;
                 const config = await loadReviewConfig(repoRoot);
                 state.baseRef = input.baseRef
                     || config.base_ref
                     || process.env.COPILOT_DEFAULT_BRANCH
                     || null;
-                return state.refresh();
+                if (!state.disposed && !state.cancelled) return state.refresh();
             })
             .catch((error) => {
-                state.failInitialization(error);
-                console.error("[agent-review]", error);
+                if (error.name !== "AbortError" && !state.disposed) {
+                    state.failInitialization(error);
+                    console.error("[agent-review]", error);
+                }
             });
     }
     return instance;
@@ -234,5 +267,14 @@ async function reclaimPersistedCanvases() {
     }));
 }
 session = await joinSession({ canvases: [canvas] });
+lifecycle = new ReviewLifecycle(session, instances, reviewStates, pendingInstances);
+for (const signal of ["SIGTERM", "SIGINT"]) {
+    process.once(signal, () => {
+        lifecycle.dispose({ preserveMarkers: true }).then(() => process.exit(0)).catch((error) => {
+            console.error("[agent-review shutdown]", error);
+            process.exit(1);
+        });
+    });
+}
 await session.log("Agent Review canvas ready.", { ephemeral: true });
 reclaimPersistedCanvases().catch((error) => console.error("[agent-review] Canvas reclaim failed:", error));

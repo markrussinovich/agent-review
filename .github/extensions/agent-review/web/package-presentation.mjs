@@ -2,7 +2,8 @@ export function packageEvidenceLinks(name, version, repositoryUrl) {
     const packageName = encodeURIComponent(name);
     const links = {
         registry: `https://pypi.org/project/${packageName}/`,
-        release: `https://pypi.org/project/${packageName}/${encodeURIComponent(version)}/`,
+        release: version ? `https://pypi.org/project/${packageName}/${encodeURIComponent(version)}/`
+            : `https://pypi.org/project/${packageName}/`,
         maintenance: `https://pypi.org/project/${packageName}/#history`,
         vulnerabilities: `https://osv.dev/list?q=${packageName}&ecosystem=PyPI`,
         downloads: `https://pypistats.org/packages/${packageName}`,

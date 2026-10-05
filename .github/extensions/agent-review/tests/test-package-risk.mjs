@@ -5,8 +5,9 @@ import { assessPackageRisk } from "../package-risk.mjs";
 
 const NOW = "2026-10-03T00:00:00.000Z";
 
-function response(data, status = 200) {
+function response(data, status = 200, headers = {}) {
   return {
+    headers: new Headers(headers),
     ok: status >= 200 && status < 300,
     status,
     async json() {
@@ -121,6 +122,60 @@ test("healthy package returns low risk and stable public evidence", async () => 
   });
 });
 
+test("all-version advisory history does not count as vulnerabilities in the reviewed version", async () => {
+  const fetchImpl = mockFetch([
+    ["pypi.org", pypi()],
+    ["api.osv.dev", (_url, init) => response(JSON.parse(init.body).version
+      ? { vulns: [] }
+      : { vulns: [{ id: "GHSA-older-release", database_specific: { severity: "CRITICAL" } }] })],
+    ["securityscorecards.dev", { score: 8, checks: [] }],
+  ]);
+  const result = await assessPackageRisk("healthy", "1.0.0", { fetchImpl, now: NOW });
+  assert.equal(result.version, "1.0.0");
+  assert.equal(result.indicators.latest_version, "2.0.0");
+  assert.equal(result.indicators.vulnerability_count, 0);
+  assert.equal(result.indicators.vulnerability_history_count, 1);
+  assert.equal(result.risk.level, "low");
+  const queries = fetchImpl.calls.filter((call) => call.url.includes("api.osv.dev")).map((call) => JSON.parse(call.init.body));
+  assert.equal(queries[0].version, "1.0.0");
+  assert.equal(queries[1].version, undefined);
+});
+
+test("ranges and wildcard versions are rejected before network requests", async () => {
+  const fetchImpl = async () => { throw new Error("Unexpected network request"); };
+  for (const version of ["1.*", ">=1.0", "1.0,2.0", "~1.0"]) {
+    await assert.rejects(assessPackageRisk("demo", version, { fetchImpl }), /exact package version/);
+  }
+});
+
+test("metadata-only assessments never audit a guessed version or report a clean result", async () => {
+  const fetchImpl = mockFetch([
+    ["pypi.org", pypi()],
+    ["api.osv.dev", { vulns: [] }],
+    ["securityscorecards.dev", { score: 8, checks: [] }],
+    ["pypistats.org", { data: { last_month: 1234 } }],
+  ]);
+  const result = await assessPackageRisk("reportlab", null, { metadataOnly: true, includePopularity: true, fetchImpl, now: NOW });
+  const osvCalls = fetchImpl.calls.filter((call) => call.url.includes("api.osv.dev"));
+  assert.equal(osvCalls.length, 1, "only package-wide advisory history is queried");
+  assert.deepEqual(JSON.parse(osvCalls[0].init.body), { package: { ecosystem: "PyPI", name: "reportlab" } });
+  assert.equal(result.version, null);
+  assert.equal(result.sources.osv.status, "skipped");
+  assert.equal(result.sources.osv_history.status, "ok");
+  assert.equal(result.indicators.vulnerability_count, null);
+  assert.equal(result.indicators.vulnerability_history_count, 0);
+  assert.equal(result.indicators.release_age_days, null);
+  assert.equal(result.indicators.yanked, null);
+  assert.equal(result.indicators.latest_version, "2.0.0");
+  assert.equal(result.indicators.recent_downloads, 1234);
+  assert.equal(result.risk.level, "unknown");
+  assert.equal(result.risk.score, null);
+  assert.match(result.risk.reasons.join(" "), /exact project version/);
+  assert.ok(!result.evidence.some((item) => ["pypi.release", "osv.vulnerabilities"].includes(item.id)));
+  await assert.rejects(assessPackageRisk("reportlab", "4.0", { metadataOnly: true, fetchImpl }), /requires a null version/);
+  await assert.rejects(assessPackageRisk("reportlab", null, { fetchImpl }), /non-empty string/);
+});
+
 test("known critical vulnerability produces critical risk", async () => {
   const fetchImpl = mockFetch([
     ["pypi.org", pypi({ repository: null })],
@@ -154,7 +209,7 @@ test("source failures are explicit and core failure makes risk unknown", async (
   const fetchImpl = mockFetch([
     ["pypi.org", (_url, _init) => response({}, 503)],
     ["api.osv.dev", { vulns: [] }],
-    ["pypistats.org", (_url, _init) => response({}, 429)],
+    ["pypistats.org", (_url, _init) => response({}, 429, { "retry-after": "0" })],
   ]);
 
   const result = await assessPackageRisk("partial", "3.0.0", {
@@ -164,7 +219,7 @@ test("source failures are explicit and core failure makes risk unknown", async (
   });
 
   assert.deepEqual(result.sources.pypi, { status: "error", error: "HTTP 503" });
-  assert.deepEqual(result.sources.pypistats, { status: "error", error: "HTTP 429" });
+  assert.deepEqual(result.sources.pypistats, { status: "error", error: "HTTP 429 (rate limited after 3 attempts)" });
   assert.equal(result.sources.osv.status, "ok");
   assert.equal(result.risk.level, "unknown");
   assert.equal(result.risk.score, null);
@@ -188,6 +243,91 @@ test("unsafe GitHub-like project URL never reaches Scorecard", async () => {
     false,
   );
   assert.ok(result.evidence.some((item) => item.id === "pypi.repository-unsafe"));
+});
+
+test("download rate limits retry with exponential backoff and preserve the final value", async () => {
+  const attempts = [];
+  let cancelled = 0;
+  const fetchImpl = mockFetch([
+    ["pypi.org", pypi({ repository: null })],
+    ["api.osv.dev", { vulns: [] }],
+    ["pypistats.org", () => {
+      attempts.push(performance.now());
+      if (attempts.length === 3) return response({ data: { last_month: 1234 } });
+      return { ...response({}, 429), body: { cancel: async () => { cancelled += 1; } } };
+    }],
+  ]);
+  const result = await assessPackageRisk("healthy", "1.0.0", { fetchImpl, includePopularity: true, now: NOW });
+  assert.equal(attempts.length, 3);
+  assert.ok(attempts[1] - attempts[0] >= 490, "first wait is at least 500ms with timer tolerance");
+  assert.ok(attempts[2] - attempts[1] >= 990, "second wait doubles to at least 1000ms");
+  assert.equal(cancelled, 2);
+  assert.equal(result.indicators.recent_downloads, 1234);
+  assert.equal(result.sources.pypistats.status, "ok");
+});
+
+test("Retry-After seconds and dates are honored without retrying beyond the timeout", async () => {
+  for (const header of ["0.04", new Date(Date.now() - 1000).toUTCString(), "invalid"]) {
+    const calls = [];
+    const fetchImpl = mockFetch([
+      ["pypi.org", pypi({ repository: null })],
+      ["api.osv.dev", { vulns: [] }],
+      ["pypistats.org", () => {
+        calls.push(performance.now());
+        return calls.length === 1 ? response({}, 429, { "retry-after": header })
+          : response({ data: { last_month: 42 } });
+      }],
+    ]);
+    const result = await assessPackageRisk("healthy", "1.0.0", { fetchImpl, includePopularity: true, now: NOW });
+    assert.equal(result.indicators.recent_downloads, 42);
+    assert.equal(calls.length, 2);
+    if (header === "0.04") assert.ok(calls[1] - calls[0] >= 30);
+    if (header === "invalid") assert.ok(calls[1] - calls[0] >= 490);
+  }
+  for (const header of ["60", new Date(Date.now() + 60000).toUTCString()]) {
+    let calls = 0;
+    const fetchImpl = mockFetch([
+      ["pypi.org", pypi({ repository: null })],
+      ["api.osv.dev", { vulns: [] }],
+      ["pypistats.org", () => { calls += 1; return response({}, 429, { "retry-after": header }); }],
+    ]);
+    const result = await assessPackageRisk("healthy", "1.0.0", { fetchImpl, includePopularity: true, timeoutMs: 100, now: NOW });
+    assert.equal(calls, 1);
+    assert.match(result.sources.pypistats.error, /HTTP 429.*exceeds.*request budget/);
+  }
+});
+
+test("request timeout covers retry waits and other HTTP failures are not retried", async () => {
+  let calls = 0;
+  const fetchImpl = mockFetch([
+    ["pypi.org", pypi({ repository: null })],
+    ["api.osv.dev", { vulns: [] }],
+    ["pypistats.org", (_url, init) => {
+      calls += 1;
+      if (calls === 1) return response({}, 429, { "retry-after": "0.02" });
+      return new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+      }, { once: true }));
+    }],
+  ]);
+  const started = performance.now();
+  const result = await assessPackageRisk("healthy", "1.0.0", { fetchImpl, includePopularity: true, timeoutMs: 100, now: NOW });
+  assert.equal(calls, 2);
+  assert.ok(performance.now() - started < 500);
+  assert.match(result.sources.pypistats.error, /timed out after 100ms/);
+  for (const status of [400, 404, 503]) {
+    let failedCalls = 0;
+    const failedFetch = mockFetch([
+      ["pypi.org", pypi({ repository: null })],
+      ["api.osv.dev", { vulns: [] }],
+      ["pypistats.org", () => { failedCalls += 1; return response({}, status); }],
+    ]);
+    const failed = await assessPackageRisk("healthy", "1.0.0", { fetchImpl: failedFetch, includePopularity: true, now: NOW });
+    assert.equal(failedCalls, 1);
+    assert.equal(failed.sources.pypistats.error, `HTTP ${status}`);
+  }
 });
 
 test("request timeout is bounded and reported without rejecting assessment", async () => {

@@ -11,6 +11,8 @@ zoom from architecture to modules, symbols, and source evidence.
 - Git repository
 - Python 3.11 or newer
 - GitHub Copilot app with Canvas extension support
+- Node.js 20+ on PATH when Copilot uses an embedded runtime (for analysis
+  ownership guards)
 
 No hosted backend, database, separate model API key, or Python package install is
 required.
@@ -33,6 +35,10 @@ server ("Reconnecting…"). Each Canvas therefore uses a stable loopback port th
 is recorded under `~/.copilot/agent-review/canvases`; a replacement provider
 for the same session re-serves that URL and the page reconnects on its own.
 Set `AGENT_REVIEW_STATE_DIR` to relocate the records.
+Closing the last Canvas for a review stops its analyzer and releases its saved
+review data. Deleting the owning session workspace also stops analysis and
+removes that session's Canvas records. Provider-only restarts stop running
+analyzers but preserve records for recovery; no repository files are deleted.
 
 The analyzer can also run independently:
 
@@ -59,10 +65,22 @@ The top toolbar's **Review** selector supports:
 
 Source, diff, graph, dependencies, and AI source context follow the selected
 snapshot. Worktree coverage is deliberately unavailable for commit/PR reviews.
-**Open review** opens the selection and restores its saved results when available.
+For any target with no reviewable changes, the canvas shows **No changes to review**
+without a change brief, empty metric cards, or automatic AI/custom analysis.
+The coverage banner distinguishes a missing worktree report from unavailable
+historical coverage; neither message means the AI change brief is unavailable.
+Selecting a worktree, commit, or PR loads its review automatically, restoring
+saved results when available or starting analysis otherwise. Switching to Commit
+or Pull request only loads the list and shows a selection placeholder; no review
+starts until you explicitly choose an item. Pagination and list retries preserve
+the placeholder or selected item. Switching to Worktree still loads automatically.
 **Reanalyze** recomputes the current snapshot and regenerates its AI summary and
-enabled custom checks. Reanalyze keeps a PR's resolved head; open the PR again to resolve a newly
-pushed head. Both lists load 30 entries at a time with **Load more** for older
+enabled custom checks. Reanalyze keeps a PR's resolved head; reselect the PR to
+resolve its latest head. **Cancel analysis** stops an in-progress deterministic
+analysis, including its child processes. Cancellation does not automatically
+restart when the page reconnects; choose **Reanalyze** to try again. Previously
+completed results remain available when cancelling a reanalysis.
+Both lists load 30 entries at a time with **Load more** for older
 items. Empty lists and missing authentication are explicit, with **Retry list**
 for failed requests. Invalid revisions and fetch errors are
 displayed explicitly. Switching waits for package assessments to finish;
@@ -70,7 +88,7 @@ superseded AI summaries and annotations cannot overwrite the new review.
 The selected immutable target is recorded with the Canvas marker so provider
 recovery restores the same review instead of reverting to the worktree.
 Switching selections resets navigation to the overview and attention queue, and
-hides old panes while choosing the next target. Each target retains its analyzed
+clears the visible board while the next target loads. Each target retains its analyzed
 source/diff, summary, package assessments, annotations, and custom results in the
 running provider's memory. Returning does not silently mix saved results with
 later worktree edits. **This result cache does not survive a provider restart**;
@@ -81,8 +99,14 @@ the selected target and browser-local closed findings do.
   suggested review order and gaps; refresh regenerates the summary
 - Progressive architecture, module, class, and function drilldown with edge
   highlighting on hover for dense graphs
+  - Graph line additions, deletions, and change-state text use green, red, and
+    amber semantic colors. Expanded originating prompts wrap long paths.
 - Impact-ranked attention findings with caller, complexity, signature, coverage,
   churn, and line-delta evidence; repeated size findings collapse into one card
+  - These are rule-based checks, primarily for Python. An empty attention queue
+    means no rule triggered, not that changes are bug-free or fully analyzed.
+  - Selecting a grouped large-change card lists every area individually, numbered
+    with its symbol type and source location. Nested scopes may overlap.
 - Graph counts include findings on the module/component itself and its descendants;
   drilldown shows the complete scoped finding list, including module-level findings
   that have no child-symbol badge
@@ -92,11 +116,49 @@ the selected target and browser-local closed findings do.
   count active findings, while scoped lists retain closed findings
 - Clickable summary deltas and compact file, module, relationship, and package
   indexes with proportional churn bars
+  - The Lines index lists all changed files, including manifests and documentation,
+    so every added/deleted line in the total has a corresponding file and diff.
+  - Files and Packages show added / modified / deleted counts; `~` means modified.
+    Lines show additions/deletions, and architecture edges show added/removed relationships.
 - Code-first source and diff view with a side panel for the originating prompt
   and a concise Copilot briefing that leads with a risk banner
+  - Diff row backgrounds span the full scrollable source width, including blank
+    space after shorter lines.
+  - Referenced lines outside the diff hunks appear as explicitly labeled
+    unchanged context, with accurate Base/Current line numbers. If the saved
+    snapshots cannot verify that context, a notice directs you to the matching
+    source tab instead. Removed symbols focus the Base snapshot.
+- Snapshot loading reads Git blobs in bounded batches rather than starting one
+  Git process per file, skips excluded worktree directories before traversal,
+  and overlaps working-tree reads with at most eight concurrent file opens.
+  Progress includes processed file counts and bytes. Python graph analysis
+  identifies the current file, module counts, and relationship-resolution
+  work, including syntax-node counts for larger modules. A compact Cancel
+  button appears at the right of the progress panel. Stage percentages are
+  not time-remaining estimates.
+- Python analysis caches UTF-8 source lines once per module and parses
+  byte-identical baseline/current files once. The AST is shared read-only;
+  mutable symbol and import records remain separate for each snapshot.
+  Architecture aggregation uses indexed symbol-to-module lookups.
+- Added, deleted, and unchanged files avoid unnecessary line matching.
+  Whole-file additions/deletions emit the same unified diffs without building
+  a matching index. Source hashes, line numbers, evidence, and reviewable files
+  are preserved; modified-file matching is unchanged.
 - Backticked file paths (including root files and line ranges), symbols, and class fields link to source. Bare fields/methods resolve within the selected class, not an unrelated globally matching member. The stated-intent label opens the originating prompt
 - Back and forward navigation (buttons, Alt+Left/Right, mouse back/forward) through followed source links
 - Package review: added, changed, and removed dependencies with a Copilot explanation of why each was added and what uses it, a security scorecard (vulnerabilities, OpenSSF Scorecard, maintenance, downloads), and provenance (author, license, source repository, registry)
+  - Vulnerability queries use the exact version pinned in the reviewed
+    `pyproject.toml` or `requirements*.txt`, never the analyzer's installed
+    packages or the registry's latest release. Ranges, wildcards, and conflicting
+    pins are unresolved rather than reported safe. Arbitrary lockfile formats
+    are not currently resolved; frozen requirements files are supported.
+    All-version advisory history is shown separately from vulnerabilities
+    affecting the reviewed version.
+    Public-service HTTP 429 responses retry up to three total attempts,
+    honoring `Retry-After` seconds or dates and otherwise using exponential
+    backoff with jitter. All attempts and waits share the existing per-request
+    timeout; a server delay beyond that budget is reported rather than retried
+    prematurely. Download cards expose the final service error when unavailable.
 - Exact source-range highlighting for findings backed by precise line evidence
 - Cached Copilot explanations generated in isolated, tool-free sessions and
   validated for the required sections: what the code is, usage, behavior
@@ -125,6 +187,11 @@ URL to those services. Repository source and credentials are never sent.
 
 - **Version** / **Reviewed version** identifies the dependency version being
   assessed; it is not a vulnerability count or proof of the runtime installation.
+- A valid range such as `reportlab>=4.0` does not block Copilot's usage/adoption
+  explanation, registry metadata, maintenance, downloads, or advisory history.
+  Without an exact saved project version, version-specific vulnerability checks
+  remain explicitly unavailable and dependency risk remains unknown; neither
+  the latest release nor the range's lower bound is used as the reviewed version.
 - **Priority N/100** ranks deterministic review attention. It is not a security
   score. The package risk signal aggregate is a separate 0–100 measure, while
   **OpenSSF Scorecard** is a separate 0–10 score.

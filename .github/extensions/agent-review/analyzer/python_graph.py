@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import re
+import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
-from typing import Any, Iterable
+from typing import Any
 
 from complexity import cyclomatic
 from review_model import ReviewModel, stable_id
@@ -81,6 +84,24 @@ class SymbolCollector(ast.NodeVisitor):
     def __init__(self, module: ParsedModule) -> None:
         self.module = module
         self.scope: list[tuple[str, str]] = []
+        # AST columns are UTF-8 byte offsets; only CR and LF delimit Python source lines.
+        self.source_lines = [
+            match.group().encode("utf-8")
+            for match in re.finditer(r"[^\r\n]*(?:\r\n?|\n|$)", module.source)
+            if match.start() != match.end()
+        ]
+
+    def _source_segment(self, node: ast.AST) -> bytes:
+        if node.end_lineno is None or node.end_col_offset is None:
+            return b""
+        start, end = node.lineno - 1, node.end_lineno - 1
+        if start == end:
+            return self.source_lines[start][node.col_offset:node.end_col_offset]
+        return b"".join([
+            self.source_lines[start][node.col_offset:],
+            *self.source_lines[start + 1:end],
+            self.source_lines[end][:node.end_col_offset],
+        ])
 
     def _add(self, node: ast.AST, name: str, kind: str, signature: str | None = None) -> None:
         qualname = ".".join([part[0] for part in self.scope] + [name])
@@ -102,9 +123,7 @@ class SymbolCollector(ast.NodeVisitor):
             },
             "signature": signature,
             "normalized_ast_hash": _hash(normalized.encode()),
-            "source_hash": _hash(
-                (ast.get_source_segment(self.module.source, node) or "").encode()
-            ),
+            "source_hash": _hash(self._source_segment(node)),
             "complexity": cyclomatic(node) if kind in ("function", "method") else None,
             "_node": node,
         }
@@ -228,8 +247,19 @@ def analyze_python(
     model: ReviewModel,
     declared_packages: set[str],
     baseline_declared_packages: set[str] | None = None,
+    on_progress: Callable[[str, int], None] | None = None,
 ) -> None:
-    baseline, current = _parse_sets(baseline_files, current_files, model)
+    last_update: float | None = None
+
+    def report(message: str, percent: int, force: bool = False) -> None:
+        nonlocal last_update
+        now = time.monotonic()
+        if on_progress and (force or last_update is None or now - last_update >= .25):
+            on_progress(message, percent)
+            last_update = now
+
+    baseline, current = _parse_sets(baseline_files, current_files, model, report)
+    report(f"Comparing {sum(len(module.symbols) for module in current.values()):,} current Python symbols", 52, True)
     before_symbols = {
         symbol["identity"]: symbol
         for module in baseline.values()
@@ -273,8 +303,14 @@ def analyze_python(
         short_symbols[(symbol["module"], symbol["qualname"])] = symbol["id"]
         if symbol["kind"] == "class":
             classes[(symbol["module"], symbol["name"])] = symbol["id"]
-    for module in current.values():
-        _module_edges(model, module, current, module_ids, symbol_ids, short_symbols, classes, declared_packages)
+    for index, module in enumerate(current.values()):
+        percent = 53 + int(6 * index / max(1, len(current)))
+        message = f"Resolving current calls and imports: module {index + 1:,} of {len(current):,} · {module.path}"
+        report(message, percent, index == 0)
+        _module_edges(
+            model, module, current, module_ids, symbol_ids, short_symbols, classes, declared_packages,
+            on_progress=lambda count, message=message, percent=percent: report(f"{message} · {count:,} syntax nodes processed", percent),
+        )
     for edge in model.edges:
         edge["change"] = "added"
 
@@ -288,11 +324,16 @@ def analyze_python(
         baseline_short[(symbol["module"], symbol["qualname"])] = symbol["id"]
         if symbol["kind"] == "class":
             baseline_classes[(symbol["module"], symbol["name"])] = symbol["id"]
-    for module in baseline.values():
+    for index, module in enumerate(baseline.values()):
+        percent = 59 + int(6 * index / max(1, len(baseline)))
+        message = f"Resolving baseline calls and imports: module {index + 1:,} of {len(baseline):,} · {module.path}"
+        report(message, percent, index == 0)
         _module_edges(
             baseline_model, module, baseline, baseline_module_ids, baseline_symbol_ids,
             baseline_short, baseline_classes, baseline_declared_packages or set(),
+            on_progress=lambda count, message=message, percent=percent: report(f"{message} · {count:,} syntax nodes processed", percent),
         )
+    report(f"Comparing {len(model.edges):,} current and {len(baseline_model.edges):,} baseline relationships", 66, True)
     current_semantic: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     baseline_semantic: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for edge in model.edges:
@@ -313,23 +354,44 @@ def analyze_python(
                 evidence = baseline_evidence.get(evidence_id)
                 if evidence:
                     model.evidence.append(evidence)
+    report(f"Building architecture groups for {len(current):,} current Python modules", 67, True)
     _aggregates(model, baseline, current, baseline_module_ids, module_ids)
 
 
 def _parse_sets(
-    baseline_files: dict[str, bytes], current_files: dict[str, bytes], model: ReviewModel
+    baseline_files: dict[str, bytes], current_files: dict[str, bytes], model: ReviewModel,
+    on_progress: Callable[[str, int], None] | None = None,
 ) -> tuple[dict[str, ParsedModule], dict[str, ParsedModule]]:
     results: list[dict[str, ParsedModule]] = []
-    for files in (baseline_files, current_files):
+    total = sum(path.endswith(".py") for files in (baseline_files, current_files) for path in files)
+    completed = 0
+    parsed_baseline: dict[str, tuple[ParsedModule | None, str | None]] = {}
+    for label, files in (("baseline", baseline_files), ("current", current_files)):
         modules: dict[str, ParsedModule] = {}
-        for path, data in sorted(files.items()):
-            if not path.endswith(".py"):
-                continue
-            module, warning = parse_module(path, data)
+        python_files = [(path, data) for path, data in sorted(files.items()) if path.endswith(".py")]
+        for index, (path, data) in enumerate(python_files):
+            reuse = label == "current" and baseline_files.get(path) == data
+            if on_progress:
+                action = "Reusing" if reuse else "Parsing"
+                on_progress(f"{action} {label} Python files: {index + 1:,} of {len(python_files):,} · {path}",
+                            42 + int(10 * completed / max(1, total)))
+            if reuse:
+                original, warning = parsed_baseline[path]
+                # Graph resolution and classification mutate records, but never the AST.
+                module = replace(
+                    original,
+                    symbols=[symbol.copy() for symbol in original.symbols],
+                    imports=[item.copy() for item in original.imports],
+                ) if original is not None else None
+            else:
+                module, warning = parse_module(path, data)
+                if label == "baseline":
+                    parsed_baseline[path] = module, warning
             if warning:
                 model.warnings.append(warning)
             elif module:
                 modules[module.name] = module
+            completed += 1
         results.append(modules)
     return results[0], results[1]
 
@@ -347,6 +409,7 @@ def _module_edges(
     short_symbols: dict[tuple[str, str], str],
     classes: dict[tuple[str, str], str],
     declared_packages: set[str],
+    on_progress: Callable[[int], None] | None = None,
 ) -> None:
     aliases = {item["local"]: item for item in module.imports}
     for item in module.imports:
@@ -366,7 +429,9 @@ def _module_edges(
                 model, "uses_package", module_ids[module.name], f"package:{top}", 0.9,
                 module.path, item["line"], f"import {target_module}",
             )
-    for node in ast.walk(module.tree):
+    for count, node in enumerate(ast.walk(module.tree), 1):
+        if on_progress and count % 256 == 0:
+            on_progress(count)
         if isinstance(node, ast.ClassDef):
             source = symbol_ids.get(f"{module.name}:{node.name}")
             if source:
@@ -482,10 +547,12 @@ def _aggregates(
             {"id": component_ids[name], "name": name, "module_ids": sorted(ids)}
         )
     module_by_id = {value: name for name, value in all_module_ids.items()}
+    for symbol in model.symbols:
+        module_by_id.setdefault(symbol["id"], symbol["module"])
     grouped: dict[tuple[str, str, str, str], list[str]] = defaultdict(list)
     for edge in model.edges:
-        source_module = _edge_module(edge["source"], model.symbols, module_by_id)
-        target_module = _edge_module(edge["target"], model.symbols, module_by_id)
+        source_module = module_by_id.get(edge["source"])
+        target_module = module_by_id.get(edge["target"])
         if source_module and target_module and source_module != target_module:
             grouped[("module", edge["kind"], all_module_ids[source_module], all_module_ids[target_module])].append(edge["id"])
             source_component = component_ids[component_name(all_modules[source_module].path)]
@@ -509,14 +576,3 @@ def _aggregates(
                 "removed_count": removed,
             }
         )
-
-
-def _edge_module(
-    identifier: str, symbols: Iterable[dict[str, Any]], module_by_id: dict[str, str]
-) -> str | None:
-    if identifier in module_by_id:
-        return module_by_id[identifier]
-    for symbol in symbols:
-        if symbol["id"] == identifier:
-            return symbol["module"]
-    return None

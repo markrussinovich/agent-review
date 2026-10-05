@@ -3,11 +3,13 @@ import { findingsForNode, findingKey, isFindingClosed, orderFindings } from "/fi
 import { resolveSymbolReference } from "/symbol-links.mjs";
 import { packageEvidenceLinks } from "/package-presentation.mjs";
 import { resolveSourceReference } from "/source-references.mjs";
+import { unchangedDiffContext } from "/diff-context.mjs";
 
 const state = {
     payload: null,
     stack: [],
     mode: "graph",
+    areaGroup: null,
     selected: null,
     source: null,
     sourceTab: "diff",
@@ -26,8 +28,8 @@ const state = {
     customOpenKeys: new Set(),
 };
 const elements = Object.fromEntries([
-    "review-target-form", "review-mode", "review-ref", "review-apply", "review-target-label", "repository-identity", "review-more", "review-options-status", "review-picker-notice", "change-brief",
-    "status", "refresh", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
+    "review-target-form", "review-mode", "review-ref", "review-target-label", "repository-identity", "review-more", "review-options-status", "review-picker-notice", "clean-review", "change-brief",
+    "status", "refresh", "cancel-analysis", "analysis-cancelled", "source-context-notice", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "rail-resize",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail-toggle", "detail", "detail-close", "source-panel", "source-title",
     "source-provenance", "source-annotation", "source-close", "source", "source-back", "source-forward",
@@ -96,11 +98,21 @@ function metric(label, value, detail, mode) {
     return card;
 }
 
-function deltaMetric(label, added, removed, detail, mode) {
+function deltaMetric(label, added, removed, detail, mode, modified = null) {
     const value = el("strong", "delta-value");
-    value.append(el("span", "delta-add", `+${added ?? 0}`), el("span", "delta-separator", "/"), el("span", "delta-remove", `−${removed ?? 0}`));
+    const addedValue = el("span", "delta-add", `+${added ?? 0}`);
+    addedValue.title = "Added";
+    value.append(addedValue, el("span", "delta-separator", "/"));
+    if (modified !== null) {
+        const modifiedValue = el("span", "delta-modified", `~${modified}`);
+        modifiedValue.title = "Modified";
+        value.append(modifiedValue, el("span", "delta-separator", "/"));
+    }
+    const removedValue = el("span", "delta-remove", `−${removed ?? 0}`);
+    removedValue.title = "Deleted";
+    value.append(removedValue);
     const card = el("button", "metric");
-    const magnitude = Math.max(Number(added) || 0, Number(removed) || 0);
+    const magnitude = Math.max(Number(added) || 0, Number(removed) || 0, Number(modified) || 0);
     if (magnitude >= 100) card.classList.add("metric-major");
     else if (magnitude >= 20) card.classList.add("metric-medium");
     card.type = "button";
@@ -135,21 +147,26 @@ function renderSummary(model) {
         `${item.name} ${item.resolved_current || item.declared_current?.map((entry) => entry.specifier).filter(Boolean).join(", ") || item.change}`
     ).join(" · ") || "No dependency changes";
     elements.summary.replaceChildren(
-        deltaMetric("Files", summary.files_added, summary.files_removed, fileDetail, "files"),
+        deltaMetric("Files", summary.files_added, summary.files_removed, fileDetail, "files", summary.files_modified || 0),
         deltaMetric("Lines", summary.lines_added, summary.lines_removed,
             `source ${split.source.toLocaleString()} · tests ${split.tests.toLocaleString()} lines changed`, "lines"),
         deltaMetric("Architecture edges", summary.new_arch_edges, summary.arch_edges_removed, topEdge
             ? `Largest: ${nodeById.get(topEdge.source)?.name || topEdge.source} → ${nodeById.get(topEdge.target)?.name || topEdge.target}`
             : "No relationship changes", "edges"),
-        deltaMetric("Packages", summary.new_packages, summary.packages_removed, packageDetail, "packages"),
+        deltaMetric("Packages", summary.new_packages, summary.packages_removed, packageDetail, "packages", summary.packages_modified || 0),
     );
     const qualityIssues = [];
-    if (!model.coverage?.available) qualityIssues.push("Coverage data unavailable; uncovered changed logic cannot be assessed.");
-    if (model.warnings?.length) qualityIssues.push(`${model.warnings.length} analyzer warning${model.warnings.length === 1 ? "" : "s"} require review.`);
+    const historical = ["commit", "pr"].includes(state.payload?.review_target?.mode);
+    const warnings = (model.warnings || []).filter((warning) => !historical
+        || warning !== "Worktree coverage is not applicable to a historical commit or PR snapshot.");
+    if (!model.coverage?.available) qualityIssues.push(historical
+        ? "Coverage is unavailable for this historical snapshot. Working-tree coverage reports are not applied to commit or PR reviews."
+        : "No usable coverage report for this worktree snapshot. Generate coverage.json or coverage.xml in this checkout, then Reanalyze.");
+    if (warnings.length) qualityIssues.push(`${warnings.length} analyzer warning${warnings.length === 1 ? " requires" : "s require"} review.`);
     if (qualityIssues.length) {
         const quality = el("button", "quality-warning");
         quality.type = "button";
-        quality.append(el("strong", "", "Analysis limitation"), el("span", "", qualityIssues.join(" ")));
+        quality.append(el("strong", "", !model.coverage?.available && !warnings.length ? "Coverage unavailable" : "Analysis limitation"), el("span", "", qualityIssues.join(" ")));
         quality.addEventListener("click", () => {
             state.selected = {
                 id: "analysis-quality", kind: "analysis", name: "Analysis limitations",
@@ -245,7 +262,7 @@ function renderCards(container, items, emptyText) {
         card.append(heading, el("span", "card-body", item.id?.startsWith("package:") ? `${item.change} · Version ${packageVersionText(item)}` : item.body || item.reason || item.change || ""));
         if (item.impact_factors?.length) card.append(el("small", "factor-line", item.impact_factors.join(" · ")));
         card.dataset.itemId = item.id;
-        card.classList.toggle("is-selected", state.selected?.id === item.id);
+        card.classList.toggle("is-selected", state.selected?.id === item.id || state.areaGroup?.id === item.id);
         card.title = [item.title, item.body || item.reason].filter(Boolean).join("\n");
         card.addEventListener("click", () => openReviewItem(item));
         if (container === elements.attention) {
@@ -309,6 +326,7 @@ function openReviewItem(item) {
         state.mode = item.collect_mode;
         state.stack = [];
         clearSelection();
+        state.areaGroup = item.members ? item : null;
         state.query = "";
         elements.review_search.value = "";
         render();
@@ -338,7 +356,7 @@ function collapseSizeFindings(items, model) {
         body: `${shown}${sizes.length > 4 ? ` · +${sizes.length - 4} more` : ""}`,
         impact_score: sizes[0].impact_score,
         severity: sizes[0].severity,
-        collect_mode: "lines",
+        collect_mode: "areas",
         members: sizes,
     };
     const rest = items.filter((item) => !sizes.includes(item));
@@ -640,6 +658,7 @@ async function generateOverview() {
 function clearSelection() {
     state.selectionEpoch += 1;
     state.selected = null;
+    state.areaGroup = null;
     markSelectedCards();
     renderEmptyDetail();
 }
@@ -815,7 +834,7 @@ function promptBlock(attribution, useOriginal = true) {
         actions.append(toggle);
     }
     if (attribution.session_id) {
-        const openHistory = el("button", "link-button", "Open session history →");
+        const openHistory = el("button", "link-button", "Open session history");
         openHistory.type = "button";
         openHistory.addEventListener("click", () => openSessionHistory(attribution));
         actions.append(openHistory);
@@ -1200,7 +1219,10 @@ function parseDiff(text) {
                 const length = Number(hunk[4] ?? 1);
                 const range = length > 1 ? `${newLine}–${newLine + length - 1}` : String(newLine);
                 const context = hunk[5].trim();
-                rows.push(codeRow("hunk", "", "", "", `Lines ${range}${context ? ` · ${context}` : ""}`));
+                const header = codeRow("hunk", "", "", "", `Lines ${range}${context ? ` · ${context}` : ""}`);
+                header.dataset.oldStart = String(oldLine);
+                header.dataset.newStart = String(newLine);
+                rows.push(header);
             }
             index += 1;
             continue;
@@ -1230,9 +1252,9 @@ function parseDiff(text) {
     return rows;
 }
 
-function renderPlainSource(text) {
-    return String(text ?? "").split(/\r?\n/).map((line, index) =>
-        codeRow("context", "", index + 1, "", line)
+function renderPlainSource(text, side) {
+    return String(text ?? "").split(/\r\n|\r|\n/).map((line, index) =>
+        codeRow("context", side === "base" ? index + 1 : "", side === "base" ? "" : index + 1, "", line)
     );
 }
 
@@ -1241,11 +1263,47 @@ function renderSource() {
     elements.source_panel.classList.remove("hidden");
     elements.source_title.textContent = `${state.source.path}${state.source.start_line ? `:${state.source.start_line}` : ""}`;
     const text = state.source[state.sourceTab];
-    const rows = state.sourceTab === "diff" ? parseDiff(text) : renderPlainSource(text);
-    elements.source.replaceChildren(...(rows.length ? rows : [el("p", "empty-code", "(not present in this snapshot)")]));
+    const rows = state.sourceTab === "diff" ? parseDiff(text) : renderPlainSource(text, state.sourceTab);
     const start = Number(state.source.start_line);
-    const end = Number(state.source.end_line || state.source.start_line);
-    if (Number.isFinite(start) && start > 0) {
+    const focusSide = state.source.declaration_highlight?.side || state.source.focus_side
+        || (state.source.current === null ? "base" : "current");
+    elements.source_context_notice.classList.add("hidden");
+    if (state.sourceTab === "diff" && Number.isInteger(start) && start > 0
+        && !rows.some((row) => Number(row.dataset?.[focusSide === "base" ? "oldLine" : "newLine"]) === start)) {
+        const context = unchangedDiffContext({ ...state.source, line: start, side: focusSide });
+        if (context) {
+            const key = focusSide === "base" ? "oldLine" : "newLine";
+            const headerKey = focusSide === "base" ? "oldStart" : "newStart";
+            const first = context[0][key];
+            const position = rows.findIndex((row) =>
+                Number(row.dataset?.[headerKey]) >= first || Number(row.dataset?.[key]) >= first);
+            rows.splice(position < 0 ? rows.length : position, 0,
+                codeRow("hunk", "", "", "", `Referenced line ${start} · unchanged context`),
+                ...context.map((row) => codeRow("context", row.oldLine, row.newLine, " ", row.content)));
+        } else {
+            elements.source_context_notice.textContent = `Referenced line ${start} is not included in this diff. Open ${focusSide === "base" ? "Base" : "Current"} to inspect it.`;
+            elements.source_context_notice.classList.remove("hidden");
+        }
+    }
+    const lines = el("div", "code-lines");
+    lines.append(...(rows.length ? rows : [el("p", "empty-code", "(not present in this snapshot)")]));
+    elements.source.replaceChildren(lines);
+    let focusStart = start;
+    let focusEnd = Number(state.source.end_line || state.source.start_line);
+    if (state.sourceTab !== "diff" && state.sourceTab !== focusSide) {
+        const diffRows = parseDiff(state.source.diff);
+        const fromKey = focusSide === "base" ? "oldLine" : "newLine";
+        const toKey = state.sourceTab === "base" ? "oldLine" : "newLine";
+        const mapLine = (line) => {
+            const row = diffRows.find((candidate) => Number(candidate.dataset?.[fromKey]) === line
+                && Number(candidate.dataset?.[toKey]) > 0);
+            const context = row?.dataset || unchangedDiffContext({ ...state.source, line, side: focusSide, radius: 0 })?.[0];
+            return Number(context?.[toKey]) || null;
+        };
+        focusStart = mapLine(start);
+        focusEnd = mapLine(focusEnd) || focusStart;
+    }
+    if (Number.isFinite(focusStart) && focusStart > 0) {
         const focused = [];
         for (const row of rows) {
             const oldLine = Number(row.dataset?.oldLine);
@@ -1254,8 +1312,8 @@ function renderSource() {
                 ? oldLine
                 : state.sourceTab === "current"
                     ? newLine
-                    : (newLine || oldLine);
-            if (Number.isFinite(line) && line >= start && line <= end) {
+                    : focusSide === "base" ? oldLine : newLine;
+            if (Number.isFinite(line) && line >= focusStart && line <= focusEnd) {
                 row.classList.add("focus-line");
                 focused.push(row);
                 const highlight = state.source.declaration_highlight;
@@ -1291,23 +1349,30 @@ function renderSource() {
 }
 
 function collectionTitle(mode) {
+    if (mode === "areas") return state.areaGroup?.title || "Large change areas";
     return {
-        files: "Changed files", lines: "Lines changed by module", symbols: "Changed symbols",
+        files: "Changed files", lines: "Lines changed by file", symbols: "Changed symbols",
         edges: "New relationships", packages: "Package changes", findings: "Ranked findings",
     }[mode] || "Review details";
 }
 
 function collectionItems(model, mode) {
-    if (mode === "files") {
-        const files = model.changes.filter((item) => item.status !== "unchanged");
+    if (mode === "areas") {
+        const nodes = new Map(model.nodes.map((node) => [node.id, node]));
+        return (state.areaGroup?.members || []).map((finding, index) => ({
+            ...nodes.get(finding.node_id),
+            finding,
+            area_number: index + 1,
+        }));
+    }
+    if (mode === "files" || mode === "lines") {
+        const files = model.changes.filter((item) => item.status !== "unchanged"
+            && (mode !== "lines" || item.lines_added + item.lines_removed > 0));
         return files.sort((a, b) =>
             (b.lines_added + b.lines_removed) - (a.lines_added + a.lines_removed)
             || a.path.localeCompare(b.path)
         );
     }
-    if (mode === "lines") return model.nodes
-        .filter((node) => node.kind === "module" && node.change !== "unchanged")
-        .sort((a, b) => (b.metrics?.lines_changed || 0) - (a.metrics?.lines_changed || 0));
     if (mode === "symbols") return model.nodes
         .filter((node) => ["class", "function", "method"].includes(node.kind) && node.change !== "unchanged")
         .sort((a, b) => (b.metrics?.lines_changed || 0) - (a.metrics?.lines_changed || 0));
@@ -1334,6 +1399,9 @@ function renderCollection(model) {
         : item.metrics?.lines_changed || 0));
     elements.graph.replaceChildren();
     const list = el("div", "collection-list");
+    if (state.mode === "areas") {
+        list.append(el("p", "muted", "Each numbered entry matches one area in the queue. Nested areas can overlap; their line counts are not additive."));
+    }
     if (!items.length) {
         list.append(el("p", "collection-empty", `No ${collectionTitle(state.mode).toLowerCase()} to show.`));
     }
@@ -1346,7 +1414,13 @@ function renderCollection(model) {
         }
         let title;
         let subtitle;
-        if (item.path && item.status) {
+        if (state.mode === "areas") {
+            title = `${item.area_number}. ${item.display_name || item.name || item.finding.title}`;
+            subtitle = `${item.kind || "area"} · ${item.path || "Source unavailable"}${item.start_line ? `:${item.start_line}` : ""} · +${item.metrics?.lines_added || 0} / −${item.metrics?.lines_removed || 0}`;
+            row.dataset.itemId = item.finding.id;
+            row.dataset.nodeId = item.finding.node_id;
+            row.addEventListener("click", () => selectItem(item.id ? item : item.finding, false));
+        } else if (item.path && item.status) {
             title = item.path;
             subtitle = `+${item.lines_added} / −${item.lines_removed}${isTestPath(item.path) ? " · test code" : ""}`;
             const statusClass = item.status === "added"
@@ -1384,10 +1458,10 @@ function renderCollection(model) {
         copy.append(el("strong", "", title), el("small", "", subtitle));
         row.append(copy);
         const statusLabel = item.status || item.change;
-        if (["files", "lines", "symbols"].includes(state.mode) && ["added", "modified", "removed", "deleted"].includes(statusLabel)) {
+        if (["files", "lines", "symbols", "areas"].includes(state.mode) && ["added", "modified", "removed", "deleted"].includes(statusLabel)) {
             row.append(el("span", `label label-${statusLabel === "deleted" ? "removed" : statusLabel} row-label`, statusLabel === "deleted" ? "removed" : statusLabel));
         }
-        if (["files", "lines", "symbols"].includes(state.mode)) {
+        if (["files", "lines", "symbols", "areas"].includes(state.mode)) {
             const churn = item.lines_added != null
                 ? item.lines_added + item.lines_removed
                 : item.metrics?.lines_changed || 0;
@@ -1395,7 +1469,6 @@ function renderCollection(model) {
             row.append(churnBar(churn / maxChurn, kind === "deleted" || kind === "removed" ? "removed" : kind === "added" ? "added" : "modified"));
             row.classList.add("has-bar");
         }
-        row.append(el("span", "collection-arrow", "→"));
         list.append(row);
     }
     elements.graph.append(list);
@@ -1444,7 +1517,7 @@ function loadPackageData(item) {
     };
     const request = (explain) => api("/api/package-risk", {
         method: "POST",
-        body: JSON.stringify({ name: item.name, version: item.resolved_current || null, explain }),
+        body: JSON.stringify({ name: item.name, explain }),
     });
     if (!entry.assessment && !entry.assessmentPromise) {
         entry.assessmentError = null;
@@ -1662,16 +1735,22 @@ function renderPackagePanel() {
         const tiles = el("div", "stat-grid");
         tiles.append(
             statTile("Known vulnerabilities", formatCount(indicators.vulnerability_count),
-                indicators.vulnerability_history_count != null ? `${indicators.vulnerability_history_count} in release history` : null,
+                assessment.version ? `Affects reviewed version ${assessment.version}`
+                    : "Not assessed: the exact project version is unknown.",
                 indicators.vulnerability_count > 0 ? "danger" : indicators.vulnerability_count === 0 ? "success" : "", links.vulnerabilities),
+            statTile("Advisory history", formatCount(indicators.vulnerability_history_count),
+                "Across all versions; not necessarily this release.", "", links.vulnerabilities),
             statTile("OpenSSF Scorecard", score != null ? `${score}/10` : null, score != null ? null : "No scorecard published",
                 score == null ? "" : score >= 7 ? "success" : score >= 4 ? "attention" : "danger", links.scorecard),
             statTile("Maintenance", maintenance.status ? maintenance.status : null,
                 `${maintenance.releases_last_12_months ?? 0} releases in 12 months${maintenance.latest_release_date ? ` · latest ${formatDate(maintenance.latest_release_date)}` : ""}`,
                 maintenance.status === "active" ? "success" : maintenance.status === "stale" ? "attention" : maintenance.status === "dormant" ? "danger" : "", links.maintenance),
-            statTile("Downloads (last month)", formatCount(indicators.recent_downloads), null, "", links.downloads),
+            statTile("Downloads (last month)", formatCount(indicators.recent_downloads),
+                indicators.recent_downloads == null ? assessment.sources?.pypistats?.error || "Download data unavailable." : "Across all package versions.",
+                "", links.downloads),
             statTile("Reviewed version", assessment.version,
-                `${indicators.release_age_days != null ? `${indicators.release_age_days} days old` : "age unknown"}${indicators.latest_version ? ` · latest ${indicators.latest_version}` : ""}${indicators.yanked ? " · YANKED" : ""}`,
+                `${assessment.version ? indicators.release_age_days != null ? `${indicators.release_age_days} days old` : "age unknown"
+                    : "Declared as a range; no exact version in this snapshot."}${indicators.latest_version ? ` · latest ${indicators.latest_version}` : ""}${indicators.yanked ? " · YANKED" : ""}`,
                 indicators.yanked ? "danger" : "", links.release),
         );
         const scorecardParts = [tiles];
@@ -1740,8 +1819,14 @@ function renderPackagePanel() {
     }
     host.replaceChildren(...sections);
 }
+function isEmptyReview(payload) {
+    return Boolean(payload?.model && !payload.loading && !payload.error && !payload.cancelled
+        && !(payload.model.changes || []).some((change) => change.status !== "unchanged"));
+}
+
 function renderCustomAnalyses() {
-    elements.custom_analyses.classList.toggle("hidden", !state.payload?.model || state.reviewPickerPending);
+    elements.custom_analyses.classList.toggle("hidden", !state.payload?.model || state.reviewPickerPending
+        || state.reviewSubmitting || isEmptyReview(state.payload));
     const records = state.customPrompts || [];
     const children = [];
     const error = state.customLibraryError || state.payload?.custom_prompt_error;
@@ -1862,8 +1947,12 @@ function render() {
         state.reviewTargetKey = targetKey;
         const target = state.payload?.review_target;
         state.reviewPickerPending = false;
+        const selectedRef = target?.currentRef && target.mode === "commit" ? target.currentRef : target?.ref;
+        const pickerMatches = elements.review_mode.value === target?.mode
+            && [...elements.review_ref.options].some((option) => option.value === selectedRef);
         elements.review_mode.value = target?.mode || "worktree";
-        loadReviewOptions({ selectedRef: target?.currentRef && target.mode === "commit" ? target.currentRef : target?.ref });
+        if (pickerMatches) elements.review_ref.value = selectedRef;
+        else loadReviewOptions({ selectedRef });
         resetReviewNavigation();
     }
     const payload = state.payload;
@@ -1872,11 +1961,15 @@ function render() {
         ? `${model.metadata.repo_root} · ${state.reviewPickerPending ? "Choose a comparison" : `Base ${model.metadata.base_sha?.slice(0, 8) || "empty tree"}`}` : "";
     const progress = payload?.progress;
     elements.status.textContent = payload?.loading ? `Analyzing ${progress?.percent || 0}%`
-        : model ? payload.restored_from_cache ? "Saved review" : "Analysis current" : "Waiting";
+        : payload?.cancelled ? "Analysis cancelled" : model ? payload.restored_from_cache ? "Saved review" : "Analysis current" : "Waiting";
     elements.status.title = payload.loading ? progress?.message || "Analyzing repository"
         : payload.analyzed_at ? `Analyzed ${new Date(payload.analyzed_at).toLocaleString()}${payload.restored_from_cache ? ". Reanalyze to update." : ""}` : "";
     elements.status.classList.toggle("working", Boolean(payload?.loading));
     elements.refresh.disabled = Boolean(payload?.loading || state.reviewPickerPending);
+    elements.cancel_analysis.classList.toggle("hidden", !payload?.loading);
+    elements.cancel_analysis.disabled = Boolean(state.cancelling);
+    elements.cancel_analysis.textContent = state.cancelling ? "Cancelling…" : "Cancel";
+    elements.analysis_cancelled.classList.toggle("hidden", !payload?.cancelled);
     updateReviewApply();
     elements.error.classList.toggle("hidden", !payload?.error);
     elements.error.textContent = payload?.error || "";
@@ -1891,14 +1984,24 @@ function render() {
     }
     renderReviewPickerNotice();
     renderCustomAnalyses();
-    if (state.reviewPickerPending) return;
+    const clean = !state.reviewPickerPending && !state.reviewSubmitting && isEmptyReview(payload);
+    elements.clean_review.classList.toggle("hidden", !clean);
+    if (clean) {
+        elements.status.textContent = "No changes";
+        for (const element of [elements.change_brief, elements.custom_analyses, elements.summary,
+            elements.breadcrumbs, document.querySelector(".workspace"), elements.source_panel, elements.session_history_panel]) {
+            element.classList.add("hidden");
+        }
+        return;
+    }
+    if (state.reviewPickerPending || state.reviewSubmitting || (payload.loading && !model)) return;
     if (!model) {
         renderChangeBrief();
         return;
     }
     loadClosedFindingKeys(model);
     if (state.queueError) showError(new Error(state.queueError));
-    if (!payload.loading) {
+    if (!payload.loading && !payload.cancelled) {
         const summaryKey = JSON.stringify([model.metadata?.repo_root, payload.review_generation, payload.review_target]);
         if (state.summaryKey !== summaryKey) {
             state.summaryKey = summaryKey;
@@ -1923,7 +2026,7 @@ function render() {
     renderCards(elements.attention, [
         ...collapseSizeFindings(active, model),
         ...collapseSizeFindings(closed, model),
-    ], "No deterministic attention findings.");
+    ], "No rule-based findings. Checks focus on Python; this is not a guarantee of correctness.");
     renderCards(elements.packages, model.package_changes || [], "No package changes.");
     const hasPackageChanges = (model.package_changes || []).length > 0;
     elements.packages.classList.toggle("hidden", !hasPackageChanges);
@@ -2001,7 +2104,19 @@ elements.refresh.addEventListener("click", async () => {
     try {
         await api("/api/refresh", { method: "POST" });
     } catch (error) {
+        if (!state.cancelling && !state.payload?.cancelled) showError(error);
+    }
+});
+elements.cancel_analysis.addEventListener("click", async () => {
+    state.cancelling = true;
+    render();
+    try {
+        state.payload = await api("/api/cancel", { method: "POST" });
+    } catch (error) {
         showError(error);
+    } finally {
+        state.cancelling = false;
+        render();
     }
 });
 elements.zoom_out.addEventListener("click", () => {
@@ -2146,8 +2261,11 @@ document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click",
 }));
 
 function updateReviewApply() {
-    elements.review_apply.disabled = Boolean(state.reviewSubmitting || state.payload?.loading || state.reviewOptionsLoading)
-        || (elements.review_mode.value !== "worktree" && !elements.review_ref.value);
+    const busy = Boolean(state.reviewSubmitting || state.payload?.loading);
+    elements.review_mode.disabled = busy;
+    elements.review_ref.disabled = busy || Boolean(state.reviewOptionsLoading)
+        || elements.review_mode.value === "worktree" || ![...elements.review_ref.options].some((option) => option.value);
+    elements.review_more.disabled = busy || Boolean(state.reviewOptionsLoading);
 }
 
 function resetReviewNavigation() {
@@ -2155,8 +2273,14 @@ function resetReviewNavigation() {
     state.customOpenKeys.clear();
     state.selected = null;
     state.source = null;
+    state.summaryKey = null;
+    state.overviewLoading = false;
+    state.overviewError = null;
+    state.briefIntent = null;
+    state.briefIntentKey = null;
     state.stack = [];
     state.mode = "graph";
+    state.areaGroup = null;
     state.appliedServerSelection = null;
     state.sourceHistory = { entries: [], index: -1, pending: -1 };
     state.packageData.clear();
@@ -2168,22 +2292,33 @@ function resetReviewNavigation() {
     elements.source_panel.classList.add("hidden");
     elements.session_history_panel.classList.add("hidden");
     setDetailVisible(false);
+    for (const element of [elements.graph, elements.attention, elements.packages, elements.summary,
+        elements.change_brief, elements.custom_results, elements.source, elements.source_annotation, elements.source_provenance]) {
+        element.replaceChildren();
+    }
     elements.graph.scrollTop = 0;
     document.querySelector(".rail").scrollTop = 0;
 }
 
 function renderReviewPickerNotice() {
-    const pending = Boolean(state.reviewPickerPending);
+    const pending = Boolean(state.reviewPickerPending || state.reviewSubmitting
+        || (state.payload?.loading && !state.payload.model));
     for (const element of [elements.change_brief, elements.summary, elements.breadcrumbs, document.querySelector(".workspace")]) {
         element.classList.toggle("hidden", pending);
     }
-    elements.review_picker_notice.classList.toggle("hidden", !pending);
+    const loading = state.reviewSubmitting || state.reviewOptionsLoading || state.payload?.loading;
+    elements.review_picker_notice.classList.toggle("hidden", !pending || (loading && !state.reviewOpenError));
     if (pending) {
-        elements.review_target_label.textContent = "Choose a review target";
-        elements.status.textContent = "Choose review";
-        elements.review_picker_notice.textContent = elements.review_mode.value === "worktree"
-            ? "Open the worktree review. Its saved results will be restored if available."
-            : `Select ${elements.review_mode.value === "pr" ? "a pull request" : "a commit"} and choose Open review. Previous results are saved; they are not shown as results for this new selection.`;
+        if (!loading) elements.review_target_label.textContent = "Choose a review target";
+        if (!state.payload?.loading) elements.status.textContent = loading ? "Loading review…" : "Choose review";
+        elements.review_picker_notice.textContent = state.reviewOpenError ? ""
+            : `Select ${elements.review_mode.value === "pr" ? "a pull request" : "a commit"} to load its review automatically.`;
+        if (state.reviewOpenError) {
+            const retry = el("button", "brief-generate", "Retry review");
+            retry.type = "button";
+            retry.addEventListener("click", openSelectedReview);
+            elements.review_picker_notice.append(el("p", "error", state.reviewOpenError), retry);
+        }
     }
 }
 
@@ -2191,7 +2326,7 @@ async function loadReviewOptions({ append = false, selectedRef = null } = {}) {
     const epoch = (state.reviewOptionsEpoch || 0) + 1;
     state.reviewOptionsEpoch = epoch;
     const mode = elements.review_mode.value;
-    const selected = selectedRef || (append ? elements.review_ref.value : null);
+    const selected = selectedRef ?? (elements.review_ref.value || null);
     elements.review_ref.classList.remove("hidden");
     elements.review_ref.required = mode !== "worktree";
     elements.review_more.classList.add("hidden");
@@ -2200,12 +2335,19 @@ async function loadReviewOptions({ append = false, selectedRef = null } = {}) {
     if (!append) {
         state.reviewOptionsPage = -1;
         elements.review_ref.replaceChildren();
+        if (mode !== "worktree") {
+            const placeholder = el("option", "", mode === "commit" ? "Choose a commit…" : "Choose a pull request…");
+            placeholder.value = "";
+            placeholder.disabled = true;
+            elements.review_ref.append(placeholder);
+        }
     }
     elements.review_ref.disabled = true;
     updateReviewApply();
     if (mode === "worktree") {
         elements.review_ref.append(el("option", "", "Working tree snapshot"));
         renderReviewPickerNotice();
+        if (state.reviewPickerPending) await openSelectedReview();
         return;
     }
     const page = append ? state.reviewOptionsPage + 1 : 0;
@@ -2230,14 +2372,15 @@ async function loadReviewOptions({ append = false, selectedRef = null } = {}) {
             elements.review_ref.prepend(option);
         }
         if (selected) elements.review_ref.value = selected;
-        if (!elements.review_ref.value && elements.review_ref.options.length) elements.review_ref.selectedIndex = 0;
+        if (!selected) elements.review_ref.value = "";
         state.reviewOptionsPage = page;
         state.reviewOptionsRetryAppend = null;
-        elements.review_ref.disabled = !elements.review_ref.options.length;
+        const hasOptions = [...elements.review_ref.options].some((option) => option.value);
+        elements.review_ref.disabled = !hasOptions;
         elements.review_more.textContent = "Load more";
         elements.review_more.classList.toggle("hidden", !result.has_more);
-        elements.review_options_status.textContent = elements.review_ref.options.length
-            ? `${elements.review_ref.options.length} ${mode === "commit" ? "commits" : "pull requests"}${result.repository ? ` · ${result.repository}` : ""}`
+        elements.review_options_status.textContent = hasOptions
+            ? mode === "pr" ? result.repository || "" : ""
             : mode === "commit" ? "No commits found." : "No pull requests found for this repository.";
     } catch (error) {
         if (epoch !== state.reviewOptionsEpoch) return;
@@ -2245,7 +2388,7 @@ async function loadReviewOptions({ append = false, selectedRef = null } = {}) {
         elements.review_options_status.textContent = `Unable to load ${mode === "commit" ? "commits" : "pull requests"}: ${error.message}`;
         elements.review_more.textContent = "Retry list";
         elements.review_more.classList.remove("hidden");
-        elements.review_ref.disabled = !elements.review_ref.options.length;
+        elements.review_ref.disabled = ![...elements.review_ref.options].some((option) => option.value);
     } finally {
         if (epoch === state.reviewOptionsEpoch) {
             state.reviewOptionsLoading = false;
@@ -2255,23 +2398,34 @@ async function loadReviewOptions({ append = false, selectedRef = null } = {}) {
     }
 }
 
-elements.review_mode.addEventListener("change", () => {
+elements.review_mode.addEventListener("change", async () => {
     state.reviewPickerPending = true;
+    state.reviewOpenError = null;
     resetReviewNavigation();
-    loadReviewOptions();
     render();
+    await loadReviewOptions({ selectedRef: "" });
 });
-elements.review_ref.addEventListener("change", () => {
+elements.review_ref.addEventListener("change", async () => {
     state.reviewPickerPending = true;
+    state.reviewOpenError = null;
     resetReviewNavigation();
     updateReviewApply();
     render();
+    await openSelectedReview();
 });
 elements.review_more.addEventListener("click", () => loadReviewOptions({ append: state.reviewOptionsRetryAppend ?? true }));
 elements.review_target_form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (elements.review_apply.disabled) return;
+    await openSelectedReview();
+});
+
+async function openSelectedReview() {
+    if (state.reviewSubmitting || state.payload?.loading || state.reviewOptionsLoading
+        || (elements.review_mode.value !== "worktree" && !elements.review_ref.value)) return;
     state.reviewSubmitting = true;
+    state.reviewOpenError = null;
+    resetReviewNavigation();
+    render();
     updateReviewApply();
     try {
         await api("/api/review-target", {
@@ -2289,12 +2443,16 @@ elements.review_target_form.addEventListener("submit", async (event) => {
         render();
         window.scrollTo({ top: 0, behavior: "instant" });
     } catch (error) {
+        state.reviewPickerPending = true;
+        state.reviewOpenError = error.message;
+        renderReviewPickerNotice();
         showError(error);
     } finally {
         state.reviewSubmitting = false;
         updateReviewApply();
+        render();
     }
-});
+}
 
 elements.custom_manage.addEventListener("click", () => {
     promptManagerError(null);

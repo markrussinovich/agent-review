@@ -45,20 +45,29 @@ try {
     for (const theme of ["light", "dark"]) {
         const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
         const errors = [];
+        let selections = 0;
         page.on("pageerror", (error) => errors.push(error.message));
+        page.on("request", (request) => {
+            if (request.url().endsWith("/api/review-target") && request.method() === "POST") selections++;
+        });
         await page.goto(`${server.url}?scoutTheme=${theme}`);
         await page.waitForFunction(() => /^(Analysis current|Saved review)$/.test(document.querySelector("#status").textContent));
         await page.selectOption("#review-mode", "commit");
         await page.waitForFunction(() => !document.querySelector("#review-ref").disabled);
-        assert.equal(await page.locator("#review-ref option").count(), 30);
-        assert.match(await page.locator("#review-ref option").first().textContent(), /feature.*Test/);
-        await page.selectOption("#review-ref", head);
+        assert.equal(await page.locator("#review-ref").inputValue(), "");
+        assert.equal(selections, 0, "switching review type never selects a commit");
+        assert.equal(state.reviewTarget.mode, "worktree");
+        assert.equal(await page.locator("#review-ref option").count(), 31);
+        assert.match(await page.locator("#review-ref option").first().textContent(), /Choose a commit/);
+        assert.match(await page.locator("#review-ref option").nth(1).textContent(), /feature.*Test/);
         await page.click("#review-more");
-        await page.waitForFunction(() => document.querySelector("#review-ref").options.length === 34);
-        assert.equal(await page.locator("#review-ref").inputValue(), head);
+        await page.waitForFunction(() => document.querySelector("#review-ref").options.length === 35);
+        assert.equal(await page.locator("#review-ref").inputValue(), "");
+        assert.equal(selections, 0, "pagination preserves the placeholder without starting analysis");
         const response = page.waitForResponse((res) => res.url().endsWith("/api/review-target"));
-        await page.click("#review-apply");
+        await page.selectOption("#review-ref", head);
         assert.equal((await response).status(), 200);
+        assert.equal(await page.locator("#review-ref").inputValue(), head);
         await page.waitForFunction(() => document.querySelector("#review-target-label").textContent.startsWith("Commit "));
         await page.locator("#summary .metric").filter({ hasText: "Files" }).click();
         await page.locator(".collection-row").filter({ hasText: "main.py" }).click();
@@ -67,9 +76,8 @@ try {
         assert.match(code, /return 2/);
         assert.doesNotMatch(code, /dirty_only|999/);
         await page.click("#source-close");
-        await page.selectOption("#review-mode", "worktree");
         const worktreeResponse = page.waitForResponse((res) => res.url().endsWith("/api/review-target"));
-        await page.click("#review-apply");
+        await page.selectOption("#review-mode", "worktree");
         assert.equal((await worktreeResponse).status(), 200);
         await page.waitForFunction(() => document.querySelector("#review-target-label").textContent === "Worktree");
         await page.route("**/api/review-targets?mode=pr*", async (route) => {
@@ -77,15 +85,16 @@ try {
         }, { times: 1 });
         await page.selectOption("#review-mode", "pr");
         await page.waitForFunction(() => document.querySelector("#review-options-status").textContent.includes("GitHub authentication required"));
-        assert.equal(await page.locator("#review-apply").isDisabled(), true);
+        assert.equal(await page.locator("#review-ref").isDisabled(), true);
         if (process.env.AGENT_REVIEW_LIVE_PR) {
             await page.click("#review-more");
             await page.waitForFunction(() => !document.querySelector("#review-ref").disabled, null, { timeout: 60_000 });
-            const values = await page.locator("#review-ref option").evaluateAll((options) => options.map((option) => option.value));
+            const values = await page.locator("#review-ref option").evaluateAll((options) => options.map((option) => option.value).filter(Boolean));
             assert.ok(values.length);
-            await page.selectOption("#review-ref", values.includes(process.env.AGENT_REVIEW_LIVE_PR) ? process.env.AGENT_REVIEW_LIVE_PR : values[0]);
+            assert.equal(await page.locator("#review-ref").inputValue(), "");
             const live = page.waitForResponse((res) => res.url().endsWith("/api/review-target"), { timeout: 180_000 });
-            await page.click("#review-apply");
+            const ref = values.includes(process.env.AGENT_REVIEW_LIVE_PR) ? process.env.AGENT_REVIEW_LIVE_PR : values[0];
+            await page.selectOption("#review-ref", ref);
             const result = await live;
             assert.equal(result.status(), 200, await result.text());
             await page.waitForFunction(() => document.querySelector("#review-target-label").textContent.startsWith("PR #"));
@@ -97,7 +106,7 @@ try {
             }));
             await page.click("#review-more");
             await page.waitForFunction(() => document.querySelector("#review-options-status").textContent.includes("No pull requests found"));
-            assert.equal(await page.locator("#review-apply").isDisabled(), true);
+            assert.equal(await page.locator("#review-ref").isDisabled(), true);
         }
         await page.setViewportSize({ width: 760, height: 1000 });
         await page.waitForTimeout(300);

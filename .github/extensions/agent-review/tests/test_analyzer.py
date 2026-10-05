@@ -6,12 +6,13 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
 ANALYZER = Path(__file__).parents[1] / "analyzer" / "analyze.py"
 sys.path.insert(0, str(ANALYZER.parent))
-from packages import parse_packages
+from packages import parse_packages, resolve_declared_versions
 
 
 def declaration_slice(text: str, declaration: dict) -> str:
@@ -21,6 +22,41 @@ def declaration_slice(text: str, declaration: dict) -> str:
     start = sum(map(len, lines[:start_line])) + declaration["start_column"]
     end = sum(map(len, lines[:end_line])) + declaration["end_column"]
     return text[start:end]
+
+
+class PackageVersionTests(unittest.TestCase):
+    def test_project_pin_does_not_use_the_analyzer_environment(self) -> None:
+        records = parse_packages({"requirements.txt": b"demo==1.0\n"})
+        records[0]["resolved_version"] = "9.9"
+        warnings: list[str] = []
+        with patch("importlib.metadata.distributions") as installed:
+            resolve_declared_versions(records, warnings)
+        installed.assert_not_called()
+        self.assertEqual("1.0", records[0]["resolved_version"])
+        self.assertEqual([], warnings)
+
+    def test_ranges_and_wildcards_remain_unresolved(self) -> None:
+        for requirement in ("demo>=1,<3", "demo==1.*", "demo"):
+            with self.subTest(requirement=requirement):
+                records = parse_packages({"requirements.txt": requirement.encode()})
+                records[0]["resolved_version"] = "9.9"
+                resolve_declared_versions(records, [])
+                self.assertNotIn("resolved_version", records[0])
+
+    def test_conflicting_project_pins_are_explicit(self) -> None:
+        records = parse_packages({
+            "requirements.txt": b"demo==1.0\n",
+            "requirements-dev.txt": b"demo==2.0\n",
+        })
+        warnings: list[str] = []
+        resolve_declared_versions(records, warnings)
+        self.assertEqual(1, len(warnings))
+        self.assertIn("conflicting project version pins", warnings[0])
+        resolve_declared_versions(records, warnings)
+        self.assertEqual(1, len(warnings), "baseline/current resolution does not duplicate the same warning")
+        for record in records:
+            self.assertNotIn("resolved_version", record)
+            self.assertEqual(warnings[0], record["resolution_error"])
 
 
 class PackageLocationTests(unittest.TestCase):

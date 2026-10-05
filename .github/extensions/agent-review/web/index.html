@@ -30,10 +30,9 @@
                 </select>
                 <select id="review-ref" class="hidden" aria-label="Commit or pull request" disabled></select>
                 <button id="review-more" class="hidden" type="button">Load more</button>
-                <button id="review-apply" type="submit" title="Open the selected review, reusing its saved results when available">Open review</button>
             </form>
             <span id="status" class="status">Connecting</span>
-            <button id="refresh" type="button" title="Recompute the current snapshot and regenerate its AI summary">Reanalyze</button>
+            <button id="refresh" type="button" title="Refresh the selected snapshot and rerun AI summaries, custom checks, and package assessments instead of using saved results">Reanalyze</button>
         </div>
     </header>
     <main>
@@ -42,17 +41,27 @@
         <p id="review-target-label" class="review-target-label"></p>
         <p id="repository-identity" class="repository-identity"></p>
         <section id="error" class="error hidden" role="alert"></section>
+        <section id="analysis-cancelled" class="review-picker-notice hidden" role="status">
+            Analysis cancelled. Choose Reanalyze to try again.
+        </section>
         <section id="analysis-progress" class="analysis-progress hidden" aria-live="polite">
             <div class="progress-copy">
                 <div>
                     <p id="progress-phase" class="eyebrow">STARTING</p>
                     <strong id="progress-message">Starting deterministic repository analysis</strong>
                 </div>
-                <span id="progress-percent">0%</span>
+                <div class="progress-actions">
+                    <span id="progress-percent">0%</span>
+                    <button id="cancel-analysis" class="hidden" type="button" aria-label="Cancel analysis">Cancel</button>
+                </div>
             </div>
             <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
                 <div id="progress-bar" class="progress-bar"></div>
             </div>
+        </section>
+        <section id="clean-review" class="review-picker-notice hidden" role="status">
+            <h2>No changes to review</h2>
+            <p>The selected snapshot has no reviewable changes against its baseline.</p>
         </section>
         <section id="change-brief" class="change-brief" aria-label="Change brief"></section>
         <section id="custom-analyses" class="custom-analyses hidden" aria-label="Custom analyses">
@@ -126,6 +135,7 @@
                     <button id="source-close" class="source-close" type="button" aria-label="Close source review">Close ×</button>
                 </div>
             </div>
+            <p id="source-context-notice" class="muted source-context-notice hidden" role="status"></p>
             <div class="source-body">
                 <div id="source" class="code-view" aria-label="Source and diff"></div>
                 <div class="source-side">

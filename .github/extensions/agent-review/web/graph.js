@@ -38,13 +38,23 @@ function layout(nodes, width, height) {
     }));
 }
 
-function metricText(node) {
+function metricParts(node) {
     const metrics = node.metrics || {};
-    const delta = `+${metrics.lines_added || 0} / −${metrics.lines_removed || 0}`;
-    if (node.kind === "function" || node.kind === "method") {
-        return `${delta} · complexity ${metrics.complexity_current ?? "—"}`;
-    }
-    return `${delta} · ${node.change || "unchanged"}`;
+    const change = node.change || "unchanged";
+    const changeClass = { added: "delta-add", modified: "delta-modified", removed: "delta-remove", deleted: "delta-remove" }[change];
+    return [
+        { text: `+${metrics.lines_added || 0}`, className: "delta-add" },
+        { text: " / " },
+        { text: `−${metrics.lines_removed || 0}`, className: "delta-remove" },
+        { text: " · " },
+        node.kind === "function" || node.kind === "method"
+            ? { text: `complexity ${metrics.complexity_current ?? "—"}` }
+            : { text: change, className: changeClass },
+    ];
+}
+
+function metricText(node) {
+    return metricParts(node).map((part) => part.text).join("");
 }
 
 function control(label, title, handler) {
@@ -183,7 +193,11 @@ export function renderGraph(container, nodes, edges, onSelect) {
             group.append(name);
         });
         const metric = svg("text", { x: -80, y: 37, class: "node-metric" });
-        metric.textContent = metricText(node);
+        for (const part of metricParts(node)) {
+            const span = svg("tspan", part.className ? { class: part.className } : {});
+            span.textContent = part.text;
+            metric.append(span);
+        }
         group.append(kind, metric);
         if (node._attention_count) {
             group.append(svg("circle", {

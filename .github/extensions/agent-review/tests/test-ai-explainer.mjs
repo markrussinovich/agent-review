@@ -7,7 +7,16 @@ import {
     OVERVIEW_HEADINGS,
     buildAnnotationPrompt,
     buildOverviewPrompt,
+    buildPackagePrompt,
 } from "../ai-prompts.mjs";
+
+test("package explanations can assess adoption with an unknown exact version", () => {
+    const prompt = buildPackagePrompt({ name: "reportlab", declared_current: [{ specifier: ">=4.0" }] },
+        { version: null, risk: { level: "unknown" } });
+    assert.match(prompt, /reportlab \(exact project version unknown\)/);
+    assert.match(prompt, /never substitute the latest release or a range's lower bound/);
+    assert.doesNotMatch(prompt, /reportlab null/);
+});
 
 const validExplanation = ANNOTATION_HEADINGS
     .map((heading) => heading === "Risk and review focus"

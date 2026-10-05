@@ -1,4 +1,8 @@
+import { setTimeout as delay } from "node:timers/promises";
+
 const DEFAULT_TIMEOUT_MS = 5_000;
+const MAX_RATE_LIMIT_ATTEMPTS = 3;
+const BACKOFF_BASE_MS = 500;
 
 function source(status = "pending", error = null) {
   return { status, error };
@@ -9,18 +13,38 @@ function errorMessage(error) {
   return String(error || "Unknown error");
 }
 
+function rateLimitDelay(response, attempt) {
+  const retryAfter = response.headers?.get?.("retry-after")?.trim();
+  if (retryAfter) {
+    if (/^\d+(?:\.\d+)?$/.test(retryAfter)) return Number(retryAfter) * 1_000;
+    const retryAt = /:\d{2}:\d{2}/.test(retryAfter) ? Date.parse(retryAfter) : NaN;
+    if (Number.isFinite(retryAt)) return Math.max(0, retryAt - Date.now());
+  }
+  const backoff = BACKOFF_BASE_MS * 2 ** attempt;
+  return backoff + Math.floor(Math.random() * backoff / 2);
+}
+
 async function fetchJson(fetchImpl, url, init, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = performance.now();
   try {
-    const response = await fetchImpl(url, { ...init, signal: controller.signal });
-    if (!response || typeof response.ok !== "boolean") {
-      throw new Error("Invalid response");
+    for (let attempt = 0; attempt < MAX_RATE_LIMIT_ATTEMPTS; attempt += 1) {
+      const response = await fetchImpl(url, { ...init, signal: controller.signal });
+      if (!response || typeof response.ok !== "boolean") throw new Error("Invalid response");
+      if (response.ok) return await response.json();
+      if (response.status !== 429) throw new Error(`HTTP ${response.status}`);
+      await response.body?.cancel?.();
+      if (attempt === MAX_RATE_LIMIT_ATTEMPTS - 1) {
+        throw new Error(`HTTP 429 (rate limited after ${MAX_RATE_LIMIT_ATTEMPTS} attempts)`);
+      }
+      const waitMs = rateLimitDelay(response, attempt);
+      const remainingMs = timeoutMs - (performance.now() - started);
+      if (waitMs >= remainingMs) {
+        throw new Error(`HTTP 429 (rate limited; retry delay ${Math.ceil(waitMs)}ms exceeds the remaining ${Math.max(0, Math.floor(remainingMs))}ms request budget)`);
+      }
+      await delay(waitMs, undefined, { signal: controller.signal });
     }
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    return await response.json();
   } catch (error) {
     if (controller.signal.aborted || error?.name === "AbortError") {
       throw new Error(`Request timed out after ${timeoutMs}ms`);
@@ -253,7 +277,8 @@ function calculateRisk(indicators, sources) {
     addReason(reasons, "PyPI metadata is unavailable, so package risk cannot be determined.");
   }
   if (sources.osv.status !== "ok") {
-    addReason(reasons, "OSV vulnerability data is unavailable, so the package cannot be considered safe.");
+    addReason(reasons, sources.osv.status === "skipped" ? sources.osv.error
+      : "OSV vulnerability data is unavailable, so the package cannot be considered safe.");
   }
   if (reasons.length > 0) return { level: "unknown", score: null, reasons };
 
@@ -305,14 +330,19 @@ function calculateRisk(indicators, sources) {
 
 /**
  * Assess public risk signals for a Python package name and exact version.
+ * Metadata-only mode requires a null version and skips version-specific checks.
  * Only the supplied package coordinates and a validated public GitHub URL are sent.
  */
 export async function assessPackageRisk(name, version, options = {}) {
   if (typeof name !== "string" || !name.trim()) throw new TypeError("name must be a non-empty string");
-  if (typeof version !== "string" || !version.trim()) throw new TypeError("version must be a non-empty string");
+  const metadataOnly = options.metadataOnly === true;
+  if (metadataOnly ? version !== null : typeof version !== "string" || !version.trim()) {
+    throw new TypeError(metadataOnly ? "metadata-only assessment requires a null version" : "version must be a non-empty string");
+  }
 
   const packageName = name.trim();
-  const packageVersion = version.trim();
+  const packageVersion = metadataOnly ? null : version.trim();
+  if (packageVersion && /[*,;<>=~^\s]/.test(packageVersion)) throw new TypeError("version must be an exact package version, not a range or wildcard");
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new TypeError("A fetch implementation is required");
   const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
@@ -321,7 +351,9 @@ export async function assessPackageRisk(name, version, options = {}) {
   const now = getNow(options.now);
   const sources = {
     pypi: source(),
-    osv: source(),
+    osv: metadataOnly
+      ? source("skipped", "Version-specific vulnerability checks are unavailable: the saved declarations do not identify an exact project version. Package metadata and advisory history are still available.")
+      : source(),
     osv_history: source(),
     scorecard: source("skipped", "No safely parsed GitHub repository URL is available."),
     pypistats: options.includePopularity
@@ -355,7 +387,7 @@ export async function assessPackageRisk(name, version, options = {}) {
     { headers: { accept: "application/json" } },
     timeoutMs,
   ));
-  const osvPromise = settle(fetchJson(
+  const osvPromise = metadataOnly ? null : settle(fetchJson(
     fetchImpl,
     "https://api.osv.dev/v1/query",
     {
@@ -396,7 +428,7 @@ export async function assessPackageRisk(name, version, options = {}) {
     indicators.latest_version = typeof pypiData?.info?.version === "string"
       ? pypiData.info.version
       : null;
-    const requestedFiles = Array.isArray(pypiData?.releases?.[packageVersion])
+    const requestedFiles = packageVersion && Array.isArray(pypiData?.releases?.[packageVersion])
       ? pypiData.releases[packageVersion]
       : [];
     const requestedDates = requestedFiles
@@ -422,19 +454,13 @@ export async function assessPackageRisk(name, version, options = {}) {
           ? "PyPI project URLs did not contain a safely parseable GitHub repository URL."
           : "No safely parsed GitHub repository URL is available.",
       );
-    evidence.push(
-      { id: "pypi.metadata", source: "pypi", value: { latest_version: indicators.latest_version } },
-      {
-        id: "pypi.release",
-        source: "pypi",
-        value: {
-          version: packageVersion,
-          release_age_days: indicators.release_age_days,
-          yanked: indicators.yanked,
-        },
-      },
-      { id: "pypi.maintenance", source: "pypi", value: indicators.maintenance },
-    );
+    evidence.push({ id: "pypi.metadata", source: "pypi", value: { latest_version: indicators.latest_version } });
+    if (packageVersion) evidence.push({
+      id: "pypi.release",
+      source: "pypi",
+      value: { version: packageVersion, release_age_days: indicators.release_age_days, yanked: indicators.yanked },
+    });
+    evidence.push({ id: "pypi.maintenance", source: "pypi", value: indicators.maintenance });
     if (repository.url) {
       evidence.push({ id: "pypi.repository", source: "pypi", value: repository.url });
       try {
@@ -469,20 +495,22 @@ export async function assessPackageRisk(name, version, options = {}) {
     sources.pypi = source("error", errorMessage(error));
   }
 
-  try {
-    const osvResult = await osvPromise;
-    if (!osvResult.ok) throw osvResult.error;
-    const osvData = osvResult.data;
-    sources.osv = source("ok");
-    indicators.known_vulnerabilities = vulnerabilitiesFrom(osvData);
-    indicators.vulnerability_count = indicators.known_vulnerabilities.length;
-    evidence.push({
-      id: "osv.vulnerabilities",
-      source: "osv",
-      value: indicators.known_vulnerabilities,
-    });
-  } catch (error) {
-    sources.osv = source("error", errorMessage(error));
+  if (osvPromise) {
+    try {
+      const osvResult = await osvPromise;
+      if (!osvResult.ok) throw osvResult.error;
+      const osvData = osvResult.data;
+      sources.osv = source("ok");
+      indicators.known_vulnerabilities = vulnerabilitiesFrom(osvData);
+      indicators.vulnerability_count = indicators.known_vulnerabilities.length;
+      evidence.push({
+        id: "osv.vulnerabilities",
+        source: "osv",
+        value: indicators.known_vulnerabilities,
+      });
+    } catch (error) {
+      sources.osv = source("error", errorMessage(error));
+    }
   }
 
   try {

@@ -56,6 +56,22 @@ test("overview context summarizes churn split, ranked findings, and prompts dete
     assert.equal(await state.overviewFor(), first, "overview is cached until refresh");
 });
 
+test("empty worktree, commit and PR reviews skip automatic custom checks and summaries", async () => {
+    let summaries = 0, customRuns = 0;
+    const state = new ReviewState("C:\\repo", {
+        generateAnnotation: async () => { summaries += 1; return "## Summary\n\n- Empty commit."; },
+    });
+    state.model = { summary: {}, changes: [], nodes: [], attention: [], coverage: {}, warnings: [] };
+    state.runCustomAnalyses = async () => { customRuns += 1; return []; };
+    for (const mode of ["worktree", "commit", "pr"]) {
+        state.reviewTarget = { mode };
+        state.startCustomAnalyses();
+        await assert.rejects(state.overviewFor(), /no changes to summarize/);
+    }
+    assert.equal(summaries, 0);
+    assert.equal(customRuns, 0);
+});
+
 test("automatic summary captures originating history only after the bounded search finishes", async () => {
     let finishHistory, received;
     const history = new Promise((resolve) => { finishHistory = resolve; });
@@ -63,7 +79,7 @@ test("automatic summary captures originating history only after the bounded sear
         getHistoricalSessionContexts: () => history,
         generateAnnotation: async (context) => { received = context; return "## Summary\n\n- Feature.\n\n## Review order\n\n- Source.\n\n## Gaps\n\n- Coverage."; },
     });
-    state.model = { summary: {}, changes: [], nodes: [], attention: [], coverage: {}, warnings: [] };
+    state.model = { summary: {}, changes: [{ path: "main.py", status: "added", lines_added: 1, lines_removed: 0 }], nodes: [], attention: [], coverage: {}, warnings: [] };
     const request = state.overviewFor();
     assert.equal(received, undefined);
     finishHistory({ contexts: [{ session_id: "authoring", turns: [],
@@ -110,7 +126,7 @@ test("base ref is re-resolved on every refresh", async () => {
 test("summary from an older analysis cannot overwrite the current review", async () => {
     let finish;
     const state = new ReviewState("C:\\repo", { generateAnnotation: () => new Promise((resolve) => { finish = resolve; }) });
-    state.model = { nodes: [], changes: [], attention: [], warnings: [], coverage: {}, metadata: {}, summary: {} };
+    state.model = { nodes: [], changes: [{ path: "main.py", status: "added", lines_added: 1, lines_removed: 0 }], attention: [], warnings: [], coverage: {}, metadata: {}, summary: {} };
     const pending = state.overviewFor();
     state.reviewGeneration += 1;
     finish("## Summary\n\n- Old review.");
@@ -126,6 +142,7 @@ test("package assessment is available before the Copilot explanation and both ar
       return "## Why it was added\n\n- ok";
     },
   });
+
   state.model = { package_dependencies: [{ name: "demo", resolved_current: "1.0", declared_current: [] }] };
   state.packageAssessments.set("demo@1.0", { version: "1.0", risk: { level: "low" } });
 
@@ -139,4 +156,76 @@ test("package assessment is available before the Copilot explanation and both ar
   await state.packageRiskFor("demo");
   assert.equal(explanations, 1, "explanation is generated once");
   assert.match((await state.packageRiskFor("demo", null, { explain: false })).explanation, /Why it was added/);
+});
+
+test("package risk uses the project pin and rejects a different requested version", async () => {
+    const state = new ReviewState("C:\\repo");
+    state.model = { package_dependencies: [{
+        name: "demo", resolved_current: "9.9", declared_current: [{ specifier: "==1.0" }],
+    }] };
+    const calls = [];
+    state.packageAssessmentFor = async (key, name, version) => {
+        calls.push({ key, name, version });
+        return { version };
+    };
+    assert.equal((await state.packageRiskFor("demo", null, { explain: false })).assessment.version, "1.0");
+    await assert.rejects(state.packageRiskFor("demo", "9.9", { explain: false }), /does not match the reviewed project version/);
+    assert.deepEqual(calls, [{ key: "demo@1.0", name: "demo", version: "1.0" }]);
+});
+
+test("unresolved ranges and conflicting pins cannot produce a clean vulnerability result", async () => {
+    for (const declarations of [[">=1,<3"], ["==1.*"], ["==1.0", "==2.0"]]) {
+        const state = new ReviewState("C:\\repo");
+        state.model = { package_dependencies: [{
+            name: "demo", resolved_current: null,
+            declared_current: declarations.map((specifier) => ({ specifier })),
+        }] };
+        state.packageAssessmentFor = async () => { throw new Error("Unexpected vulnerability query"); };
+        await assert.rejects(state.packageRiskFor("demo", "2.0", { explain: false }), /exact project version|Conflicting project version pins/);
+    }
+});
+
+test("unresolved reportlab range permits metadata and Copilot explanation without inventing a version", async () => {
+    let received, explanations = 0;
+    const state = new ReviewState("C:\\repo", {
+        generatePackageExplanation: async (context) => {
+            received = context;
+            explanations++;
+            return "## Why it was added\n\n- PDF report generation.";
+        },
+    });
+    state.model = { package_dependencies: [{
+        name: "reportlab", resolved_current: null, declared_current: [{ specifier: ">=4.0" }], usage_locations: [],
+    }] };
+    const calls = [];
+    state.packageAssessmentFor = async (key, name, version) => {
+        calls.push({ key, name, version });
+        return { version, risk: { level: "unknown", score: null }, indicators: { vulnerability_count: null } };
+    };
+    const fast = await state.packageRiskFor("reportlab", null, { explain: false });
+    assert.equal(explanations, 0);
+    assert.equal(fast.assessment.version, null);
+    const full = await state.packageRiskFor("reportlab");
+    assert.match(full.explanation, /PDF report/);
+    assert.equal(received.dependency.declared_current[0].specifier, ">=4.0");
+    assert.equal(received.assessment.version, null);
+    assert.equal(received.assessment.risk.level, "unknown");
+    assert.ok(calls.every((call) => call.key === "reportlab@<unresolved>" && call.version === null));
+    await state.packageRiskFor("reportlab");
+    assert.equal(explanations, 1);
+    await assert.rejects(state.packageRiskFor("reportlab", "4.0"), /exact project version/);
+});
+
+test("removed symbols and their findings focus baseline source in a surviving file", async () => {
+    const state = new ReviewState("C:\\repo");
+    const source = { base: "def removed():\n    pass\n", current: "def replacement():\n    pass\n" };
+    state.sourceForPath = async () => source;
+    for (const context of [
+        { item: { path: "main.py", change: "removed", start_line: 1 }, subject: null },
+        { item: { type: "signature" }, subject: { change: "removed" },
+            evidence: { e: { kind: "signature", path: "main.py", line: 1 } } },
+    ]) {
+        state.contextFor = () => context;
+        assert.equal((await state.sourceFor("removed")).focus_side, "base");
+    }
 });

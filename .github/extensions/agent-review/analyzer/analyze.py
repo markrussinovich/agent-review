@@ -9,7 +9,7 @@ from churn import analyze_churn
 from codeboarding_adapter import load_codeboarding
 from coverage_data import load_coverage
 from git_snapshot import create_snapshot, discover_base, discover_repo, run_git
-from packages import declared_import_names, import_name, installed_versions, package_diff, parse_packages
+from packages import declared_import_names, import_name, resolve_declared_versions, package_diff, parse_packages
 from python_graph import analyze_python
 from review_model import ReviewModel
 
@@ -36,7 +36,10 @@ def build_review(
     if base_ref and not base_commit:
         base_commit = run_git(repo, "rev-parse", f"{base_ref}^{{commit}}").strip()
     progress("snapshot", f"Reading base and current snapshots against {base_ref or 'empty base'}", 15)
-    snapshot = create_snapshot(repo, base_commit, excludes, current_arg)
+    snapshot = create_snapshot(
+        repo, base_commit, excludes, current_arg,
+        on_progress=lambda message: progress("snapshot", message, 15),
+    )
     generated_at = (
         run_git(repo, "show", "-s", "--format=%cI", head, check=False).strip()
         if head else None
@@ -57,10 +60,11 @@ def build_review(
     progress("changes", "Computing changed files and line totals", 25)
     model.changes = snapshot.changes()
     model.source_files = snapshot.source_files(model.changes)
-    progress("dependencies", "Comparing package declarations and installed versions", 32)
+    progress("dependencies", "Comparing package declarations and project version pins", 32)
     baseline_packages = parse_packages(snapshot.baseline, model.warnings)
     current_packages = parse_packages(snapshot.current, model.warnings)
-    installed_versions(current_packages)
+    resolve_declared_versions(baseline_packages, model.warnings)
+    resolve_declared_versions(current_packages, model.warnings)
     model.packages = {
         "baseline": baseline_packages,
         "current": current_packages,
@@ -73,6 +77,7 @@ def build_review(
         model,
         declared_import_names(current_packages),
         declared_import_names(baseline_packages),
+        on_progress=lambda message, percent: progress("python_graph", message, percent),
     )
     progress("relationships", "Resolving package usage and aggregate architecture edges", 68)
     usage: dict[str, set[str]] = {}
