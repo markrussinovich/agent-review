@@ -48,7 +48,7 @@ test("fingerprints cover same-sized edits, additions, deletions, renames, commit
         await writeFile(join(repo, path), "{}");
         await changed();
     }
-    for (const path of ["node_modules", ".venv", "__pycache__", ".pytest_cache", ".agent-review"]) {
+    for (const path of ["node_modules", ".venv", "__pycache__", ".pytest_cache", ".agent-review", ".agent-review-node-tests-fixture"]) {
         await mkdir(join(repo, path));
         await writeFile(join(repo, path, "generated.py"), "ignored = True\n");
         assert.equal(await fingerprintWorktree(repo), previous, `${path} is pruned before traversal`);
@@ -58,6 +58,27 @@ test("fingerprints cover same-sized edits, additions, deletions, renames, commit
     await sparse.close();
     await changed();
     assert.equal(await fingerprintWorktree(repo), previous, "large binary is checked by metadata, without reading contents");
+});
+
+test("Node coverage inputs invalidate reviews even when Git ignores generated reports", async (t) => {
+    const repo = await mkdtemp(join(tmpdir(), "node-coverage-fingerprint-"));
+    t.after(() => rm(repo, { recursive: true, force: true }));
+    const git = (...args) => execute("git", ["-C", repo, ...args]);
+    await git("init", "-q");
+    await git("config", "user.name", "Test");
+    await git("config", "user.email", "test@example.invalid");
+    await writeFile(join(repo, ".gitignore"), "coverage/\n");
+    await writeFile(join(repo, "main.js"), "export const value = 1;\n");
+    await git("add", ".");
+    await git("commit", "-qm", "base");
+    await mkdir(join(repo, "coverage"));
+    let previous = await fingerprintWorktree(repo);
+    for (const path of ["lcov.info", "coverage-final.json", "sources.json"]) {
+        await writeFile(join(repo, "coverage", path), "{}");
+        const next = await fingerprintWorktree(repo);
+        assert.notEqual(next, previous, path);
+        previous = next;
+    }
 });
 
 test("Git-ignored edits never change fingerprints; tracked and negated files do", async (t) => {

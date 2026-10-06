@@ -10,6 +10,7 @@
   ".github/extensions/agent-review",
   ".agent-review.json",
   ".agent-review",
+  ".agent-review-node-tests-*",
   ".coverage",
   ".coverage.*",
   "coverage.json",

@@ -9,6 +9,7 @@ sys.path.insert(0, str(ANALYZER))
 from language_adapters import AnalysisSnapshot, active_adapters, merge_coverage
 from packages import declared_import_names, package_diff, parse_packages, resolve_declared_versions
 from python_adapter import PYTHON_ADAPTER
+from node_adapter import NODE_ADAPTER
 from python_graph import analyze_python
 from review_model import ReviewModel
 
@@ -25,7 +26,8 @@ class LanguageAdapterTests(unittest.TestCase):
             ({}, {"pyproject.toml": b"[project]\ndependencies=[]"}),
         ):
             self.assertEqual(active_adapters(self.snapshot(baseline, current)), (PYTHON_ADAPTER,))
-        self.assertEqual(active_adapters(self.snapshot({}, {"app.ts": b"export const x=1;", "app.cs": b"class X {}"})), ())
+        self.assertEqual(active_adapters(self.snapshot({}, {"app.ts": b"export const x=1;", "app.cs": b"class X {}"})), (NODE_ADAPTER,))
+        self.assertEqual(active_adapters(self.snapshot({}, {"app.cs": b"class X {}"})), ())
 
     def test_duplicate_adapter_ids_fail_explicitly(self):
         with self.assertRaisesRegex(ValueError, "unique IDs"):

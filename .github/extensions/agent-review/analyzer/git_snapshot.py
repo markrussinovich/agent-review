@@ -203,6 +203,11 @@ class Snapshot:
 
     def source_files(self, changes: list[dict[str, object]]) -> dict[str, dict[str, object]]:
         result: dict[str, dict[str, object]] = {}
+        retain_baseline = any(
+            path.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"))
+            or path.rsplit("/", 1)[-1] == "package.json"
+            for path in set(self.baseline) | set(self.current)
+        )
         for change in changes:
             path = str(change["path"])
             before, after = self.baseline.get(path), self.current.get(path)
@@ -222,6 +227,8 @@ class Snapshot:
                     fromfile=f"a/{path}", tofile=f"b/{path}", n=4,
                 ))
             result[path] = {"current": current, "diff": diff}
+            if retain_baseline:
+                result[path]["baseline"] = base if before is not None else None
         return result
 
     def changes(self) -> list[dict[str, object]]:

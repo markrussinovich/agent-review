@@ -1,0 +1,6 @@
+{
+  "name": "@demo/ui",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": { "@demo/core": "1.0.0" }
+}

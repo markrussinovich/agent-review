@@ -1,8 +1,8 @@
 # Agent Review
 
-A GitHub Copilot Canvas extension for reviewing agent-made changes in Python
-repositories. Start with the change's intent and architecture, then follow its
-impact down to findings, dependency evidence, and source diffs.
+A GitHub Copilot Canvas extension for reviewing agent-made changes in Python and
+Node.js/TypeScript repositories. Start with the change's intent and architecture,
+then follow its impact down to findings, dependency evidence, and source diffs.
 
 [![Agent Review: change brief, architecture graph, attention queue, package changes, source diff, originating prompt, and AI briefing](docs/agent-review.png)](docs/agent-review.png)
 
@@ -17,7 +17,8 @@ illustrative; changes, graph, and findings come from the analyzer. Click to enla
 A change brief shows file mix, source/test churn, coverage availability, and the
 originating request. Copilot uses bounded, saved implementation and test excerpts
 to explain behavior changes, suggest a review order, and distinguish demonstrated
-cases from evidence gaps. Clickable metrics include all reviewable files, not just Python.
+cases from evidence gaps. Clickable metrics include all reviewable files, not
+just analyzed source languages.
 
 ### Follow architecture and impact
 
@@ -47,19 +48,23 @@ Every changed path carries its test evidence, and filters show **Untested**,
 the function (or reach it through a caller) and matches their assertions to
 outcomes, such as `pytest.raises(ValueError)` for a new raise, flagging checks
 that match several paths. These links are labeled **inferred**. **Run linked
-tests** runs only those pytest tests with line tracing restricted to the
-changed files and marks each path **Confirmed** (executed by a named test) or
-**Not executed**. Worktree reviews run in place; commit and PR reviews run in a
+tests** runs supported linked pytest or isolated `node:test` cases with tracing
+restricted to the changed files and marks each path **Confirmed** (executed by
+a named test) or **Not executed**. Worktree reviews run in place; commit and PR reviews run in a
 temporary export of that exact snapshot (made from Git objects through a
 throwaway index, so the repository's index, refs, and files are untouched) and
 delete it afterward. It runs only when you click it, shows its exact command,
-uses the project's interpreter (`test_python` in `.agent-review.json`,
-`AGENT_REVIEW_TEST_PYTHON`, or `.venv`), writes no pytest cache or bytecode,
+uses the project's runtime (Python: `test_python` in `.agent-review.json`,
+`AGENT_REVIEW_TEST_PYTHON`, or `.venv`; Node: `test_node` or
+`AGENT_REVIEW_TEST_NODE`), writes no pytest cache or bytecode,
 and a worktree run goes stale when the worktree changes. If the tests import an
 installed copy of the package instead of the reviewed files, the run says so
 rather than reporting paths as not executed. Paths whose
 exit shares a line with its condition cannot be confirmed by line tracing and
 say so. Existing coverage reports add whether each line ran in the suite.
+The initial Node runner's eligibility and coverage constraints are detailed
+[below](#nodejs-and-typescript-reviews). Mixed Python/Node test execution is not
+available; the shared router rejects combined runs rather than mixing evidence.
 
 ### Inspect the actual code
 
@@ -101,9 +106,12 @@ never as instructions to the reviewer.
 
 ### Review dependency decisions
 
-Added, changed, and removed Python dependencies link to manifest declarations
-and consuming code. On-demand assessments explain adoption and expose PyPI
-metadata, OSV advisories, OpenSSF Scorecard, maintenance, and downloads.
+Added, changed, and removed Python and npm dependencies link to manifest
+declarations and consuming code. On-demand Python assessments explain adoption
+and expose PyPI metadata, OSV advisories, OpenSSF Scorecard, maintenance, and downloads.
+npm assessments currently expose registry metadata and OSV advisories only;
+broader risk, maintenance, popularity, and Scorecard signals remain unknown.
+Workspace links and private npm packages skip public assessments.
 Vulnerability checks use the **exact project version**, never the latest release.
 Unresolved ranges still permit metadata and usage explanations, but
 version-specific vulnerability status remains unknown. Service failures are visible.
@@ -127,6 +135,17 @@ Copy the [extension directory](.github/extensions/agent-review/) to either:
 
 - **Personal:** `~/.copilot/extensions/agent-review`
 - **Project:** `.github/extensions/agent-review` in the repository being reviewed
+
+Install the extension's own TypeScript tooling once **inside that installed
+extension directory**, not in the reviewed project's root:
+
+```powershell
+npm ci --ignore-scripts
+```
+
+This installs extension tooling only. Analysis never automatically installs
+reviewed-project dependencies, runs their install scripts, or builds the project.
+Linked Node test execution additionally requires Node.js **22.15+**.
 
 Start a session after installation, or reload extensions in your existing
 session, then ask Copilot:
@@ -163,15 +182,18 @@ Returning to a target reuses its results while the provider remains running.
 
 ## Limits and data
 
-- Structural analysis and rule-based checks focus on Python. Other text files
+- Structural analysis supports Python and Node.js/TypeScript; individual
+  rule-based checks can be language-specific. Other text files
   remain reviewable as diffs. No findings is **not** a correctness guarantee;
   **Priority** ranks attention, not security.
-- Code path maps are static and cover changed, non-test Python functions after
-  analysis finishes, so they never lengthen the scan. They show conditions, not
+- Code path maps are static and cover changed, non-test Python and Node callables
+  after analysis finishes, so they never lengthen the scan. They show conditions, not
   runtime reachability; very large reviews are bounded and labeled as partial.
-- Worktree coverage accepts matching `coverage.json`, `coverage.xml`, or legacy
-  JSON `.coverage` reports; a SQLite `.coverage` database alone is unsupported.
-  Historical commit/PR reviews do not reuse live-worktree coverage.
+- Python worktree coverage accepts matching `coverage.json`, `coverage.xml`, or
+  legacy JSON `.coverage` reports; a SQLite `.coverage` database alone is unsupported.
+  Node coverage requires exact-source proof for supported Istanbul/LCOV reports
+  [below](#nodejs-and-typescript-reviews). Historical commit/PR reviews do not
+  reuse live-worktree coverage.
 - Analysis runs locally. AI explanations use Copilot; public package services
   receive package identifiers and public repository URLs, not source or credentials.
   AI claims and package indicators require human verification.
@@ -190,11 +212,107 @@ Returning to a target reuses its results while the provider remains running.
 
 ## Development
 
+### Node.js and TypeScript reviews
+
+The Node adapter analyzes JS, TS, JSX, TSX, CJS, MJS, CTS, and MTS from saved Git
+snapshots with the extension's TypeScript compiler. It does not install project
+packages, build the project, or execute project code during analysis. Workspace
+manifests, local imports, re-exports, and compiler configuration contribute
+structural evidence; unresolved or dynamic relationships are not proof of a
+runtime dependency.
+
+Dependency evidence includes npm declarations, saved lockfile versions, and
+source import locations, including package subpaths. A workspace link is local
+project code, not a public registry package. npm `package-lock.json` v2/v3
+provides exact versions; v1, shrinkwrap, Yarn, pnpm, and Bun lockfiles are not
+supported by the initial adapter and produce warnings. Missing or unsupported
+lockfile details remain unknown; a requested version range is not an exact
+installed version.
+
+Code paths and test links are extracted statically after scanning. Linkage uses
+explicitly imported `node:test`, Vitest, or Jest APIs and `node:assert` or imported
+`expect`; implicit framework globals, dynamic module specifiers, test names, and
+callbacks remain unknown. Jest and Vitest links are inferred, not executable by
+the initial runner. **Run linked tests** is an explicit repository-code execution
+action, not part of analysis.
+The initial Node runner requires Node.js **22.15+** and supports isolated,
+top-level ESM JavaScript `node:test` cases, one case per file. Erasable `.ts` and
+`.mts` tests use Node's `--experimental-strip-types`, retaining original source
+coordinates without loading a project transpiler. Nested suites,
+subtests, test hooks, concurrent cases, and skipped or todo cases are not
+confirmed.
+TypeScript syntax requiring transformation (such as enums), TSX tests, custom
+loaders, and other test runners must not be treated as verified. Callback-scoped
+coverage excludes module setup and unrelated tests. Execution evidence describes
+only the selected tests and saved source, not correctness or full-suite coverage.
+Saved source hashes are checked before and after isolated execution; changed
+source must not produce confirmation for the earlier snapshot.
+
+Saved aggregate Node coverage accepts Istanbul JSON
+(`coverage/coverage-final.json` or `coverage-final.json`) and LCOV
+(`coverage/lcov.info` or `lcov.info`). Covered
+files must match the exact saved source: an Istanbul record may embed `source`
+or `sourceHash`, or `coverage/sources.json` may associate a repository-relative
+path with source text or its UTF-8 SHA-256:
+
+```json
+{
+  "packages/core/src/resolver.js": { "sha256": "<SHA-256 of the exact source>" },
+  "packages/core/src/index.ts": "export const example = 1;\n"
+}
+```
+
+Source-mapped generated reports also require saved maps with `sourcesContent`
+matching the reviewed original source. Historical reviews use saved reports,
+not live-worktree coverage. Unsupported or mismatched reports are unknown, not
+uncovered code. Confirmed linked-test execution uses callback-scoped inspector
+coverage, not process-wide coverage that could include setup or unrelated work;
+setup-origin asynchronous overlap is rejected.
+Imported reports annotate suite-level line coverage; they do not identify a
+named test or upgrade paths to **Confirmed**.
+
+The npm workspace fixture in
+[tests/fixtures/node-demo](.github/extensions/agent-review/tests/fixtures/node-demo/)
+contains baseline and changed JS/TS/JSX/TSX trees, npm lockfile changes, and
+dependency-free `node:test` cases. Its
+[browser regression](.github/extensions/agent-review/tests/browser/node-review.mjs)
+creates a disposable Git repository inside the test directory and uses the
+production review state and server. It checks graph and package evidence,
+source navigation, explicit test execution, keyboard focus, and light/dark
+responsive layouts. Use `AGENT_REVIEW_BROWSER_PACKAGE` for an existing
+`playwright-core` installation, `AGENT_REVIEW_BROWSER_EXECUTABLE` for the browser,
+and `AGENT_REVIEW_BROWSER_ARTIFACTS` for retained screenshots.
+
+#### Run a persistent local demo
+
+From this repository, install **extension tooling**, then create and launch a
+standalone production review server:
+
+```powershell
+npm --prefix .github\extensions\agent-review ci --ignore-scripts
+node .github\extensions\agent-review\tests\fixtures\node-demo\node-demo.mjs --demo C:\Source\node-review-demo
+```
+
+Choose a new or empty destination. The launcher copies the baseline fixture,
+commits it locally, applies the changed tree, and prints a loopback URL. The
+repository persists after Ctrl+C; repeat the same command to review it again.
+An unrelated existing directory is rejected. Add `--create-only` to create the
+repository without starting the server.
+
+The launcher uses the real `ReviewState` and server, does not read user Copilot
+sessions, and leaves AI summaries unavailable. No project dependencies are
+installed: the linked JS tests use only Node built-ins, while external UI
+imports remain static evidence. Package panels request production npm metadata
+and OSV only when opened. Open the URL to drill through the graph, follow npm
+declarations/imports, inspect code paths, and explicitly choose **Run linked
+tests**. Mixed-language execution remains unavailable. The browser regression's
+disposable repository is separate from this persistent demo.
+
 ### Language adapter boundary
 
 Snapshot loading, review lifecycle, source navigation, and UI remain shared.
-The only implemented language adapter is **Python**; Node/TypeScript and C#
-backends are not yet registered or advertised.
+Implemented language adapters are **Python** and **Node.js/TypeScript**; a C#
+backend is not yet registered or advertised.
 
 - `analyzer/language_adapters.py` defines the snapshot contract and selects
   adapters using both trees (including deleted sources and manifest-only changes).
@@ -204,8 +322,10 @@ backends are not yet registered or advertised.
   content-cache namespace are preserved, so existing warm scans remain reusable.
 - `language-adapters.mjs` routes post-scan code-path requests and test runners.
   `python-review-adapter.mjs` owns Python callable/test linkage and the parser
-  process specification. Per-language results merge into the shared code-path
-  view; unknown adapters and duplicate callable IDs fail explicitly.
+  process specification; `node-review-adapter.mjs` routes the Node compiler,
+  static linkage, and isolated `node:test` runner. Per-language results merge
+  into the shared code-path view; unknown adapters and duplicate callable IDs
+  fail explicitly.
 - `web/languages.mjs` shares implemented source-language and test-path
   classification between the browser and provider. Test interpreter selection,
   command planning, and execution are dispatched through the adapter, while

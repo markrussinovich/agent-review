@@ -15,6 +15,25 @@ from git_snapshot import Snapshot, baseline_files, current_files
 
 
 class SnapshotTests(unittest.TestCase):
+    def test_node_saved_sources_retain_both_trees_without_changing_python_only_shape(self) -> None:
+        snapshot = Snapshot(Path("unused"), "base", {
+            "main.ts": b"export function run() { return 1; }\n",
+            "gone.js": b"export function gone() {}\n",
+            "tsconfig.json": b'{"compilerOptions":{"strict":false}}',
+        }, {
+            "main.ts": b"export function run() { return 2; }\n",
+            "new.tsx": b"export const view = () => <div />;\n",
+            "tsconfig.json": b'{"compilerOptions":{"strict":true}}',
+        })
+        sources = snapshot.source_files(snapshot.changes())
+        self.assertIn("return 1", sources["main.ts"]["baseline"])
+        self.assertIn("return 2", sources["main.ts"]["current"])
+        self.assertIsNone(sources["new.tsx"]["baseline"])
+        self.assertIsNone(sources["gone.js"]["current"])
+        self.assertIn("false", sources["tsconfig.json"]["baseline"])
+        python = Snapshot(Path("unused"), "base", {"main.py": b"value=1\n"}, {"main.py": b"value=2\n"})
+        self.assertEqual({"current", "diff"}, set(python.source_files(python.changes())["main.py"]))
+
     def test_batches_preserve_exact_blob_bytes_and_report_progress(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)

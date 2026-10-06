@@ -1,0 +1,8 @@
+{
+  "name": "node-review-demo",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "scripts": { "test": "node --test packages/core/test/*.test.mjs" },
+  "dependencies": { "lodash": "^4.17.20" }
+}

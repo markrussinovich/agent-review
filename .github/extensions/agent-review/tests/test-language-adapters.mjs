@@ -5,13 +5,18 @@ import { buildDecisionRequest } from "../review-state.mjs";
 import { isTestPath, languageForPath } from "../web/languages.mjs";
 import { pythonCandidates } from "../python-runtime.mjs";
 
-test("language support is shared and does not advertise unimplemented Node or C# adapters", () => {
+test("language support is shared and does not advertise unimplemented C# adapters", () => {
     assert.equal(languageForPath("src/main.py").id, "python");
-    for (const path of ["src/main.ts", "src/main.js", "App.cs", "README.md", undefined]) {
+    for (const path of ["App.cs", "README.md", undefined]) {
         assert.equal(languageForPath(path), null);
         assert.equal(sourceAdapter(path), null);
     }
     assert.equal(sourceAdapter("src/main.py"), reviewAdapter("python"));
+    for (const path of ["src/main.ts", "src/main.js", "ui/view.tsx", "ui/view.jsx", "lib/main.cjs", "lib/main.mjs"]) {
+        assert.equal(languageForPath(path).id, "node");
+        assert.equal(sourceAdapter(path), reviewAdapter("node"));
+    }
+    assert.equal(isTestPath("src/widget.test.ts"), true);
     assert.equal(isTestPath("tests/test_main.py"), true);
     assert.equal(isTestPath("pkg/widget_test.py"), true);
     assert.equal(isTestPath("pkg/widget.py"), false);

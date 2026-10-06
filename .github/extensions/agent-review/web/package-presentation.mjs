@@ -1,4 +1,4 @@
-export function packageEvidenceLinks(name, version, repositoryUrl) {
+export function packageEvidenceLinks(name, version, repositoryUrl, ecosystem = "pypi") {
     const packageName = encodeURIComponent(name);
     const links = {
         registry: `https://pypi.org/project/${packageName}/`,
@@ -10,6 +10,13 @@ export function packageEvidenceLinks(name, version, repositoryUrl) {
         scorecard: null,
     };
     const repository = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/?$/.exec(repositoryUrl || "");
+    if (ecosystem === "npm") {
+        links.registry = `https://www.npmjs.com/package/${packageName}`;
+        links.release = version ? `${links.registry}/v/${encodeURIComponent(version)}` : links.registry;
+        links.maintenance = `${links.registry}?activeTab=versions`;
+        links.vulnerabilities = `https://osv.dev/list?q=${packageName}&ecosystem=npm`;
+        links.downloads = `${links.registry}?activeTab=versions`;
+    }
     if (repository) links.scorecard = `https://securityscorecards.dev/viewer/?uri=${encodeURIComponent(`github.com/${repository[1]}`)}`;
     return links;
 }

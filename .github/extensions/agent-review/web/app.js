@@ -235,7 +235,7 @@ function renderSummary(model) {
         });
         elements.summary.append(quality);
     }
-    elements.summary.title = `${meta.base_ref || "base"} @ ${(meta.base_sha || "").slice(0, 8)} → ${(meta.head_sha || "").slice(0, 8)} · ${meta.python_loc || 0} Python LOC`;
+    elements.summary.title = `${meta.base_ref || "base"} @ ${(meta.base_sha || "").slice(0, 8)} → ${(meta.head_sha || "").slice(0, 8)} · ${meta.python_loc || 0} Python LOC${meta.node_loc !== undefined ? ` · ${meta.node_loc} JavaScript/TypeScript LOC` : ""}`;
 }
 
 function evidenceLabel(id) {
@@ -1968,7 +1968,7 @@ function renderDecisionView(model) {
         view.append(el("p", "collection-empty", filter !== "all" ? "No code paths match this evidence filter."
             : map.callables?.length
                 ? "No code path changes: changed callables keep the same exits, error handling, and wiring."
-                : "No changed production Python callables in this review."));
+                : "No changed production callables in a supported language in this review."));
     }
     for (const item of changed) {
         const group = el("section", "decision-group");
@@ -2187,7 +2187,7 @@ function packageVersion(item) {
 }
 
 function packageKey(item) {
-    return `${item.name}@${packageVersion(item)}`;
+    return `${item.ecosystem || "pypi"}:${item.name}@${packageVersion(item)}`;
 }
 
 function packageEntry(item) {
@@ -2223,7 +2223,7 @@ function loadPackageData(item) {
     };
     const request = (explain) => api("/api/package-risk", {
         method: "POST",
-        body: JSON.stringify({ name: item.name, explain }),
+        body: JSON.stringify({ name: item.name, ecosystem: item.ecosystem || "pypi", explain }),
     });
     if (!entry.assessment && !entry.assessmentPromise) {
         entry.assessmentError = null;
@@ -2359,6 +2359,7 @@ function renderPackagePanel() {
         titleRow,
         el("p", "muted", [
             `Version ${packageVersionText(item)}`,
+            item.ecosystem ? `${item.ecosystem} ecosystem` : null,
             declared?.source ? `declared in ${declared.source}` : null,
             declared?.group ? `${declared.group} dependency` : null,
         ].filter(Boolean).join(" · ")),
@@ -2368,7 +2369,7 @@ function renderPackagePanel() {
     declaration.append(document.createTextNode(`Reported because a dependency declaration was ${item.change} in `));
     if (declared?.source) declaration.append(sourceReferenceButton(declared.source, { path: declared.source, lines: [], packageName: item.name }));
     else declaration.append(document.createTextNode("the package manifest"));
-    declaration.append(document.createTextNode(". Manifest changes are reviewed even when no Python import is found."));
+    declaration.append(document.createTextNode(". Manifest changes are reviewed even when no static import is found."));
     sections.push(declaration);
 
     if (item.change === "removed") {
@@ -2389,7 +2390,7 @@ function renderPackagePanel() {
     } else if (entry.assessmentError) {
         sections.push(el("p", "flash flash-danger", entry.assessmentError));
     } else {
-        sections.push(el("p", "flash flash-neutral", "Checking PyPI, OSV, OpenSSF Scorecard, and download statistics…"));
+        sections.push(el("p", "flash flash-neutral", item.ecosystem === "npm" ? "Checking npm registry metadata and OSV advisories…" : "Checking PyPI, OSV, OpenSSF Scorecard, and download statistics…"));
     }
 
     // Copilot explanation
@@ -2429,8 +2430,8 @@ function renderPackagePanel() {
         usageList.append(row);
     }
     sections.push(packageSection(
-        `Python import locations (${usage.length})`,
-        usage.length ? usageList : el("p", "flash flash-attention", "No Python import was mapped to this declaration. This is a manifest change, not an observed import. Verify why the dependency is needed: it may support tooling, dynamic loading, use a different import name, or be unused."),
+        `Static import locations (${usage.length})`,
+        usage.length ? usageList : el("p", "flash flash-attention", "No static import was mapped to this declaration. This is a manifest change, not an observed import. Verify why the dependency is needed: it may support tooling, dynamic loading, use a different import name, or be unused."),
     ));
 
     if (assessment) {
@@ -2438,7 +2439,7 @@ function renderPackagePanel() {
         const maintenance = indicators.maintenance || {};
         const vulns = indicators.known_vulnerabilities || [];
         const score = indicators.scorecard_score;
-        const links = packageEvidenceLinks(item.name, assessment.version, indicators.repository_url);
+        const links = packageEvidenceLinks(item.name, assessment.version, indicators.repository_url, item.ecosystem || "pypi");
         const tiles = el("div", "stat-grid");
         tiles.append(
             statTile("Known vulnerabilities", formatCount(indicators.vulnerability_count),
@@ -2504,7 +2505,8 @@ function renderPackagePanel() {
                 definitionRow("Maintainer", provenance.maintainer),
                 definitionRow("License", provenance.license),
                 definitionRow("Source repository", repository),
-                definitionRow("Registry", externalLink(provenance.pypi_url.replace(/^https:\/\//, ""), provenance.pypi_url)),
+                definitionRow("Registry", (provenance.registry_url || provenance.pypi_url)
+                    ? externalLink((provenance.registry_url || provenance.pypi_url).replace(/^https:\/\//, ""), provenance.registry_url || provenance.pypi_url) : null),
                 definitionRow("Homepage", provenance.homepage ? externalLink(provenance.homepage.replace(/^https?:\/\//, ""), provenance.homepage) : null),
                 definitionRow("Other links", links),
                 definitionRow("First release", formatDate(provenance.first_release_date)),
@@ -2514,7 +2516,7 @@ function renderPackagePanel() {
             sections.push(packageSection("Provenance", list));
         }
         const statuses = el("ul", "source-status evidence-sources");
-        const sourceUrls = { pypi: links.registry, osv: links.vulnerabilities, osv_history: links.vulnerabilities,
+        const sourceUrls = { pypi: links.registry, npm: links.registry, osv: links.vulnerabilities, osv_history: links.vulnerabilities,
             scorecard: links.scorecard, pypistats: links.downloads };
         for (const [name, source] of Object.entries(assessment.sources || {})) {
             const row = el("li", `source-${source.status}`);

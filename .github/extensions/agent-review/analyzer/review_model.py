@@ -11,6 +11,22 @@ def stable_id(kind: str, *parts: object) -> str:
     return f"{kind}:{hashlib.sha256(value.encode()).hexdigest()[:16]}"
 
 
+def package_key(package: dict[str, Any]) -> str:
+    ecosystem = package.get("ecosystem")
+    return f"{ecosystem}:{package['name']}" if ecosystem and ecosystem != "pypi" else package["name"]
+
+
+def package_identity(package: dict[str, Any]) -> dict[str, Any]:
+    return {"ecosystem": package["ecosystem"]} if package.get("ecosystem") else {}
+
+
+def resolved_package_version(declarations: list[dict[str, Any]]) -> str | None:
+    if any(item.get("ecosystem") == "npm" for item in declarations):
+        versions = {item.get("resolved_version") for item in declarations}
+        return next(iter(versions)) if len(versions) == 1 else None
+    return next((item["resolved_version"] for item in declarations if "resolved_version" in item), None)
+
+
 @dataclass
 class ReviewModel:
     repository: dict[str, Any]
@@ -56,6 +72,7 @@ class ReviewModel:
                 "confidence": edge["confidence"],
                 "count": edge.get("count", 1),
                 "evidence_ids": edge["evidence_ids"],
+                **({"language": edge["language"]} if edge.get("language") else {}),
             }
             for edge in self.edges
         ]
@@ -69,7 +86,7 @@ class ReviewModel:
             if package["change"] == "added" and usage_count == 0:
                 score += 12
             attention.append({
-                "id": stable_id("attention", "package", package["name"]),
+                "id": stable_id("attention", "package", package["id"][8:]),
                 "type": "package",
                 "package_id": package["id"],
                 "title": f"Package dependency {package['change']}",
@@ -119,6 +136,7 @@ class ReviewModel:
                 "head_sha": self.repository.get("head"),
                 "generated_at": self.repository.get("generated_at"),
                 "python_loc": self.repository.get("python_loc", 0),
+                **({"node_loc": self.repository["node_loc"]} if "node_loc" in self.repository else {}),
             },
             "summary": {
                 "files_changed": len(changed),
@@ -277,6 +295,7 @@ class ReviewModel:
                 "start_line": 1, "end_line": self._line_count(module["path"]),
                 "change": module["change"], "metrics": metrics(module["path"]),
                 "signatures": {"base": None, "current": None},
+                **({"language": module["language"]} if module.get("language") else {}),
             })
         symbol_ids = {symbol["identity"]: symbol["id"] for symbol in self.symbols}
         for symbol in self.symbols:
@@ -314,16 +333,19 @@ class ReviewModel:
                     "base": symbol.get("signature_base"),
                     "current": symbol.get("signature_current"),
                 },
+                **({"language": symbol["language"]} if symbol.get("language") else {}),
             })
         package_names = sorted(
-            {item["name"] for item in self.packages["baseline"]}
-            | {item["name"] for item in self.packages["current"]}
+            {package_key(item) for item in self.packages["baseline"]}
+            | {package_key(item) for item in self.packages["current"]}
         )
-        changes = {item["name"]: item["kind"] for item in self.packages["changes"]}
+        changes = {package_key(item): item["kind"] for item in self.packages["changes"]}
+        declarations = {package_key(item): item for item in self.packages["baseline"] + self.packages["current"]}
         change_map = {"version_changed": "modified", "added": "added", "removed": "removed"}
         for name in package_names:
             result.append({
-                "id": f"package:{name}", "type": "package", "name": name,
+                "id": f"package:{name}", "type": "package", "name": declarations[name]["name"],
+                **package_identity(declarations[name]),
                 "parent_id": None, "module_id": None, "component_id": None,
                 "path": None, "start_line": None, "end_line": None,
                 "change": change_map.get(changes.get(name, ""), "unchanged"),
@@ -341,14 +363,15 @@ class ReviewModel:
         baseline: dict[str, list[dict[str, Any]]] = {}
         current: dict[str, list[dict[str, Any]]] = {}
         for item in self.packages["baseline"]:
-            baseline.setdefault(item["name"], []).append(item)
+            baseline.setdefault(package_key(item), []).append(item)
         for item in self.packages["current"]:
-            current.setdefault(item["name"], []).append(item)
-        change_kind = {item["name"]: item["kind"] for item in self.packages["changes"]}
+            current.setdefault(package_key(item), []).append(item)
+        change_kind = {package_key(item): item["kind"] for item in self.packages["changes"]}
         result = []
         for name in sorted(set(baseline) | set(current)):
             if name not in change_kind:
                 continue
+            declaration = (current.get(name) or baseline[name])[0]
             usage = sorted({
                 source
                 for item in current.get(name, [])
@@ -364,7 +387,8 @@ class ReviewModel:
                 evidence_ids = [self.add_evidence(
                     "package_change",
                     {
-                        "name": name,
+                        "name": declaration["name"],
+                        **package_identity(declaration),
                         "change": change_kind.get(name, "unchanged"),
                         "declared_base": baseline.get(name, []),
                         "declared_baseline": baseline.get(name, []),
@@ -372,17 +396,15 @@ class ReviewModel:
                     },
                 )]
             result.append({
-                "id": f"package:{name}", "name": name,
+                "id": f"package:{name}", "name": declaration["name"],
+                **package_identity(declaration),
                 "change": {"version_changed": "modified"}.get(
                     change_kind.get(name, "unchanged"), change_kind.get(name, "unchanged")
                 ),
                 "declared_base": baseline.get(name, []),
                 "declared_baseline": baseline.get(name, []),
                 "declared_current": current.get(name, []),
-                "resolved_current": next(
-                    (item["resolved_version"] for item in current.get(name, []) if "resolved_version" in item),
-                    None,
-                ),
+                "resolved_current": resolved_package_version(current.get(name, [])),
                 "usage_locations": usage,
                 "evidence_ids": evidence_ids,
             })
@@ -397,26 +419,24 @@ class ReviewModel:
     def _package_dependencies(
         self, package_changes: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        changes = {item["name"]: item for item in package_changes}
+        changes = {package_key(item): item for item in package_changes}
         grouped: dict[str, list[dict[str, Any]]] = {}
         baseline: dict[str, list[dict[str, Any]]] = {}
         for item in self.packages["baseline"]:
-            baseline.setdefault(item["name"], []).append(item)
+            baseline.setdefault(package_key(item), []).append(item)
         for item in self.packages["current"]:
-            grouped.setdefault(item["name"], []).append(item)
+            grouped.setdefault(package_key(item), []).append(item)
         result = []
         for name, declarations in sorted(grouped.items()):
             change = changes.get(name)
             result.append({
                 "id": f"package:{name}",
-                "name": name,
+                "name": declarations[0]["name"],
+                **package_identity(declarations[0]),
                 "change": change["change"] if change else "unchanged",
                 "declared_current": declarations,
                 "declared_baseline": baseline.get(name, []),
-                "resolved_current": next(
-                    (item["resolved_version"] for item in declarations if "resolved_version" in item),
-                    None,
-                ),
+                "resolved_current": resolved_package_version(declarations),
                 "usage_locations": sorted({
                     source for item in declarations for source in item.get("used_by", [])
                 }),

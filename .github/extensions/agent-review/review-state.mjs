@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:pa
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { assessPackageRisk } from "./package-risk.mjs";
+import { assessNpmPackageRisk } from "./node-package-risk.mjs";
 import { buildPackageUsageContext } from "./package-context.mjs";
 import { CustomPromptStore } from "./custom-prompts.mjs";
 import { customAnalysisContext, validateCustomAnalysis } from "./custom-analysis.mjs";
@@ -184,7 +185,8 @@ export async function runDecisionExtractor(request, options = {}) {
         await writeFile(input, JSON.stringify(request));
         const parser = reviewAdapter(request.adapter_id || "python").codePathProcess(extensionRoot, input);
         const failures = [];
-        for (const [executable, prefix] of parser.candidates) {
+        for (const candidate of parser.candidates) {
+            const [executable, prefix] = Array.isArray(candidate) ? candidate : [candidate.command, candidate.args || []];
             try {
                 const result = await runAnalyzerProcess(executable, [...prefix, ...parser.args], () => {}, options);
                 return { ...result, adapter_id: request.adapter_id || "python" };
@@ -1429,11 +1431,18 @@ export class ReviewState {
         };
     }
 
-    async packageRiskFor(name, requestedVersion = null, { explain = true } = {}) {
+    async packageRiskFor(name, requestedVersion = null, { explain = true, ecosystem = null } = {}) {
         if (this.disposed) throw new Error("This review has been closed.");
         const generation = this.reviewGeneration;
-        const dependency = this.model?.package_dependencies?.find((item) => item.name === name);
+        const candidates = (this.model?.package_dependencies || []).filter((item) => item.name === name
+            && (!ecosystem || (item.ecosystem || "pypi") === ecosystem));
+        if (candidates.length > 1) throw new Error(`Package ${name} is ambiguous; specify its ecosystem.`);
+        const dependency = candidates[0];
         if (!dependency) throw new Error(`Unknown package dependency: ${name}`);
+        if (dependency.ecosystem === "npm" && dependency.declared_current?.some((item) =>
+            item.workspace_link || item.local || item.private || /^(?:workspace:|file:|link:|portal:|git(?:\+|:)|https?:|github:|npm:)/.test(item.specifier || ""))) {
+            throw new Error(`${name} is a local, workspace, alias, or non-registry dependency. Public npm assessment is not applicable.`);
+        }
         const declared = dependency.declared_current?.map((item) => item.specifier).filter(Boolean) || [];
         const resolutionError = dependency.declared_current?.find((item) => item.resolution_error)?.resolution_error;
         if (resolutionError) throw new Error(resolutionError);
@@ -1446,8 +1455,10 @@ export class ReviewState {
             throw new Error(`An exact project version is required to assess ${name}; declared ${declared.join(", ") || "without a version"}. Pin or resolve the dependency, then reanalyze.`);
         }
         if (requestedVersion && requestedVersion !== version) throw new Error(`Requested version ${requestedVersion} does not match the reviewed project version ${name}@${version}.`);
-        const cacheKey = `${name}@${version ?? "<unresolved>"}`;
-        const assessment = await this.packageAssessmentFor(cacheKey, name, version);
+        const packageEcosystem = dependency.ecosystem || "pypi";
+        if (!["npm", "pypi"].includes(packageEcosystem)) throw new Error(`Package assessment for ${packageEcosystem} is not implemented.`);
+        const cacheKey = `${packageEcosystem === "pypi" ? "" : `${packageEcosystem}:`}${name}@${version ?? "<unresolved>"}`;
+        const assessment = await this.packageAssessmentFor(cacheKey, name, version, packageEcosystem);
         if (this.disposed || generation !== this.reviewGeneration) throw new Error("The review changed while assessing this package.");
         if (!explain) return { assessment, explanation: this.packageRisks[cacheKey]?.explanation ?? null };
         if (this.packageRisks[cacheKey]) return this.packageRisks[cacheKey];
@@ -1470,12 +1481,13 @@ export class ReviewState {
     }
 
     // Public-registry indicators are fast and independent of the slower Copilot explanation.
-    packageAssessmentFor(cacheKey, name, version) {
+    packageAssessmentFor(cacheKey, name, version, ecosystem = "pypi") {
         if (this.disposed) return Promise.reject(new Error("This review has been closed."));
         if (this.packageAssessments.has(cacheKey)) return Promise.resolve(this.packageAssessments.get(cacheKey));
         if (!this.packageAssessmentPromises.has(cacheKey)) {
             const generation = this.reviewGeneration;
-            const promise = assessPackageRisk(name, version, { includePopularity: true, metadataOnly: version === null })
+            const assessor = ecosystem === "npm" ? assessNpmPackageRisk : assessPackageRisk;
+            const promise = assessor(name, version, { includePopularity: true, metadataOnly: version === null })
                 .then((assessment) => {
                     if (this.disposed || generation !== this.reviewGeneration) throw new Error("The review changed while assessing this package.");
                     this.packageAssessments.set(cacheKey, assessment);

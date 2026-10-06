@@ -229,7 +229,7 @@ export function startReviewServer(state, options = {}) {
             if (req.method === "POST" && pathname === "/api/package-risk") {
                 const input = await readJson(req);
                 if (!input.name || typeof input.name !== "string") throw new Error("A package name is required.");
-                sendJson(res, await state.packageRiskFor(input.name, input.version || null, { explain: input.explain !== false }));
+                sendJson(res, await state.packageRiskFor(input.name, input.version || null, { explain: input.explain !== false, ecosystem: input.ecosystem || null }));
                 return;
             }
             sendJson(res, { error: "not_found" }, 404);

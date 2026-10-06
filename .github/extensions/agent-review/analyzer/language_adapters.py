@@ -42,11 +42,17 @@ class LanguageAdapter(Protocol):
 def active_adapters(
     snapshot: AnalysisSnapshot, adapters: Sequence[LanguageAdapter] | None = None,
 ) -> tuple[LanguageAdapter, ...]:
+    paths = set(snapshot.baseline) | set(snapshot.current)
     if adapters is None:
         from python_adapter import PYTHON_ADAPTER
 
         adapters = (PYTHON_ADAPTER,)
-    paths = set(snapshot.baseline) | set(snapshot.current)
+        if any(path.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"))
+               or path.rsplit("/", 1)[-1] in {"package.json", "package-lock.json", "npm-shrinkwrap.json"}
+               for path in paths):
+            from node_adapter import NODE_ADAPTER
+
+            adapters += (NODE_ADAPTER,)
     ids = [adapter.id for adapter in adapters]
     if len(ids) != len(set(ids)):
         raise ValueError("Language adapters must have unique IDs.")

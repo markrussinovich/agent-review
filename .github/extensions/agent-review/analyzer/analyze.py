@@ -81,7 +81,10 @@ def build_review(
     for adapter in adapters:
         adapter.resolve_package_usage(model, dependencies[adapter.id])
     progress("coverage", "Loading coverage and changed executable-line data", 76)
-    model.coverage = merge_coverage([adapter.coverage(analysis_snapshot) for adapter in adapters])
+    coverage_reports = [adapter.coverage(analysis_snapshot) for adapter in adapters]
+    model.coverage = merge_coverage(coverage_reports)
+    for report in coverage_reports:
+        model.warnings.extend(report.get("warnings", []))
     if current_arg:
         model.warnings.append("Worktree coverage is not applicable to a historical commit or PR snapshot.")
     progress("churn", "Calculating 90-day Git churn and impact metrics", 84)

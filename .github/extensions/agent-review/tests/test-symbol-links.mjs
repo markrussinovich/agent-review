@@ -35,6 +35,9 @@ test("package evidence links point to public sources and reject unsafe repositor
 import { parseSourceReference, resolveSourceReference } from "../web/source-references.mjs";
 
 test("source references accept root files and exact ranges without unbounded expansion", () => {
+    for (const extension of ["js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts"]) {
+        assert.deepEqual(parseSourceReference(`src/main.${extension}:4`), { path: `src/main.${extension}`, lines: [4] });
+    }
     assert.deepEqual(parseSourceReference("main.py:2-4,8"), { path: "main.py", lines: [2, 3, 4, 8] });
     assert.deepEqual(parseSourceReference("src\\main.py:3"), { path: "src/main.py", lines: [3] });
     assert.equal(parseSourceReference("main.py:4-2"), null);
