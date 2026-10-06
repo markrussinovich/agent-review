@@ -78,6 +78,7 @@ try {
         });
         await page.goto(`${server.url}?scoutTheme=${theme}`);
         await page.locator("#change-brief .brief-ai").waitFor();
+        assert.equal(await page.locator("#change-brief .review-heading").textContent(), "Uncommitted changes");
         for (const [selector, property, token] of [
             ["#graph .node-metric .delta-add", "fill", "--cp-success"],
             ["#graph .node-metric .delta-remove", "fill", "--cp-danger"],
@@ -128,9 +129,13 @@ try {
                 text: value.textContent,
                 height: value.getBoundingClientRect().height, lineHeight: Number.parseFloat(getComputedStyle(value).lineHeight),
                 right: value.getBoundingClientRect().right, rowRight: value.parentElement.getBoundingClientRect().right,
+                gap: value.getBoundingClientRect().left - value.previousElementSibling.getBoundingClientRect().right,
+                top: value.getBoundingClientRect().top, labelTop: value.previousElementSibling.getBoundingClientRect().top,
             })));
             assert.ok(measurements.every((value) => value.height <= value.lineHeight + 1), `brief values stay on one line at ${width}px: ${JSON.stringify(measurements)}`);
             assert.ok(measurements.every((value) => value.right <= value.rowRight + 1), `brief values fit their metric at ${width}px`);
+            assert.ok(measurements.every((value) => Math.abs(value.top - value.labelTop) > 1 || value.gap <= 11),
+                `brief values sit beside their labels at ${width}px: ${JSON.stringify(measurements)}`);
             const queueGeometry = await page.locator("#attention .queue-item").evaluateAll((items) => items.map((item) => {
                 const bounds = item.getBoundingClientRect();
                 const nodes = [...item.querySelectorAll(".queue-heading, .queue-title, .queue-priority, .queue-copy")];

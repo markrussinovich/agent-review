@@ -81,6 +81,10 @@ authoring request, follow-up activity, and a linked transcript. Provenance is
 repository- and snapshot-scoped: later work cannot explain an earlier commit.
 Commit reviews show the full commit message, and PR reviews show the PR
 description and commit messages; Copilot compares their claims with the code.
+The review heading uses the commit subject or PR title, followed by a two-line
+preview of its opening body paragraph; the full message is expandable.
+The originating prompt appears directly below the message with the same
+two-line preview and expandable full text, preserving its session-history link.
 Missing history is explicit; intent supplements rather than replaces code evidence.
 
 ### Check repository rules

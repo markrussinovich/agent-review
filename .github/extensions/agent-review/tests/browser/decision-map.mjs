@@ -88,8 +88,20 @@ try {
     await git("add", ".");
     await git("commit", "-qm", "Add reports fallback", "-m", "Strict fallback with title and year validation.");
     let explanations = 0;
+    const originatingPrompt = `Add the reports fallback using ${"the shared checker and strict validation ".repeat(18)}.\n\nKeep all entrypoints consistent.`;
     state = new ReviewState(repo, {
         readWorktreeFingerprint: null,
+        getHistoricalSessionContexts: async () => ({
+            contexts: [{
+                session_id: "authoring-fixture", intent: [], recent_activity: [],
+                referenced_files: ["pkg/reports.py", "pkg/resolver.py"], event_count: 1,
+                turns: [{
+                    id: "authoring-turn", session_id: "authoring-fixture", started_at: "2020-01-01T10:00:00Z",
+                    prompt: originatingPrompt, referenced_files: ["pkg/reports.py", "pkg/resolver.py"],
+                    agent_activity: [{ operation: "write", timestamp: "2020-01-01T10:00:01Z", referenced_files: ["pkg/reports.py", "pkg/resolver.py"] }],
+                }],
+            }], failures: [],
+        }),
         generateAnnotation: async (context) => {
             explanations += 1;
             return context.kind === "overview"
@@ -120,10 +132,39 @@ try {
         const metric = page.locator("#summary .metric").filter({ hasText: "Code paths" });
         await metric.waitFor();
         const commit = page.locator("#change-brief .brief-commit");
-        assert.equal(await commit.locator("summary").textContent(), "Commit message · Add reports fallback");
+        assert.equal(await page.locator("#change-brief .review-heading").textContent(), "Add reports fallback");
+        assert.equal(await page.locator("#change-brief .detail-top > .commit-preview").textContent(), "Strict fallback with title and year validation.");
+        assert.equal(await commit.locator("summary").textContent(), "Full commit message");
+        assert.ok(await commit.evaluate((message) => Boolean(message.compareDocumentPosition(
+            document.querySelector("#change-brief .detail-grid")) & Node.DOCUMENT_POSITION_FOLLOWING)),
+            "commit intent appears before the metrics and AI summary");
         await commit.locator("summary").click();
         assert.equal(await commit.locator(".commit-body").textContent(), "Strict fallback with title and year validation.",
             "the full commit body is visible provenance");
+        const origin = page.locator("#change-brief .brief-prompt");
+        await origin.waitFor();
+        assert.equal(await origin.locator(".prompt-preview").textContent(), originatingPrompt);
+        assert.ok(await commit.evaluate((message) => message.nextElementSibling.classList.contains("brief-prompt")),
+            "originating prompt is directly below the commit message");
+        const fullPrompt = origin.locator(".full-originating-prompt");
+        assert.equal(await fullPrompt.evaluate((details) => details.open), false);
+        await fullPrompt.locator("summary").click();
+        assert.equal(await fullPrompt.locator(".provenance-prompt").textContent(), originatingPrompt);
+        assert.equal(await fullPrompt.locator(".provenance-prompt.clamped").count(), 0, "expanded prompt is not clamped");
+        assert.equal(await fullPrompt.getByRole("button", { name: "Show full prompt", exact: true }).count(), 0,
+            "full prompt has no nested expansion control");
+        assert.equal(await fullPrompt.getByRole("button", { name: "Open session history" }).count(), 1);
+        state.broadcast("annotation");
+        await page.waitForTimeout(100);
+        assert.equal(await fullPrompt.evaluate((details) => details.open), true, "expansion survives server updates");
+        await fullPrompt.locator("summary").click();
+        for (const width of [1440, 560]) {
+            await page.setViewportSize({ width, height: 1000 });
+            assert.ok(await origin.locator(".prompt-preview").evaluate((preview) =>
+                preview.clientHeight <= 2 * Number.parseFloat(getComputedStyle(preview).lineHeight) + 1),
+                `${theme}: originating prompt preview is at most two lines at ${width}px`);
+        }
+        await page.setViewportSize({ width: 1440, height: 1000 });
         const rules = page.locator("#change-brief .rule-check");
         assert.match(await rules.locator("summary").textContent(), /Repository rules · AGENTS\.md\s*complete/);
         assert.match(await rules.locator(".rule-sources").textContent(), /AGENTS\.md applies to 2 changed files · 1 cited section\. Copilot checks the change/);

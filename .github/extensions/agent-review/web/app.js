@@ -602,8 +602,59 @@ function renderChangeBrief() {
     const panel = elements.change_brief;
     panel.replaceChildren();
     const model = state.payload?.model;
+    const target = state.payload?.review_target;
+    const intent = target?.intent;
+    if (model) ensureBriefIntent(model);
     const top = el("div", "detail-top");
-    top.append(el("h2", "", "Change brief"));
+    top.append(el("h2", "review-heading", intent?.subject || intent?.title
+        || (target?.mode === "worktree" || !target ? "Uncommitted changes" : target.label || "Selected review")));
+    if (intent) {
+        const messageLabel = intent.kind === "pr" ? "Pull request description" : "Commit message";
+        top.append(el("p", "commit-meta", messageLabel));
+        const preview = String(intent.body || "").trim().split(/\r?\n\s*\r?\n/)[0];
+        if (preview) top.append(el("p", "commit-preview", preview));
+        const message = el("details", "brief-origin brief-commit");
+        const key = `${target.mode}:${target.currentRef}`;
+        message.open = state.commitMessageOpenKey === key;
+        message.addEventListener("toggle", () => {
+            if (message.isConnected) state.commitMessageOpenKey = message.open ? key : null;
+        });
+        message.append(el("summary", "", intent.kind === "pr" ? "Full description and commits" : "Full commit message"));
+        const meta = intent.kind === "pr"
+            ? [`#${intent.number}`, intent.author, `${intent.commits?.length || 0} commit${intent.commits?.length === 1 ? "" : "s"}`]
+            : [intent.sha?.slice(0, 7), intent.author, intent.date ? new Date(intent.date).toLocaleString() : null];
+        message.append(el("p", "commit-meta", meta.filter(Boolean).join(" · ")));
+        if (intent.body) message.append(el("pre", "commit-body", intent.body));
+        else message.append(el("p", "muted commit-meta", "No message body."));
+        if (intent.commits?.length) {
+            const list = el("ul", "commit-list");
+            for (const commit of intent.commits) {
+                const item = el("li", "");
+                item.append(el("code", "", commit.sha.slice(0, 7)), document.createTextNode(` ${commit.subject}`));
+                if (commit.body) item.title = commit.body;
+                list.append(item);
+            }
+            message.append(list);
+        }
+        top.append(message);
+    }
+    if (state.briefIntent) {
+        const attribution = state.briefIntent;
+        const prompt = attribution.original_prompt || attribution.prompt || "";
+        const origin = el("section", "brief-prompt");
+        origin.append(el("p", "commit-meta", "Originating prompt"),
+            el("p", "commit-preview prompt-preview", prompt));
+        const full = el("details", "brief-origin full-originating-prompt");
+        const key = JSON.stringify([state.payload?.review_generation, attribution.session_id,
+            attribution.original_prompt_event_id || attribution.prompt_event_id, prompt]);
+        full.open = state.originatingPromptOpenKey === key;
+        full.addEventListener("toggle", () => {
+            if (full.isConnected) state.originatingPromptOpenKey = full.open ? key : null;
+        });
+        full.append(el("summary", "", "Full originating prompt"), promptBlock(attribution, true, true));
+        origin.append(full);
+        top.append(origin);
+    }
     panel.append(top);
     if (!model) {
         panel.append(el("p", "detail-copy", "The brief appears when analysis completes."));
@@ -628,7 +679,6 @@ function renderChangeBrief() {
         field("Coverage", model.coverage?.available ? "measured" : "unknown"),
     );
     panel.append(grid);
-    ensureBriefIntent(model);
     if (split.source > 50 && ratio < 0.15) {
         panel.append(el("p", "brief-warning", "Little or no test code changed relative to source."));
     }
@@ -666,36 +716,8 @@ function renderChangeBrief() {
             generate,
         );
     }
-    const intent = state.payload?.review_target?.intent;
     const rules = renderRuleCheck();
     if (rules) panel.append(rules);
-    if (intent && (intent.subject || intent.title || intent.body)) {
-        const message = el("details", "brief-origin brief-commit");
-        const heading = intent.kind === "pr" ? "Pull request description" : "Commit message";
-        message.append(el("summary", "", `${heading} · ${intent.subject || intent.title}`));
-        const meta = intent.kind === "pr"
-            ? [`#${intent.number}`, intent.author, `${intent.commits?.length || 0} commit${intent.commits?.length === 1 ? "" : "s"}`]
-            : [intent.sha?.slice(0, 7), intent.author, intent.date ? new Date(intent.date).toLocaleString() : null];
-        message.append(el("p", "commit-meta", meta.filter(Boolean).join(" · ")));
-        if (intent.body) message.append(el("pre", "commit-body", intent.body));
-        else message.append(el("p", "muted commit-meta", "No message body."));
-        if (intent.commits?.length) {
-            const list = el("ul", "commit-list");
-            for (const commit of intent.commits) {
-                const item = el("li", "");
-                item.append(el("code", "", commit.sha.slice(0, 7)), document.createTextNode(` ${commit.subject}`));
-                if (commit.body) item.title = commit.body;
-                list.append(item);
-            }
-            message.append(list);
-        }
-        panel.append(message);
-    }
-    if (state.briefIntent) {
-        const origin = el("details", "brief-origin");
-        origin.append(el("summary", "", "Originating prompt"), promptBlock(state.briefIntent));
-        panel.append(origin);
-    }
 }
 
 // Line ranges of a rule file that a check's text cites, merged and in file order.
@@ -763,13 +785,6 @@ function renderRuleCheck() {
         details.append(body);
     }
     if (rules.error) details.append(el("p", "error", rules.error));
-    if (["complete", "error"].includes(rules.status)) {
-        const rerun = el("button", "brief-generate rule-rerun", "Check again");
-        rerun.type = "button";
-        rerun.disabled = state.payload.loading;
-        rerun.addEventListener("click", () => api("/api/rule-check", { method: "POST", body: "{}" }).catch(showError));
-        details.append(rerun);
-    }
     return details;
 }
 
@@ -984,15 +999,15 @@ function ensureAnnotation(item, epoch = state.selectionEpoch) {
         });
 }
 
-function promptBlock(attribution, useOriginal = true) {
+function promptBlock(attribution, useOriginal = true, expanded = false) {
     if (useOriginal && attribution.original_prompt) {
         attribution = { ...attribution, prompt: attribution.original_prompt, prompt_event_id: attribution.original_prompt_event_id };
     }
     const fragment = document.createDocumentFragment();
-    const prompt = el("p", "provenance-prompt clamped", attribution.prompt);
+    const prompt = el("p", expanded ? "provenance-prompt" : "provenance-prompt clamped", attribution.prompt);
     fragment.append(prompt);
     const actions = el("div", "provenance-actions");
-    if (attribution.prompt.length > 260) {
+    if (!expanded && attribution.prompt.length > 260) {
         const toggle = el("button", "link-button", "Show full prompt");
         toggle.type = "button";
         toggle.addEventListener("click", () => {
@@ -1495,7 +1510,7 @@ function gapToggleRow(gap, expanded) {
 function diffRowsWithGaps(source) {
     const rows = parseDiff(source.diff);
     const gaps = diffGaps(source);
-    if (!gaps.length) return rows;
+    if (!gaps.length) return rows.filter((row) => !row.dataset.newStart);
     const headers = rows.filter((row) => row.classList.contains("diff-hunk") && row.dataset.newStart);
     const result = [];
     const expandedGaps = source.expandedGaps || new Set();
@@ -1507,7 +1522,7 @@ function diffRowsWithGaps(source) {
     for (const row of rows) {
         const hunkIndex = headers.indexOf(row);
         while (hunkIndex >= 0 && gapIndex < gaps.length && gaps[gapIndex].before <= hunkIndex) insertGap(gaps[gapIndex++]);
-        result.push(row);
+        if (hunkIndex < 0) result.push(row);
     }
     while (gapIndex < gaps.length) insertGap(gaps[gapIndex++]);
     return result;

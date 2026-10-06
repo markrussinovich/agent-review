@@ -69,7 +69,7 @@ try {
         }
 
         const rules = page.locator("#change-brief .rule-check");
-        assert.equal(await rules.locator(".rule-rerun").textContent(), "Check again");
+        assert.equal(await rules.locator(".rule-rerun").count(), 0, "completed checks have no rerun button");
         const savedContent = state.ruleCheck.content;
         let releaseRules;
         state.generateCustomAnalysis = () => new Promise((resolve) => { releaseRules = resolve; });
@@ -78,8 +78,8 @@ try {
         assert.equal(await rules.locator(".rule-rerun").count(), 0, "no redundant action while the automatic check is running");
         releaseRules(savedContent);
         await checkingRules;
-        await rules.locator(".rule-rerun").waitFor();
-        assert.equal(await rules.locator(".rule-rerun").textContent(), "Check again");
+        await rules.locator(".annotation-body").waitFor();
+        assert.equal(await rules.locator(".rule-rerun").count(), 0, "the automatic result needs no separate action");
         assert.match(await rules.locator(".rule-sources").textContent(), /AGENTS\.md applies to 1 changed file · 2 cited sections/);
         await rules.locator(".rule-source-link").click();
         await page.waitForFunction(() => document.querySelector("#source-title").textContent === "AGENTS.md");
@@ -94,6 +94,8 @@ try {
         assert.equal(await page.locator(".workspace").evaluate((node) => node.classList.contains("detail-collapsed")), true,
             "a file selection opens no redundant detail panel");
         const toggles = page.locator("#source .diff-gap-toggle");
+        assert.equal(await page.locator("#source .diff-hunk[data-new-start]").count(), 0,
+            "ordinary hunk range headers are redundant with line gutters and gap toggles");
         assert.deepEqual(await toggles.allTextContents(), [
             "▾Show 146 unchanged lines (1–146)", "▾Show 131 unchanged lines (156–286)", "▾Show 7 unchanged lines (296–302)"]);
         assert.equal(await page.locator('#source .code-row[data-new-line="100"]').count(), 0);
