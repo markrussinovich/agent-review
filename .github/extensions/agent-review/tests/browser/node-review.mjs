@@ -106,6 +106,8 @@ try {
         page.on("pageerror", (error) => errors.push(error.message));
         await page.goto(`${server.url}?scoutTheme=${theme}`);
         await page.locator("#summary .metric").first().waitFor();
+        assert.match(await page.locator(".quality-warning").textContent(), /source-matched LCOV\/Istanbul JSON/);
+        assert.doesNotMatch(await page.locator(".quality-warning").textContent(), /Generate coverage\.json or coverage\.xml/);
         assert.ok(await page.locator("#graph .node").count() > 0, "actual structural graph is rendered");
         await page.screenshot({ path: join(artifacts, `node-${theme}-graph.png`), fullPage: true });
         await page.setViewportSize({ width: 560, height: 1000 });

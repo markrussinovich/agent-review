@@ -217,9 +217,12 @@ function renderSummary(model) {
     const historical = ["commit", "pr"].includes(state.payload?.review_target?.mode);
     const warnings = (model.warnings || []).filter((warning) => !historical
         || warning !== "Worktree coverage is not applicable to a historical commit or PR snapshot.");
+    const coveragePrerequisite = meta.node_loc !== undefined
+        ? `Provide source-matched LCOV/Istanbul JSON${meta.python_loc ? " or Python coverage.json/coverage.xml" : ""}`
+        : "Generate coverage.json or coverage.xml in this checkout";
     if (!model.coverage?.available) qualityIssues.push(historical
         ? "Coverage is unavailable for this historical snapshot. Working-tree coverage reports are not applied to commit or PR reviews."
-        : "No usable coverage report for this worktree snapshot. Generate coverage.json or coverage.xml in this checkout, then Reanalyze.");
+        : `No usable coverage report for this worktree snapshot. ${coveragePrerequisite}, then Reanalyze.`);
     if (warnings.length) qualityIssues.push(`${warnings.length} analyzer warning${warnings.length === 1 ? " requires" : "s require"} review.`);
     if (qualityIssues.length) {
         const quality = el("button", "quality-warning");
