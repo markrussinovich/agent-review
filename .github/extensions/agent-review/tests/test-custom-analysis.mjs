@@ -23,14 +23,17 @@ test("custom analysis uses bounded saved source and discloses partial evidence",
 test("custom responses enforce concise output and usable snapshot citations", () => {
     const context = { files: [{ path: "src/main.py" }] };
     assert.equal(validateCustomAnalysis("## Findings\n\nNo supported findings.\n\n## Verification\n\nCheck `src/main.py:3`.", context).startsWith("## Findings"), true);
-    assert.throws(() => validateCustomAnalysis("## Findings\n\nSee `main.py:3`.\n\n## Verification\n\nCheck source.", context),
-        /outside its supplied evidence: main\.py.*allowed list: src\/main\.py/);
+    assert.ok(validateCustomAnalysis("## Findings\n\nSee `main.py:3`.\n\n## Verification\n\nCheck source.", context), "a unique filename resolves like a source link");
+    const ambiguous = { files: [{ path: "src/main.py" }, { path: "tools/main.py" }] };
+    assert.throws(() => validateCustomAnalysis("## Findings\n\nSee `main.py:3`.\n\n## Verification\n\nCheck source.", ambiguous),
+        /outside its supplied evidence: main\.py.*allowed list: src\/main\.py, tools\/main\.py/);
+    assert.throws(() => validateCustomAnalysis("## Findings\n\nSee `other.py:3`.\n\n## Verification\n\nCheck source.", context), /outside its supplied evidence/);
     assert.match(buildCustomAnalysisPrompt({ prompt: "Check evidence." }, context),
         /Untested rejection branches.*evidence gaps, not bugs/);
     assert.throws(() => validateCustomAnalysis("## Findings\n\nSee `src/main.py:~3`.\n\n## Verification\n\nCheck source.", context), /exact positive line numbers/);
-    assert.throws(() => validateCustomAnalysis("## Findings\n\nSee main.py:3.\n\n## Verification\n\nCheck source.", context), /outside its supplied evidence/);
-    assert.throws(() => validateCustomAnalysis("## Findings\n\nSee src/main.py:999.\n\n## Verification\n\nCheck source.",
-        { files: [{ path: "src/main.py", current_line_count: 3 }] }), /outside the saved current source/);
+    assert.throws(() => validateCustomAnalysis("## Findings\n\nSee nothing/main2.py:3.\n\n## Verification\n\nCheck source.", context), /outside its supplied evidence/);
+    assert.throws(() => validateCustomAnalysis("## Findings\n\nSee main.py:999.\n\n## Verification\n\nCheck source.",
+        { files: [{ path: "src/main.py", current_line_count: 3 }] }), /outside the saved current source/, "line bounds apply to the resolved file");
     assert.throws(() => validateCustomAnalysis(`## Findings\n\n${"word ".repeat(251)}\n\n## Verification\n\nCheck source.`, context), /250 words/);
     assert.throws(() => validateCustomAnalysis("## Findings\n\nNo supported findings. Here is an inventory of correct code.\n\n## Verification\n\nCheck source.", context), /positive-code inventory/);
 });

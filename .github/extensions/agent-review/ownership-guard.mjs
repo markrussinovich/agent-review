@@ -16,8 +16,8 @@ function forkGuard(config, stdio) {
     });
 }
 
-export function spawnOwnedAnalyzer(executable, args, { workspacePath } = {}) {
-    const guard = forkGuard({ executable, args, workspacePath }, ["ignore", "pipe", "pipe", "ipc"]);
+export function spawnOwnedAnalyzer(executable, args, { workspacePath, cwd, env } = {}) {
+    const guard = forkGuard({ executable, args, workspacePath, cwd, env }, ["ignore", "pipe", "pipe", "ipc"]);
     guard.stop = () => {
         if (guard.connected) guard.send({ type: "stop" });
     };
@@ -165,6 +165,8 @@ async function guardMain(config) {
         detached: process.platform !== "win32",
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
+        ...(config.cwd ? { cwd: config.cwd } : {}),
+        ...(config.env ? { env: { ...process.env, ...config.env } } : {}),
     });
     child.stdout.pipe(process.stdout);
     child.stderr.pipe(process.stderr);

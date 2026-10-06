@@ -22,6 +22,7 @@ try {
     await git("config", "core.autocrlf", "false");
     await mkdir(join(repo, "pkg"));
     await writeFile(join(repo, "pkg", "__init__.py"), "");
+    await writeFile(join(repo, "AGENTS.md"), "# Rules\n\nKeep CLI and WebUI paths on shared checker logic.\n");
     await writeFile(join(repo, "pkg", "resolver.py"), [
         "class Resolver:",
         "    def __init__(self):",
@@ -85,7 +86,7 @@ try {
         "",
     ].join("\n"));
     await git("add", ".");
-    await git("commit", "-qm", "Add reports fallback");
+    await git("commit", "-qm", "Add reports fallback", "-m", "Strict fallback with title and year validation.");
     let explanations = 0;
     state = new ReviewState(repo, {
         readWorktreeFingerprint: null,
@@ -95,10 +96,16 @@ try {
                 ? "## Summary\n\n- Adds a reports fallback.\n\n## Review order\n\n- Review `Resolver.resolve`.\n\n## Gaps\n\n- None."
                 : `## What changed\n\n- Briefing for ${context.subject?.name || "code"}.`;
         },
+        generateCustomAnalysis: async ({ prompt, context }) => {
+            assert.equal(prompt.scope, "builtin");
+            assert.deepEqual(context.repository_rules.map((source) => source.path), ["AGENTS.md"]);
+            return "## Findings\n\nNo supported findings.\n\n## Verification\n\n- Shared logic is Satisfied: the fallback lives in `pkg/resolver.py:13` (`AGENTS.md:3`).";
+        },
     });
     await state.setReviewTarget({ mode: "commit", ref: "HEAD" });
     const decisions = await state.decisionMapFor(60000);
     assert.equal(decisions.status, "complete", decisions.error);
+    assert.equal((await state.runRuleCheck()).status, "complete", state.ruleCheck?.error);
     server = await startReviewServer(state);
     const executablePath = process.env.AGENT_REVIEW_BROWSER_EXECUTABLE || [
         "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
@@ -110,16 +117,33 @@ try {
         const errors = [];
         page.on("pageerror", (error) => errors.push(error.message));
         await page.goto(`${server.url}?scoutTheme=${theme}`);
-        const metric = page.locator("#summary .metric").filter({ hasText: "Decisions" });
+        const metric = page.locator("#summary .metric").filter({ hasText: "Code paths" });
         await metric.waitFor();
+        const commit = page.locator("#change-brief .brief-commit");
+        assert.equal(await commit.locator("summary").textContent(), "Commit message · Add reports fallback");
+        await commit.locator("summary").click();
+        assert.equal(await commit.locator(".commit-body").textContent(), "Strict fallback with title and year validation.",
+            "the full commit body is visible provenance");
+        const rules = page.locator("#change-brief .rule-check");
+        assert.match(await rules.locator("summary").textContent(), /Repository rules · AGENTS\.md\s*complete/);
+        assert.match(await rules.locator(".rule-sources").textContent(), /AGENTS\.md applies to 2 changed files · 1 cited section\. Copilot checks the change/);
+        assert.equal(await rules.evaluate((details) => details.open), true, "rule verdicts are visible without expanding");
+        assert.match(await rules.locator(".annotation-body").textContent(), /Shared logic is Satisfied/);
+        assert.equal(await page.locator("#custom-results .rule-check").count(), 0, "rules are not mixed into the user's custom prompts");
+        await rules.locator(".rule-source-link").click();
+        await page.waitForFunction(() => document.querySelector("#source-title").textContent === "AGENTS.md");
+        assert.equal(await page.locator(".tab.active").textContent(), "Current");
+        assert.deepEqual(await page.locator("#source .code-row.cited-line").evaluateAll((rows) => rows.map((row) => row.dataset.newLine)), ["3"],
+            "the rule line the check cited is highlighted");
+        await page.click("#source-close");
         const metricText = await metric.textContent();
-        assert.match(metricText, /\+7\/~1\/−1Decisions3 callables · 3 conditional gates/, metricText);
+        assert.match(metricText, /\+7\/~1\/−1Code paths3 callables · 8 without test evidence/, metricText);
         const rows = await page.locator("#summary .metric").evaluateAll((cards) => cards.map((card) => card.getBoundingClientRect().top));
         assert.equal(rows.length, 5);
         assert.ok(rows.every((top) => Math.abs(top - rows[0]) < 1), `${theme}: five summary metrics share one row at desktop width`);
         await metric.click();
         await page.locator(".decision-view .decision-group").first().waitFor();
-        assert.equal(await page.locator("#graph-title").textContent(), "Decision changes");
+        assert.equal(await page.locator("#graph-title").textContent(), "Code path changes");
         const resolve = page.locator(".decision-group").filter({ hasText: "Resolver.resolve" });
         const added = resolve.locator('.decision-row.decision-added[data-line="19"]');
         const addedText = await added.textContent();
@@ -153,7 +177,13 @@ try {
         await page.locator("#source-annotation .annotation-body").waitFor();
         const pane = page.locator("#source-decisions");
         assert.equal(await pane.isVisible(), true);
-        assert.match(await pane.textContent(), /Decision changes/);
+        assert.match(await pane.textContent(), /Code path changes/);
+        assert.ok(await page.locator("#source-annotation").evaluate((briefing) =>
+            Boolean(briefing.compareDocumentPosition(document.querySelector("#source-decisions")) & Node.DOCUMENT_POSITION_FOLLOWING)),
+            "the AI briefing appears above the code path list");
+        const annotationBox = await page.locator("#source-annotation").boundingBox();
+        const paneBox = await pane.boundingBox();
+        assert.ok(annotationBox.y < paneBox.y, `${theme}: briefing renders above code paths`);
         assert.equal(await pane.locator(".decision-row").count(), await resolve.locator(".decision-row").count());
         const sideOverflow = await pane.locator(".decision-row").evaluateAll((items) => items.filter((item) => item.scrollWidth > item.clientWidth + 1).length);
         assert.equal(sideOverflow, 0, `${theme}: side-pane decisions wrap`);

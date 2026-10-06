@@ -14,6 +14,8 @@ import { buildSessionContext, findSessionAttribution, mergeSessionContexts } fro
 import { spawnOwnedAnalyzer } from "./ownership-guard.mjs";
 import { fingerprintWorktree } from "./worktree-changes.mjs";
 import { callablesForSubject, decisionPromptContext } from "./web/decision-map.mjs";
+import { exportSnapshot, linkedTestPlan, mapExecutedPaths, resolveTestPython, runLinkedTests, testCommand } from "./test-run.mjs";
+import { repositoryRuleSources, RULES_PROMPT, ruleCheckContext } from "./review-contracts.mjs";
 
 const execFileAsync = promisify(execFile);
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
@@ -158,10 +160,47 @@ export async function runAnalyzer(repoRoot, baseRef, onProgress, currentRef = nu
     throw new Error(`Unable to run the Python 3.11+ analyzer:\n${failures.join("\n")}`);
 }
 
+const MAX_TEST_FILES = 150;
+const MAX_TEST_BYTES = 8 * 1024 * 1024;
+
+function callableIdentity(symbol) {
+    const parts = String(symbol.qualname || "").split(".");
+    return {
+        name: parts.at(-1),
+        owner: symbol.kind === "method" && parts.length > 1 ? parts.at(-2) : null,
+        module: symbol.module || null,
+    };
+}
+
 // Changed production callables only; tests and unchanged code stay out of the decision map.
 export function buildDecisionRequest(model, repoRoot) {
     const byPath = new Map();
     const knownClasses = {};
+    const symbols = new Map((model?.symbols || []).map((symbol) => [symbol.id, symbol]));
+    const callersOf = new Map();
+    for (const edge of model?.edges || []) {
+        if (edge.type !== "calls") continue;
+        if (!callersOf.has(edge.target)) callersOf.set(edge.target, []);
+        callersOf.get(edge.target).push(edge.source);
+    }
+    const callers = (id) => {
+        const found = [];
+        let frontier = [id];
+        for (let depth = 0; depth < 2 && found.length < 10; depth++) {
+            const next = [];
+            for (const target of frontier) {
+                for (const source of callersOf.get(target) || []) {
+                    const caller = symbols.get(source);
+                    if (!caller || source === id || !["function", "method"].includes(caller.kind) || isTestPath(caller.path)) continue;
+                    if (found.some((item) => item.id === source)) continue;
+                    found.push({ id: source, ...callableIdentity(caller) });
+                    next.push(source);
+                }
+            }
+            frontier = next;
+        }
+        return found.slice(0, 10).map(({ id: _id, ...item }) => item);
+    };
     for (const symbol of model?.symbols || []) {
         if (symbol.kind === "class" && symbol.name && symbol.module) {
             const modules = knownClasses[symbol.name] ||= [];
@@ -170,9 +209,34 @@ export function buildDecisionRequest(model, repoRoot) {
         if (!["function", "method"].includes(symbol.kind) || !["added", "modified", "removed"].includes(symbol.classification)
             || !symbol.path?.endsWith(".py") || isTestPath(symbol.path)) continue;
         if (!byPath.has(symbol.path)) byPath.set(symbol.path, []);
-        byPath.get(symbol.path).push({ id: symbol.id, qualname: symbol.qualname, change: symbol.classification });
+        const { name: _name, ...identity } = callableIdentity(symbol);
+        byPath.get(symbol.path).push({ id: symbol.id, qualname: symbol.qualname, change: symbol.classification, ...identity,
+            callers: symbol.classification === "removed" ? [] : callers(symbol.id) });
     }
     if (!byPath.size) return null;
+    const names = new Set();
+    for (const callables of byPath.values()) {
+        for (const item of callables) {
+            names.add(String(item.qualname).split(".").at(-1));
+            if (item.owner) names.add(item.owner);
+            for (const caller of item.callers) names.add(caller.name);
+        }
+    }
+    const pattern = new RegExp(`\\b(?:${[...names].map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`);
+    const addedLines = new Map((model.changes || []).map((change) => [change.path, change.added_lines || []]));
+    const tests = [];
+    let testBytes = 0;
+    let testsLimited = false;
+    for (const [path, saved] of Object.entries(model.source_files || {})) {
+        if (!path.endsWith(".py") || !isTestPath(path) || saved?.binary || typeof saved?.current !== "string") continue;
+        if (!pattern.test(saved.current)) continue;
+        if (tests.length >= MAX_TEST_FILES || testBytes + saved.current.length > MAX_TEST_BYTES) {
+            testsLimited = true;
+            continue;
+        }
+        testBytes += saved.current.length;
+        tests.push({ path, current: saved.current, added_lines: addedLines.get(path) || [] });
+    }
     return {
         repo: model.metadata?.repo_root || repoRoot,
         base_sha: model.metadata?.base_sha || null,
@@ -182,9 +246,31 @@ export function buildDecisionRequest(model, repoRoot) {
                 const saved = model.source_files?.[path];
                 return { path, current: saved && !saved.binary ? saved.current ?? null : null, callables };
             }),
+        tests,
+        tests_limited: testsLimited,
         known_classes: knownClasses,
         known_modules: (model.nodes || []).filter((node) => node.kind === "module").map((node) => node.name),
     };
+}
+
+// Existing coverage reports show whether a path's lines ran in the suite, not which test ran them.
+export function attachCoverage(map, model) {
+    if (!model?.coverage?.available || !map?.callables) return map;
+    const files = new Map((model.coverage.files || []).map((file) => [file.path,
+        { covered: new Set(file.covered_lines || []), executable: new Set(file.executable_lines || []) }]));
+    for (const item of map.callables) {
+        const file = files.get(item.path);
+        if (!file) continue;
+        for (const entry of item.entries || []) {
+            if (entry.status === "removed" || entry.decision.implicit) continue;
+            const lines = [];
+            for (let line = entry.decision.line; line <= (entry.decision.end_line || entry.decision.line); line++) lines.push(line);
+            const coverage = lines.some((line) => file.covered.has(line)) ? "executed"
+                : lines.some((line) => file.executable.has(line)) ? "not executed" : null;
+            if (coverage) (entry.evidence ||= { level: "none", tests: [], omitted_tests: 0 }).coverage = coverage;
+        }
+    }
+    return map;
 }
 
 export async function runDecisionExtractor(request, options = {}) {
@@ -235,6 +321,10 @@ export class ReviewState {
         this.decisionMap = null;
         this.decisionPromise = null;
         this.decisionController = null;
+        this.runTests = options.runTests || runLinkedTests;
+        this.testRun = null;
+        this.testRunController = null;
+        this.ruleCheck = null;
         this.readWorktreeFingerprint = options.readWorktreeFingerprint
             || (this.runAnalyzer === runAnalyzer ? fingerprintWorktree : null);
         this.worktreeFingerprint = null;
@@ -298,6 +388,8 @@ export class ReviewState {
             custom_analyses: this.customAnalyses,
             custom_prompt_error: this.customPromptError,
             decision_map: this.decisionMap,
+            test_run: this.testRun ? { ...this.testRun, stale: this.testRun.status === "complete" && this.testRunStale() } : null,
+            rule_check: this.ruleCheck,
         };
     }
 
@@ -389,6 +481,7 @@ export class ReviewState {
             this.decisionMap = null;
             this.decisionPromise = null;
         }
+        this.stopTestRun();
         this.loading = true;
         this.cancelled = false;
         this.error = null;
@@ -447,6 +540,8 @@ export class ReviewState {
                 this.worktreeChanged = false;
                 this.worktreeCheckError = run.worktreeCheckError || null;
                 this.progress = { phase: "complete", message: "Analysis complete", percent: 100 };
+                this.testRun = null;
+                this.ruleCheck = null;
                 this.startDecisionMap();
                 this.saveCurrentReview();
                 this.broadcast("refreshed");
@@ -509,6 +604,10 @@ export class ReviewState {
         const decisions = this.decisionPromise;
         this.decisionController?.abort();
         await decisions;
+        const tests = this.testRunPromise;
+        this.stopTestRun();
+        await tests?.catch(() => {});
+        this.testRun = null;
         this.decisionMap = null;
         this.decisionPromise = null;
         this.model = null;
@@ -546,6 +645,9 @@ export class ReviewState {
             this.selection = null;
             const cached = this.reviewCache.get(this.reviewCacheKey(resolved));
             this.decisionController?.abort();
+            this.stopTestRun();
+            this.testRun = cached?.testRun || null;
+            this.ruleCheck = cached?.ruleCheck || null;
             if (cached) {
                 this.reviewGeneration += 1;
                 this.annotationPromises = new Map();
@@ -597,6 +699,8 @@ export class ReviewState {
             model: this.model,
             annotations: this.annotations,
             decisionMap: this.decisionMap?.status === "complete" ? this.decisionMap : null,
+            testRun: this.testRun?.status === "complete" ? this.testRun : null,
+            ruleCheck: ["complete", "none"].includes(this.ruleCheck?.status) ? this.ruleCheck : null,
             packageRisks: this.packageRisks,
             packageAssessments: this.packageAssessments,
             generatedObservations: this.generatedObservations,
@@ -630,7 +734,7 @@ export class ReviewState {
                 if (!request) return { callables: [], totals: {}, limited: false, warnings: [], elapsed_ms: 0 };
                 return this.runDecisions(request, { signal: controller.signal, workspacePath: this.workspacePath });
             })
-            .then((result) => ({ ...result, status: "complete", total_ms: Date.now() - started }),
+            .then((result) => attachCoverage({ ...result, status: "complete", total_ms: Date.now() - started }, model),
                 (error) => ({ status: "error", error: `Decision extraction failed: ${error.message}` }))
             .then((map) => {
                 if (this.decisionController === controller) this.decisionController = null;
@@ -654,6 +758,102 @@ export class ReviewState {
         return this.decisionMap;
     }
 
+    async testRunPlan() {
+        const plan = linkedTestPlan(this.decisionMap, this.repoRoot);
+        const python = resolveTestPython(this.repoRoot, await loadReviewConfig(this.repoRoot));
+        const worktree = this.reviewTarget.mode === "worktree";
+        let reason = plan.reason;
+        if (this.loading) reason = "Wait for the analysis to finish.";
+        else if (worktree && this.worktreeChanged) reason = "The worktree changed since this review. Reanalyze before running linked tests.";
+        else if (!worktree && !this.reviewTarget.currentRef) reason = "This snapshot has no commit to export for testing.";
+        return { ...plan, python: python.executable, python_source: python.source, command: testCommand(python, plan).join(" "),
+            location: worktree ? "the worktree" : `a temporary export of ${this.reviewTarget.label || this.reviewTarget.currentRef.slice(0, 7)}`,
+            available: !reason, reason };
+    }
+
+    stopTestRun() {
+        this.testRunController?.abort(new DOMException("Test run cancelled.", "AbortError"));
+        this.testRunController = null;
+        if (this.testRun?.status === "running") {
+            this.testRun = { ...this.testRun, status: "cancelled", finished_at: new Date().toISOString() };
+        }
+    }
+
+    // Only a worktree run can go stale: commit and PR snapshots are immutable.
+    testRunStale() {
+        return this.reviewTarget.mode === "worktree" && this.worktreeChanged;
+    }
+
+    promptTestRun() {
+        return this.testRun ? { ...this.testRun, stale: this.testRunStale() } : null;
+    }
+
+    cancelTestRun() {
+        this.stopTestRun();
+        this.broadcast("test-run");
+        return this.testRun;
+    }
+
+    // Explicit user action: executes the repository's tests, so it never starts automatically.
+    async runLinkedTests() {
+        if (this.disposed) throw new Error("This review has been closed.");
+        if (this.testRun?.status === "running" || this.testRunStarting) throw new Error("Linked tests are already running.");
+        // Marked before any await so concurrent requests cannot both start a run.
+        this.testRunStarting = true;
+        const map = this.decisionMap;
+        const generation = this.reviewGeneration;
+        let plan;
+        let python;
+        try {
+            plan = await this.testRunPlan();
+            if (!plan.available) throw new Error(plan.reason);
+            python = resolveTestPython(this.repoRoot, await loadReviewConfig(this.repoRoot));
+            if (this.disposed || this.loading || this.refreshPromise || generation !== this.reviewGeneration
+                || this.decisionMap !== map || this.testRunStale()) {
+                throw new Error("The review changed before the linked tests could start. Try again.");
+            }
+        } finally {
+            this.testRunStarting = false;
+        }
+        const controller = new AbortController();
+        this.testRunController = controller;
+        const snapshotRef = this.reviewTarget.mode === "worktree" ? null : this.reviewTarget.currentRef;
+        const run = { status: "running", started_at: new Date().toISOString(), command: plan.command, location: plan.location,
+            python: plan.python, python_source: plan.python_source, planned: plan.tests.length, omitted: plan.omitted };
+        this.testRun = run;
+        this.broadcast("test-run");
+        this.testRunPromise = (async () => {
+            const root = snapshotRef ? await exportSnapshot(this.repoRoot, snapshotRef, { signal: controller.signal }) : this.repoRoot;
+            try {
+                const result = await this.runTests({ repoRoot: root, python, plan: { ...plan, files: linkedTestPlan(map, root).files },
+                    signal: controller.signal, workspacePath: this.workspacePath });
+                return { result, root };
+            } finally {
+                if (snapshotRef) await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+            }
+        })()
+            .then(({ result, root }) => {
+                const results = Object.entries(result.trace.tests || {}).map(([id, record]) => ({
+                    id, outcome: record.outcome, duration_ms: record.duration_ms }));
+                const { executed, ran } = mapExecutedPaths(map, result.trace, root);
+                return { ...run, status: "complete", finished_at: new Date().toISOString(), exit_code: result.exit_code,
+                    output: result.output, tests: results, executed, ran,
+                    counts: Object.fromEntries(["passed", "failed", "error", "skipped"].map((outcome) =>
+                        [outcome, results.filter((test) => test.outcome === outcome).length])) };
+            }, (error) => controller.signal.aborted
+                ? { ...run, status: "cancelled", finished_at: new Date().toISOString() }
+                : { ...run, status: "error", finished_at: new Date().toISOString(), error: error.message })
+            .then((outcome) => {
+                if (this.testRunController === controller) this.testRunController = null;
+                if (this.disposed || generation !== this.reviewGeneration || this.testRun !== run) return outcome;
+                this.testRun = outcome;
+                this.saveCurrentReview();
+                this.broadcast("test-run");
+                return outcome;
+            });
+        return run;
+    }
+
     promptStore() {
         if (!this.customPromptStore || this.customPromptStore.repoRoot !== resolve(this.repoRoot)) {
             this.customPromptStore = new CustomPromptStore(this.repoRoot, this.customPromptOptions);
@@ -665,11 +865,55 @@ export class ReviewState {
         const model = this.model;
         if (model
             && !(model.changes || []).some((change) => change.status !== "unchanged")) return;
+        this.runRuleCheck().catch((error) => console.error("[agent-review rule check]", error));
         this.runCustomAnalyses().catch((error) => {
             if (this.model !== model) return;
             this.customPromptError = error.message;
             this.broadcast("custom-analysis-error");
         });
+    }
+
+    // Built-in check: does the change satisfy the repository's own instruction files?
+    async runRuleCheck({ force = false } = {}) {
+        if (!this.model || this.loading || this.disposed) return this.ruleCheck;
+        if (this.ruleCheck?.status === "running") return this.ruleCheckPromise;
+        if (!force && ["complete", "none"].includes(this.ruleCheck?.status)) return this.ruleCheck;
+        this.ruleCheckPromise = this.performRuleCheck();
+        return this.ruleCheckPromise;
+    }
+
+    async performRuleCheck() {
+        const model = this.model;
+        const sources = repositoryRuleSources(model);
+        const summary = sources.map(({ path, kind, applies_to: applies, truncated, changed_in_review: changed }) => ({
+            path, kind, applies_to: applies.slice(0, 50), applicable_count: applies.length, truncated, changed_in_review: changed }));
+        if (!sources.length) {
+            this.ruleCheck = { status: "none", sources: [] };
+            return this.ruleCheck;
+        }
+        if (!this.generateCustomAnalysis) {
+            this.ruleCheck = { status: "unavailable", sources: summary };
+            this.broadcast("rule-check");
+            return this.ruleCheck;
+        }
+        const check = { status: "running", sources: summary, started_at: new Date().toISOString() };
+        this.ruleCheck = check;
+        this.broadcast("rule-check");
+        let outcome;
+        try {
+            const context = ruleCheckContext(customAnalysisContext(model), sources);
+            const prompt = { id: "repository-rules", scope: "builtin", title: "Repository rules", prompt: RULES_PROMPT };
+            const content = validateCustomAnalysis(await withTimeout(this.generateCustomAnalysis({ prompt, context }),
+                this.customAnalysisTimeoutMs, "The repository rules check timed out. Run it again."), context);
+            outcome = { ...check, status: "complete", content, completed_at: new Date().toISOString() };
+        } catch (error) {
+            outcome = { ...check, status: "error", error: error.message };
+        }
+        if (this.disposed || this.model !== model || this.ruleCheck !== check) return outcome;
+        this.ruleCheck = outcome;
+        this.saveCurrentReview();
+        this.broadcast("rule-check");
+        return outcome;
     }
 
     async runCustomAnalyses(input = {}) {
@@ -946,12 +1190,13 @@ export class ReviewState {
             if (generation !== this.reviewGeneration) throw new Error("The review changed while loading annotation context.");
             context.session_attribution = this.attributionForPath(attributionPath);
             context.session_intent = this.intentForReview(context.session_attribution).slice(-6);
+            context.commit_intent = this.reviewTarget.intent || null;
             context.code_context = await this.codeContextFor(context);
             if (this.decisionMap?.status === "loading") await this.decisionMapFor();
             if (generation !== this.reviewGeneration) throw new Error("The review changed while loading annotation context.");
             const subjectCallables = callablesForSubject(this.decisionMap, this.model, context.subject);
             context.decision_changes = subjectCallables.length
-                ? decisionPromptContext(this.decisionMap, subjectCallables, { maxCallables: 12, maxEntries: 20, maxCharacters: 6000 })
+                ? decisionPromptContext(this.decisionMap, subjectCallables, { maxCallables: 12, maxEntries: 20, maxCharacters: 6000, run: this.promptTestRun() })
                 : null;
             return this.generateAnnotation(context);
         })()
@@ -1076,9 +1321,10 @@ export class ReviewState {
             })),
             session_intent: this.intentForReview(attribution).slice(-4).map((item) => String(item.summary || "").slice(0, 500)),
             session_attribution: attribution,
+            commit_intent: this.reviewTarget.intent || null,
             code_context: savedCode.files,
             evidence_limits: savedCode.evidence_limits,
-            decision_map: decisionPromptContext(this.decisionMap),
+            decision_map: decisionPromptContext(this.decisionMap, undefined, { run: this.promptTestRun() }),
             analysis_quality: {
                 coverage_available: Boolean(model.coverage?.available),
                 warnings: model.warnings || [],

@@ -89,8 +89,17 @@ try {
         assert.match(await page.locator("#source .focus-start").textContent(), /def removed/);
         await page.locator('.tab[data-tab="base"]').click();
         assert.match(await page.locator("#source .focus-start").textContent(), /def removed/);
+        const baseMarks = await page.locator("#source .code-row").evaluateAll((rows) => rows
+            .filter((row) => /diff-(delete|modified)/.test(row.className))
+            .map((row) => [row.dataset.oldLine, row.querySelector(".diff-prefix").textContent, row.querySelector("code").textContent]));
+        assert.ok(baseMarks.some(([, prefix, code]) => prefix === "−" && /def removed/.test(code)), "Base marks removed lines");
+        assert.ok(baseMarks.some(([line, prefix, code]) => line === "82" && prefix === "−" && /return value$/.test(code)), "Base marks the changed line");
+        assert.equal(await page.locator('#source .code-row[data-old-line="1"]').getAttribute("class"), "code-row diff-context", "unchanged lines stay plain");
         await page.locator('.tab[data-tab="current"]').click();
         assert.equal(await page.locator("#source .focus-line").count(), 0, "removed definitions never highlight unrelated current lines");
+        const changed = page.locator('#source .code-row[data-new-line="82"]');
+        assert.match(await changed.getAttribute("class"), /diff-(add|modified)/, "Current marks the changed line");
+        assert.equal(await changed.locator(".diff-prefix").textContent(), "+");
         await page.click("#source-close");
         await page.locator("#packages .review-card").filter({ hasText: "reportlab" }).click();
         await page.waitForFunction(() => document.querySelector("#package-detail")?.textContent.includes("PDF reports."));

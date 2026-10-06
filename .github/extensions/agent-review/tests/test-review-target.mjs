@@ -22,15 +22,18 @@ test("commit review uses immutable source, diffs and AI context despite dirty wo
         await git("commit", "-qm", "base");
         const base = (await git("rev-parse", "HEAD")).stdout.trim();
         await writeFile(join(repo, "main.py"), "def run():\n    return 2\n");
-        await git("commit", "-qam", "feature");
+        await git("commit", "-qam", "feature", "-m", "Strict fallback: validate title, author, and year.\n\nSecond paragraph.");
         const head = (await git("rev-parse", "HEAD")).stdout.trim();
         const commits = await listReviewTargets(repo, { mode: "commit" });
         assert.deepEqual(commits.items.map((item) => item.ref), [head, base]);
         assert.equal(commits.items[0].title, "feature");
         assert.equal(commits.has_more, false);
         await writeFile(join(repo, "main.py"), "def dirty_only():\n    return 999\n");
-        const state = new ReviewState(repo, { baseRef: base });
+        const state = new ReviewState(repo, { baseRef: base, generateAnnotation: async () => "## Summary\n\n- Ok." });
         await state.setReviewTarget({ mode: "commit", ref: head });
+        assert.deepEqual([state.reviewTarget.intent.subject, state.reviewTarget.intent.body, state.reviewTarget.intent.author],
+            ["feature", "Strict fallback: validate title, author, and year.\n\nSecond paragraph.", "Test"], "the full commit message is provenance");
+        assert.equal(state.overviewContext().commit_intent.body, state.reviewTarget.intent.body);
         assert.equal(state.model.metadata.head_sha, head);
         assert.equal(state.model.metadata.base_sha, base);
         const resumed = new ReviewState(repo, { baseRef: base, reviewTarget: state.reviewTarget });
@@ -65,13 +68,18 @@ test("PR resolves GitHub metadata and merge base without checkout", async () => 
     const merge = "c".repeat(40);
     const target = await resolveReviewTarget("C:\\repo", { mode: "pr", ref: "12" }, async (command, args) => {
         calls.push([command, args]);
-        if (command === "gh") return { stdout: JSON.stringify({ number: 12, title: "Feature", url: "https://github.com/example/repo/pull/12", baseRefOid: base, headRefOid: head }) };
+        if (command === "gh") return { stdout: JSON.stringify({ number: 12, title: "Feature", url: "https://github.com/example/repo/pull/12", baseRefOid: base, headRefOid: head,
+            body: "Adds the strict fallback.", author: { login: "octo" } }) };
+        if (args.includes("log")) return { stdout: `${"d".repeat(40)}\0Add fallback\0Validate year.\x1e\n${"e".repeat(40)}\0Fix tests\0\x1e\n` };
         return { stdout: args.includes("merge-base") ? merge : "" };
     });
 
     assert.equal(target.baseRef, merge);
     assert.equal(target.currentRef, head);
-    assert.equal(calls.filter(([command]) => command === "git").length, 2);
+    assert.equal(calls.filter(([command]) => command === "git").length, 3);
+    assert.deepEqual([target.intent.kind, target.intent.body, target.intent.author], ["pr", "Adds the strict fallback.", "octo"]);
+    assert.deepEqual(target.intent.commits.map((commit) => [commit.subject, commit.body]), [["Add fallback", "Validate year."], ["Fix tests", ""]]);
+    assert.ok(calls.some(([, args]) => args.includes(`${merge}..${head}`)), "PR commit messages cover only the PR range");
     assert.ok(calls.some(([, args]) => args.includes("refs/pull/12/head")));
     assert.ok(calls.every(([, args]) => !args.includes("checkout")));
     await assert.rejects(resolveReviewTarget("C:\\repo", { mode: "pr", ref: "https://untrusted.invalid/pull/12" }), /Enter a GitHub PR/);

@@ -2,6 +2,28 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
+const MAX_MESSAGE = 8000;
+const MAX_PR_COMMITS = 30;
+
+const clip = (text, limit = MAX_MESSAGE) => (text.length > limit ? `${text.slice(0, limit)}\n… (truncated)` : text);
+
+// The author's own statement of intent for a historical snapshot.
+async function commitIntent(git, sha) {
+    const [author = "", date = "", ...rest] = (await git("show", "-s", "--format=%an%x00%aI%x00%B", sha)).split("\0");
+    const [subject = "", ...body] = rest.join("\0").trim().split(/\r?\n/);
+    return { kind: "commit", sha, author, date, subject, body: clip(body.join("\n").trim()) };
+}
+
+async function pullRequestCommits(git, base, head) {
+    const output = await git("log", `-n${MAX_PR_COMMITS}`, "--format=%H%x00%s%x00%b%x1e", `${base}..${head}`);
+    let budget = MAX_MESSAGE;
+    return output.split("\x1e").map((record) => record.trim()).filter(Boolean).map((record) => {
+        const [sha, subject = "", body = ""] = record.split("\0");
+        const text = body.trim().slice(0, Math.max(0, budget));
+        budget -= text.length;
+        return { sha, subject, body: text };
+    });
+}
 
 export async function listReviewTargets(repoRoot, { mode, page = 0 }, run = execute) {
     if (!Number.isInteger(page) || page < 0 || page > 10_000) throw new Error("Invalid review list page.");
@@ -63,14 +85,15 @@ export async function resolveReviewTarget(repoRoot, target, run = execute) {
         const head = await commit(target.ref.trim());
         const parents = (await git("rev-list", "--parents", "-n", "1", head)).split(/\s+/).slice(1);
         const base = parents[0] || null;
-        return { mode: "commit", ref: target.ref.trim(), currentRef: head, baseRef: base, label: `Commit ${head.slice(0, 7)}` };
+        return { mode: "commit", ref: target.ref.trim(), currentRef: head, baseRef: base, label: `Commit ${head.slice(0, 7)}`,
+            intent: await commitIntent(git, head) };
     }
     if (target.mode === "pr") {
         const value = String(target.ref || "").trim();
         if (!/^[1-9]\d*$/.test(value) && !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*\/?$/.test(value)) {
             throw new Error("Enter a GitHub PR number or https://github.com/owner/repo/pull/number URL.");
         }
-        const pr = JSON.parse(await invoke("gh", ["pr", "view", value, "--json", "number,title,url,baseRefOid,headRefOid"]));
+        const pr = JSON.parse(await invoke("gh", ["pr", "view", value, "--json", "number,title,url,baseRefOid,headRefOid,body,author"]));
         if (!/^[a-f0-9]{40}$/i.test(pr.baseRefOid) || !/^[a-f0-9]{40}$/i.test(pr.headRefOid)) {
             throw new Error("GitHub returned invalid PR commit IDs.");
         }
@@ -78,7 +101,9 @@ export async function resolveReviewTarget(repoRoot, target, run = execute) {
         if (!repository) throw new Error("GitHub returned an invalid PR URL.");
         await git("fetch", "--no-tags", `https://github.com/${repository}.git`, pr.baseRefOid, `refs/pull/${pr.number}/head`);
         const base = await git("merge-base", pr.baseRefOid, pr.headRefOid);
-        return { mode: "pr", ref: value, currentRef: pr.headRefOid, baseRef: base, label: `PR #${pr.number}: ${pr.title}`, url: pr.url };
+        const intent = { kind: "pr", number: pr.number, title: String(pr.title || ""), author: pr.author?.login || "",
+            body: clip(String(pr.body || "").trim()), commits: await pullRequestCommits(git, base, pr.headRefOid) };
+        return { mode: "pr", ref: value, currentRef: pr.headRefOid, baseRef: base, label: `PR #${pr.number}: ${pr.title}`, url: pr.url, intent };
     }
     throw new Error("Unknown review mode.");
 }

@@ -111,6 +111,22 @@ export function startReviewServer(state, options = {}) {
                     : await state.sourceFor(requestUrl.searchParams.get("id")));
                 return;
             }
+            if (req.method === "POST" && pathname === "/api/rule-check") {
+                sendJson(res, { check: await state.runRuleCheck({ force: true }) });
+                return;
+            }
+            if (req.method === "GET" && pathname === "/api/test-run/plan") {
+                sendJson(res, await state.testRunPlan());
+                return;
+            }
+            if (req.method === "POST" && pathname === "/api/test-run") {
+                sendJson(res, { run: await state.runLinkedTests() }, 202);
+                return;
+            }
+            if (req.method === "POST" && pathname === "/api/test-run/cancel") {
+                sendJson(res, { run: state.cancelTestRun() });
+                return;
+            }
             if (req.method === "GET" && pathname === "/api/review-targets") {
                 sendJson(res, await listReviewTargets(state.repoRoot, {
                     mode: requestUrl.searchParams.get("mode"),

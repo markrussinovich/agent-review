@@ -57,7 +57,7 @@ test("decisions are scoped to the selected method, class, or file", () => {
 test("prompt context is bounded, ranks changed callables first, and reports unavailable extraction", () => {
     const context = decisionPromptContext(map);
     assert.deepEqual(context.callables.map((item) => item.callable), ["Checker.verify", "Hybrid.core", "Hybrid.same"]);
-    assert.deepEqual(context.callables[2].changes, ["no decision changes (same exits, handlers, and wiring)"]);
+    assert.deepEqual(context.callables[2].changes, ["no code path changes (same exits, handlers, and wiring)"]);
     assert.match(context.note, /'only if' gates apply only when a value is present/);
     const tight = decisionPromptContext(map, map.callables, { maxCallables: 1, maxCharacters: 400 });
     assert.equal(tight.callables.length, 1);
@@ -121,7 +121,8 @@ test("extraction starts only after analysis resolves and feeds summaries and bri
     await new Promise((resolve) => setImmediate(resolve));
     const run = events.find((event) => event.request);
     assert.equal(run.analysisResolved, true, "the decision extractor never runs on the analysis critical path");
-    assert.deepEqual(run.request.files[0].callables, [{ id: "symbol:verify", qualname: "Checker.verify", change: "added" }]);
+    assert.deepEqual(run.request.files[0].callables, [{ id: "symbol:verify", qualname: "Checker.verify", change: "added",
+        owner: "Checker", module: null, callers: [] }]);
     const overview = state.overviewFor();
     finishDecisions({ callables: [map.callables[0]], totals: { added: 2 }, limited: false, warnings: [], elapsed_ms: 5 });
     await overview;

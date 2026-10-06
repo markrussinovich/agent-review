@@ -18,6 +18,8 @@ import time
 from collections import defaultdict, deque
 from typing import Any
 
+from verification import link_tests
+
 MAX_TEXT = 160
 MAX_DECISIONS_PER_CALLABLE = 300
 MAX_ENTRIES_PER_CALLABLE = 60
@@ -296,14 +298,33 @@ class DecisionCollector:
                 if threshold not in found_thresholds:
                     found_thresholds.append(threshold)
         line = getattr(node, "end_lineno", node.lineno) if end else node.lineno
+        end_line = getattr(node, "end_lineno", line) or line
         self.decisions.append({
             "kind": kind, "outcome": outcome, "value": value, "when": when, "when_mode": mode,
             "only_if": only_if, "context": context + ([case] if case else []), "loop": loop,
             "on_error": on_error, "thresholds": found_thresholds,
-            "line": line, "end_line": getattr(node, "end_lineno", line) or line,
+            "line": line, "end_line": end_line,
             "column": 10**6 if end else node.col_offset,
             "implicit": end,
+            "trace": self.trace_lines(kind, node, frames, decisive_index, line, end_line, end),
         })
+
+    @staticmethod
+    def trace_lines(kind, node, frames, decisive_index, line, end_line, implicit):
+        """Lines whose execution proves this path ran, or None when line tracing cannot tell."""
+        if implicit or isinstance(node, ast.Assert):
+            return None
+        if kind == "handler":
+            body = [item for item in node.body if not isinstance(item, ast.Pass)] or node.body
+            # A one-line handler's body shares the except line, which runs while other exceptions are matched.
+            if not body or body[0].lineno == node.lineno:
+                return None
+            return [body[0].lineno, end_line]
+        if decisive_index is not None:
+            test = frames[decisive_index].test
+            if test is not None and getattr(test, "lineno", None) == line:
+                return None
+        return [line, end_line]
 
     def wiring(self) -> None:
         for node in self.walk(self.function.body):
@@ -531,6 +552,7 @@ def build_decision_map(request: dict[str, Any]) -> dict[str, Any]:
         selected.append(item)
     base_files = read_base_files(request.get("repo") or ".", request.get("base_sha"), [item["path"] for item in selected])
     results: list[dict[str, Any]] = []
+    all_current: dict[Any, list[dict[str, Any]]] = {}
     totals = defaultdict(int)
     for item in selected:
         if time.perf_counter() - started > TIME_BUDGET_SECONDS:
@@ -566,6 +588,7 @@ def build_decision_map(request: dict[str, Any]) -> dict[str, Any]:
             allowed = min(MAX_ENTRIES_PER_CALLABLE, max(0, MAX_TOTAL_ENTRIES - totals["shown"]))
             shown = entries[:allowed]
             totals["shown"] += len(shown)
+            all_current[target.get("id")] = current_decisions
             if len(entries) > allowed and allowed < MAX_ENTRIES_PER_CALLABLE:
                 limited = True
             results.append({
@@ -577,9 +600,11 @@ def build_decision_map(request: dict[str, Any]) -> dict[str, Any]:
                 "truncated": base_truncated or current_truncated,
             })
     totals.pop("shown", None)
+    verification = link_tests(request, results, parse, all_current) if "tests" in request else None
     return {
         "callables": results,
         "totals": dict(totals),
+        "verification": verification,
         "files_examined": len(selected),
         "limited": limited,
         "warnings": warnings,

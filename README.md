@@ -26,22 +26,48 @@ modified, and removed items have distinct styling; graph edges expose callers
 and dependencies. A ranked attention queue highlights rule-based concerns,
 with evidence, exact source locations, and persistent **Close / Reopen** controls.
 
-### Follow behavior decisions
+### Follow code paths
 
-The **Decisions** metric maps how each changed production function decides:
+The **Code paths** metric maps how each changed production function behaves:
 its returns, raises, skipped iterations, error handlers, and name-based wiring
 (for example, a checker loaded from a class-name string), each with its
 governing condition. **Only if** marks gates that apply only when a value is
 present, thresholds are called out, and added exits show which existing exit
 runs before and after them, revealing fallbacks an earlier return can preempt.
-Compared with the base, decisions are added, removed, changed (such as a
-threshold moving from 0.9 to 0.95), or moved. Select any decision to open its
-line; the source pane lists the decisions for the selected function, class, or
-file. Copilot summaries and briefings receive the same deterministic map.
+Compared with the base, code paths are added, removed, changed (such as a
+threshold moving from 0.9 to 0.95), or moved. Select any path to open its
+line; the source pane lists the paths for the selected function, class, or
+file below the Copilot briefing. Copilot summaries and briefings receive the
+same deterministic map.
+
+### See which paths are tested
+
+Every changed path carries its test evidence, and filters show **Untested**,
+**Inferred**, or **Confirmed** paths. Static analysis links tests that call
+the function (or reach it through a caller) and matches their assertions to
+outcomes, such as `pytest.raises(ValueError)` for a new raise, flagging checks
+that match several paths. These links are labeled **inferred**. **Run linked
+tests** runs only those pytest tests with line tracing restricted to the
+changed files and marks each path **Confirmed** (executed by a named test) or
+**Not executed**. Worktree reviews run in place; commit and PR reviews run in a
+temporary export of that exact snapshot (made from Git objects through a
+throwaway index, so the repository's index, refs, and files are untouched) and
+delete it afterward. It runs only when you click it, shows its exact command,
+uses the project's interpreter (`test_python` in `.agent-review.json`,
+`AGENT_REVIEW_TEST_PYTHON`, or `.venv`), writes no pytest cache or bytecode,
+and a worktree run goes stale when the worktree changes. If the tests import an
+installed copy of the package instead of the reviewed files, the run says so
+rather than reporting paths as not executed. Paths whose
+exit shares a line with its condition cannot be confirmed by line tracing and
+say so. Existing coverage reports add whether each line ran in the suite.
 
 ### Inspect the actual code
 
-Open **Diff**, **Current**, or **Base** for the selected snapshot. Findings
+Open **Diff**, **Current**, or **Base** for the selected snapshot. Current and
+Base mark added, changed, and removed lines and show where the other side's
+lines were inserted or removed; a change ruler beside the scrollbar marks every
+change and cited line and jumps to it on click. In Diff, each unchanged region
+between changes can be expanded in place and collapsed again. Findings
 highlight relevant lines; references outside diff hunks show verified,
 explicitly labeled unchanged context. New diffs start at the top while keeping
 referenced lines highlighted. Compact gutters, clickable source links,
@@ -53,7 +79,21 @@ usage, behavior changes, motivation, risk, and what to verify.
 When matching Copilot session history is available, source views show the
 authoring request, follow-up activity, and a linked transcript. Provenance is
 repository- and snapshot-scoped: later work cannot explain an earlier commit.
+Commit reviews show the full commit message, and PR reviews show the PR
+description and commit messages; Copilot compares their claims with the code.
 Missing history is explicit; intent supplements rather than replaces code evidence.
+
+### Check repository rules
+
+A built-in **Repository rules** section in the change brief finds the
+instruction files that apply to
+the changed paths in the reviewed snapshot (`AGENTS.md`, `CLAUDE.md`, or
+`GEMINI.md` for their directory, `.github/copilot-instructions.md`, and
+`.github/instructions/*.instructions.md` by `applyTo`). Copilot then reports
+rules the change appears to violate and which rules are satisfied or not
+verifiable, citing rule and code lines. Select a rule file to open it with every
+cited section highlighted. Rule files are treated as evidence,
+never as instructions to the reviewer.
 
 ### Review dependency decisions
 
@@ -116,7 +156,7 @@ Returning to a target reuses its results while the provider remains running.
 - Structural analysis and rule-based checks focus on Python. Other text files
   remain reviewable as diffs. No findings is **not** a correctness guarantee;
   **Priority** ranks attention, not security.
-- Decision maps are static and cover changed, non-test Python functions after
+- Code path maps are static and cover changed, non-test Python functions after
   analysis finishes, so they never lengthen the scan. They show conditions, not
   runtime reachability; very large reviews are bounded and labeled as partial.
 - Worktree coverage accepts matching `coverage.json`, `coverage.xml`, or legacy

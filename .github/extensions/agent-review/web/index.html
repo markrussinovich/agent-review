@@ -145,11 +145,14 @@
             </div>
             <p id="source-context-notice" class="muted source-context-notice hidden" role="status"></p>
             <div class="source-body">
-                <div id="source" class="code-view" aria-label="Source and diff"></div>
+                <div class="code-frame">
+                    <div id="source" class="code-view" aria-label="Source and diff"></div>
+                    <div id="source-ruler" class="code-ruler hidden" role="navigation" aria-label="Changes in this file"></div>
+                </div>
                 <div class="source-side">
                     <aside id="source-provenance" class="source-provenance hidden" aria-live="polite"></aside>
-                    <aside id="source-decisions" class="source-decisions hidden" aria-label="Decision changes"></aside>
                     <aside id="source-annotation" class="source-annotation hidden" aria-live="polite"></aside>
+                    <aside id="source-decisions" class="source-decisions hidden" aria-label="Code path changes"></aside>
                 </div>
             </div>
         </section>

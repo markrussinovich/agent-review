@@ -84,20 +84,35 @@ export function validateCustomAnalysis(content, context) {
         throw new ExplanationValidationError("When there are no findings, omit the positive-code inventory; use only No supported findings.");
     }
     const paths = new Map(context.files.map((file) => [file.path, file]));
+    // A bare filename that names exactly one evidence file is unambiguous, matching how source links resolve.
+    const byName = new Map();
+    for (const path of paths.keys()) {
+        const name = path.split("/").at(-1);
+        byName.set(name, byName.has(name) ? null : path);
+    }
+    const resolvePath = (value) => {
+        const path = value.replaceAll("\\", "/");
+        return paths.has(path) ? path : !path.includes("/") && byName.get(path) ? byName.get(path) : path;
+    };
+    // Rule files may name paths outside the evidence; those may be mentioned, never cited with lines.
+    const mentions = new Set(context.allowed_mentions || []);
     for (const match of text.matchAll(/(?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:py|toml|txt|json|ya?ml|md|mjs|js|css|html)(?::~?\d+(?:-~?\d+)?(?:,~?\d+(?:-~?\d+)?)*)?/g)) {
         const reference = /^(.+\.(?:py|toml|txt|json|ya?ml|md|mjs|js|css|html))(?::(.+))?$/.exec(match[0]);
         if (!reference) continue;
-        if (!paths.has(reference[1].replaceAll("\\", "/"))) {
+        const path = resolvePath(reference[1]);
+        if (!paths.has(path) && mentions.has(path) && !reference[2]) continue;
+        if (!paths.has(path)) {
             throw new ExplanationValidationError(
                 `Custom analysis cited a path outside its supplied evidence: ${reference[1]}. `
-                + `Use exact paths from this allowed list: ${[...paths.keys()].join(", ")}.`,
+                + `Use exact paths from this allowed list: ${[...paths.keys()].join(", ")}${
+                    mentions.size ? `; paths named by the rules may be mentioned without line numbers: ${[...mentions].join(", ")}` : ""}.`,
             );
         }
         const parsed = parseSourceReference(match[0]);
         if (!parsed) {
             throw new ExplanationValidationError("Custom analysis citations require exact positive line numbers.");
         }
-        const count = paths.get(reference[1].replaceAll("\\", "/")).current_line_count;
+        const count = paths.get(path).current_line_count;
         if (count !== undefined && parsed.lines.some((line) => line > count)) {
             throw new ExplanationValidationError("Custom analysis cited a line outside the saved current source.");
         }

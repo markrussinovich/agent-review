@@ -1,6 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { unchangedDiffContext } from "../web/diff-context.mjs";
+import { unchangedDiffContext, diffSegments } from "../web/diff-context.mjs";
+
+test("full-file segments mark changed lines per side and anchor removals and insertions", () => {
+    const diff = [
+        "--- a/x.py", "+++ b/x.py",
+        "@@ -1,5 +1,5 @@", " keep", "-old", "+new", " keep", "-gone", " keep",
+        "@@ -9,0 +10,2 @@", "+added 1", "+added 2",
+        "@@ -20,2 +21,0 @@", "-tail 1", "-tail 2",
+        "\\ No newline at end of file",
+    ].join("\n");
+    const segments = diffSegments(diff);
+    assert.deepEqual([...segments.current], [[2, "modified"], [10, "add"], [11, "add"]]);
+    assert.deepEqual([...segments.base], [[2, "modified"], [4, "delete"], [20, "delete"], [21, "delete"]]);
+    assert.deepEqual([...segments.removedBefore], [[4, 1], [22, 2]], "removals anchor before the next current line");
+    assert.deepEqual([...segments.addedBefore], [[10, 2]], "insertions anchor before the next base line");
+    const added = diffSegments("@@ -0,0 +1,2 @@\n+a\n+b\n");
+    assert.deepEqual([...added.current], [[1, "add"], [2, "add"]]);
+    assert.deepEqual([...diffSegments("--- a/x\n+++ b/x\n").current], [], "headers are not changes");
+});
 
 const source = Array.from({ length: 30 }, (_, index) => `line ${index + 1}`);
 const text = (lines) => lines.join("\n");

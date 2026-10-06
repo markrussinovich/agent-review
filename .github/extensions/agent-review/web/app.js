@@ -3,9 +3,10 @@ import { findingsForNode, findingKey, isFindingClosed, orderFindings } from "/fi
 import { resolveSymbolReference } from "/symbol-links.mjs";
 import { packageEvidenceLinks } from "/package-presentation.mjs";
 import { resolveSourceReference } from "/source-references.mjs";
-import { unchangedDiffContext } from "/diff-context.mjs";
+import { unchangedDiffContext, diffSegments } from "/diff-context.mjs";
 import {
     callableName, callablesForSubject, changedCallables, decisionAction, decisionConditions, decisionSentence, decisionTotals,
+    EVIDENCE_GROUPS, evidenceCounts, linkedTestOutcome, pathEvidence,
 } from "/decision-map.mjs";
 
 const state = {
@@ -38,7 +39,7 @@ const elements = Object.fromEntries([
     "status", "refresh", "cancel-analysis", "analysis-cancelled", "source-context-notice", "connection-notice", "reconnect", "worktree-notice", "worktree-notice-text", "worktree-reanalyze", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "rail-resize",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail-toggle", "detail", "detail-close", "source-panel", "source-title",
-    "source-provenance", "source-decisions", "source-annotation", "source-close", "source", "source-back", "source-forward",
+    "source-provenance", "source-decisions", "source-annotation", "source-close", "source", "source-ruler", "source-back", "source-forward",
     "session-history-panel", "session-history-title", "session-history-meta", "session-history-close", "session-transcript",
     "custom-analyses", "custom-results", "custom-manage", "prompt-manager", "prompt-manager-close",
     "prompt-manager-error", "prompt-library", "prompt-editor", "prompt-editor-title", "prompt-scope",
@@ -49,6 +50,44 @@ function el(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
     if (text !== undefined) node.textContent = text;
+    return node;
+}
+
+const pendingAi = new Set();
+const revealedAt = new Map();
+const REVEAL_MS = 450;
+
+// Shimmering placeholder in the shape of the content that will replace it.
+function aiPlaceholder(key, label, lines = 3) {
+    pendingAi.add(key);
+    const wrapper = el("div", "ai-pending");
+    wrapper.setAttribute("role", "status");
+    wrapper.setAttribute("aria-live", "polite");
+    const heading = el("p", "ai-pending-label");
+    heading.append(el("span", "ai-pending-dot"), document.createTextNode(label));
+    wrapper.append(heading);
+    const widths = [94, 81, 88, 67, 90, 74];
+    for (let index = 0; index < lines; index++) {
+        const bar = el("span", "ai-pending-line");
+        bar.style.width = `${widths[index % widths.length]}%`;
+        wrapper.append(bar);
+    }
+    return wrapper;
+}
+
+// Animate a result in only when it replaces a placeholder the reader saw. Server updates
+// rebuild the view, so a reveal resumes where it left off instead of restarting or vanishing.
+function revealOnce(node, key) {
+    if (pendingAi.delete(key)) revealedAt.set(key, performance.now());
+    const started = revealedAt.get(key);
+    if (started === undefined) return node;
+    const elapsed = performance.now() - started;
+    if (elapsed >= REVEAL_MS) {
+        revealedAt.delete(key);
+        return node;
+    }
+    node.classList.add("ai-reveal");
+    node.style.animationDelay = `-${Math.round(elapsed)}ms`;
     return node;
 }
 
@@ -129,6 +168,10 @@ function deltaMetric(label, added, removed, detail, mode, modified = null) {
     const magnitude = Math.max(Number(added) || 0, Number(removed) || 0, Number(modified) || 0);
     if (magnitude >= 100) card.classList.add("metric-major");
     else if (magnitude >= 20) card.classList.add("metric-medium");
+    if (magnitude === 0) {
+        card.classList.add("metric-empty");
+        card.title = "No changes";
+    }
     card.type = "button";
     card.append(value, el("span", "", label), el("small", "", detail));
     card.addEventListener("click", () => {
@@ -147,10 +190,11 @@ function renderSummary(model) {
     const summary = model.summary || {};
     const meta = model.metadata || {};
     const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
-    const changedEdges = model.edges
-        .filter((edge) => edge.change === "added")
-        .sort((a, b) => (b.count || 1) - (a.count || 1));
-    const topEdge = changedEdges[0];
+    // Match the module-level count and the Architecture edges view this tile opens.
+    const topEdge = (model.aggregate_edges || [])
+        .filter((edge) => edge.level === "module" && (edge.added_count > 0 || edge.removed_count > 0))
+        .sort((a, b) => (b.added_count + b.removed_count) - (a.added_count + a.removed_count))[0];
+    const moduleName = (id) => String(nodeById.get(id)?.name || id).split(".").pop();
     const split = sourceTestChurn(model);
     const fileDetail = [
         `${summary.files_added || 0} added`,
@@ -166,8 +210,8 @@ function renderSummary(model) {
             `source ${split.source.toLocaleString()} · tests ${split.tests.toLocaleString()} lines changed`, "lines"),
         decisionMetric(state.payload?.decision_map),
         deltaMetric("Architecture edges", summary.new_arch_edges, summary.arch_edges_removed, topEdge
-            ? `Largest: ${nodeById.get(topEdge.source)?.name || topEdge.source} → ${nodeById.get(topEdge.target)?.name || topEdge.target}`
-            : "No relationship changes", "edges"),
+            ? `Largest: ${moduleName(topEdge.source)} → ${moduleName(topEdge.target)}`
+            : "No module relationship changes", "edges"),
         deltaMetric("Packages", summary.new_packages, summary.packages_removed, packageDetail, "packages", summary.packages_modified || 0),
     );
     const qualityIssues = [];
@@ -595,7 +639,7 @@ function renderChangeBrief() {
     if (annotation?.body) heading.append(copyButton(annotation.body, "Copy summary"));
     panel.append(heading);
     if (annotation?.body) {
-        const body = el("div", "annotation-body brief-ai");
+        const body = revealOnce(el("div", "annotation-body brief-ai"), "overview");
         markdownContext.intent = state.briefIntent || null;
         markdownContext.subject = null;
         renderMarkdown(body, annotation.body);
@@ -611,7 +655,7 @@ function renderChangeBrief() {
         body.replaceChildren(...sections);
         panel.append(body);
     } else if (state.overviewLoading) {
-        panel.append(el("p", "annotation-loading", "Copilot is summarizing the whole change…"));
+        panel.append(aiPlaceholder("overview", "Copilot is summarizing the whole change…", 4));
     } else {
         if (state.overviewError) panel.append(el("p", "annotation-error", state.overviewError));
         const generate = el("button", "brief-generate", state.overviewError ? "Retry summary" : "Summarize this change");
@@ -622,11 +666,111 @@ function renderChangeBrief() {
             generate,
         );
     }
+    const intent = state.payload?.review_target?.intent;
+    const rules = renderRuleCheck();
+    if (rules) panel.append(rules);
+    if (intent && (intent.subject || intent.title || intent.body)) {
+        const message = el("details", "brief-origin brief-commit");
+        const heading = intent.kind === "pr" ? "Pull request description" : "Commit message";
+        message.append(el("summary", "", `${heading} · ${intent.subject || intent.title}`));
+        const meta = intent.kind === "pr"
+            ? [`#${intent.number}`, intent.author, `${intent.commits?.length || 0} commit${intent.commits?.length === 1 ? "" : "s"}`]
+            : [intent.sha?.slice(0, 7), intent.author, intent.date ? new Date(intent.date).toLocaleString() : null];
+        message.append(el("p", "commit-meta", meta.filter(Boolean).join(" · ")));
+        if (intent.body) message.append(el("pre", "commit-body", intent.body));
+        else message.append(el("p", "muted commit-meta", "No message body."));
+        if (intent.commits?.length) {
+            const list = el("ul", "commit-list");
+            for (const commit of intent.commits) {
+                const item = el("li", "");
+                item.append(el("code", "", commit.sha.slice(0, 7)), document.createTextNode(` ${commit.subject}`));
+                if (commit.body) item.title = commit.body;
+                list.append(item);
+            }
+            message.append(list);
+        }
+        panel.append(message);
+    }
     if (state.briefIntent) {
         const origin = el("details", "brief-origin");
         origin.append(el("summary", "", "Originating prompt"), promptBlock(state.briefIntent));
         panel.append(origin);
     }
+}
+
+// Line ranges of a rule file that a check's text cites, merged and in file order.
+function ruleCitations(content, path) {
+    const escaped = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const ranges = [];
+    for (const match of String(content || "").matchAll(new RegExp(`(?:^|[^\\w./-])${escaped}:(\\d+(?:\\s*[-–]\\s*\\d+)?(?:\\s*,\\s*\\d+(?:\\s*[-–]\\s*\\d+)?)*)`, "g"))) {
+        for (const part of match[1].split(",")) {
+            const [from, to = from] = part.split(/[-–]/).map((value) => Number(value.trim()));
+            if (Number.isInteger(from) && from > 0) ranges.push([Math.min(from, to), Math.max(from, to)]);
+        }
+    }
+    ranges.sort((a, b) => a[0] - b[0]);
+    const merged = [];
+    for (const range of ranges) {
+        const last = merged.at(-1);
+        if (last && range[0] <= last[1] + 1) last[1] = Math.max(last[1], range[1]);
+        else merged.push([...range]);
+    }
+    return merged;
+}
+
+async function openRuleFile(path, ranges) {
+    const epoch = ++state.selectionEpoch;
+    try {
+        await loadSource(`path=${encodeURIComponent(path)}&side=current`, epoch, "current", "reset", { highlights: ranges });
+    } catch (error) {
+        if (epoch === state.selectionEpoch) showError(error);
+    }
+}
+
+// Built-in check of the repository's own rule files, shown in the brief rather than among the user's prompts.
+function renderRuleCheck() {
+    const rules = state.payload?.rule_check;
+    if (!rules?.sources?.length) return null;
+    const details = el("details", "brief-origin rule-check");
+    details.open = state.ruleCheckOpen !== false;
+    details.addEventListener("toggle", () => { if (details.isConnected) state.ruleCheckOpen = details.open; });
+    const summary = el("summary", "");
+    summary.append(document.createTextNode(`Repository rules · ${rules.sources.map((source) => source.path).join(", ")}`),
+        el("span", `custom-status custom-${rules.status}`, rules.status === "unavailable" ? "AI unavailable" : rules.status));
+    details.append(summary);
+    const sources = el("p", "muted rule-sources");
+    rules.sources.forEach((source, index) => {
+        if (index) sources.append(document.createTextNode("; "));
+        const ranges = ruleCitations(rules.content, source.path);
+        const open = el("button", "link-button rule-source-link", source.path);
+        open.type = "button";
+        open.title = ranges.length
+            ? `Open ${source.path} with the ${ranges.length} cited section${ranges.length === 1 ? "" : "s"} highlighted`
+            : `Open ${source.path}`;
+        open.addEventListener("click", () => openRuleFile(source.path, ranges));
+        sources.append(open, document.createTextNode(` applies to ${source.applicable_count} changed file${
+            source.applicable_count === 1 ? "" : "s"}${source.changed_in_review ? " and was edited in this change" : ""}${source.truncated ? " (truncated)" : ""}${
+            ranges.length ? ` · ${ranges.length} cited section${ranges.length === 1 ? "" : "s"}` : ""}`));
+    });
+    sources.append(document.createTextNode(". Copilot checks the change against these rules; verify its claims."));
+    details.append(sources);
+    if (rules.status === "running") details.append(aiPlaceholder("rule-check", "Copilot is checking the change against the repository rules…", 3));
+    if (rules.content) {
+        markdownContext.subject = null;
+        markdownContext.intent = null;
+        const body = revealOnce(el("div", "annotation-body"), "rule-check");
+        renderMarkdown(body, rules.content);
+        details.append(body);
+    }
+    if (rules.error) details.append(el("p", "error", rules.error));
+    if (["complete", "error"].includes(rules.status)) {
+        const rerun = el("button", "brief-generate rule-rerun", "Check again");
+        rerun.type = "button";
+        rerun.disabled = state.payload.loading;
+        rerun.addEventListener("click", () => api("/api/rule-check", { method: "POST", body: "{}" }).catch(showError));
+        details.append(rerun);
+    }
+    return details;
 }
 
 function renderEmptyDetail() {
@@ -686,15 +830,15 @@ function setDetailVisible(visible) {
     scheduleResizeRender();
 }
 
-async function loadSource(query, epoch, preferredTab = null, nav = "reset") {
+async function loadSource(query, epoch, preferredTab = null, nav = "reset", extras = {}) {
     const source = await api(`/api/source?${query}`);
     const attribution = await fetchAttribution(source.path);
     if (epoch !== state.selectionEpoch) return false;
-    state.source = source;
+    state.source = { ...source, ...extras };
     state.attribution = attribution;
     state.sourceTab = source.declaration_highlight?.side === "base" ? "base"
         : preferredTab || (source.diff ? "diff" : "current");
-    recordSourceNavigation(nav, { query, tab: state.sourceTab, label: `${source.path}${source.start_line ? `:${source.start_line}` : ""}` });
+    recordSourceNavigation(nav, { query, extras, tab: state.sourceTab, label: `${source.path}${source.start_line ? `:${source.start_line}` : ""}` });
     renderSource();
     const side = elements.source_panel.querySelector(".source-side");
     side.scrollTop = 0;
@@ -737,7 +881,7 @@ async function navigateSource(delta) {
     history.pending = target;
     const epoch = ++state.selectionEpoch;
     try {
-        await loadSource(entry.query, epoch, entry.tab, "replay");
+        await loadSource(entry.query, epoch, entry.tab, "replay", entry.extras || {});
     } catch (error) {
         if (epoch === state.selectionEpoch) showError(error);
     }
@@ -776,7 +920,9 @@ async function selectFile(change) {
             lines_changed: change.lines_added + change.lines_removed,
         },
     };
-    renderDetail(state.selected);
+    // A file's path, status, and line counts are already visible in the list and source title.
+    renderEmptyDetail();
+    setDetailVisible(false);
     try {
         if (await loadSource(`path=${encodeURIComponent(change.path)}`, epoch)) {
             ensureAnnotation(state.selected, epoch);
@@ -1133,7 +1279,7 @@ function renderAnnotation(item, annotation, loading = false) {
     if (annotation?.body) heading.append(copyButton(annotation.body, "Copy explanation"));
     panel.append(heading);
     if (loading) {
-        panel.append(el("p", "annotation-loading", "Copilot is grounding an explanation in the selected evidence…"));
+        panel.append(aiPlaceholder(`annotation:${item.id}`, "Copilot is grounding an explanation in the selected evidence…", 5));
         return;
     }
     if (annotation.error) {
@@ -1146,7 +1292,7 @@ function renderAnnotation(item, annotation, loading = false) {
         banner.append(el("b", "", `${risk.level} risk`), el("span", "", risk.reason));
         panel.append(banner);
     }
-    const body = el("div", "annotation-body");
+    const body = revealOnce(el("div", "annotation-body"), `annotation:${item.id}`);
     markdownContext.intent = state.attribution?.[0] || null;
     markdownContext.subject = state.payload?.model?.nodes.find((node) => node.id === (item.node_id || item.id)) || null;
     renderMarkdown(body, risk ? risk.body : annotation.body);
@@ -1275,17 +1421,105 @@ function parseDiff(text) {
 }
 
 function renderPlainSource(text, side) {
-    return String(text ?? "").split(/\r\n|\r|\n/).map((line, index) =>
-        codeRow("context", side === "base" ? index + 1 : "", side === "base" ? "" : index + 1, "", line)
-    );
+    if (text === null || text === undefined) return [];
+    const segments = diffSegments(state.source?.diff);
+    const marks = side === "base" ? segments.base : segments.current;
+    const gaps = side === "base" ? segments.addedBefore : segments.removedBefore;
+    const gapRow = (count) => {
+        const row = codeRow("gap", "", "", side === "base" ? "+" : "−",
+            side === "base" ? `${count} line${count === 1 ? "" : "s"} added here in Current`
+                : `${count} line${count === 1 ? "" : "s"} removed here (see Base)`);
+        row.classList.add(side === "base" ? "gap-added" : "gap-removed");
+        return row;
+    };
+    const lines = String(text).split(/\r\n|\r|\n/);
+    const rows = [];
+    lines.forEach((line, index) => {
+        const number = index + 1;
+        if (gaps.has(number)) rows.push(gapRow(gaps.get(number)));
+        const type = marks.get(number);
+        rows.push(codeRow(type || "context", side === "base" ? number : "", side === "base" ? "" : number,
+            type ? (side === "base" ? "−" : "+") : "", line));
+    });
+    if (gaps.has(lines.length + 1)) rows.push(gapRow(gaps.get(lines.length + 1)));
+    return rows;
 }
 
-function renderSource() {
+// Unchanged regions between hunks, with matching base/current line numbers for in-place expansion.
+function diffGaps(source) {
+    if (typeof source.base !== "string" || typeof source.current !== "string") return [];
+    const hunks = [...String(source.diff || "").matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)].map((match) => ({
+        oldStart: Number(match[1]), oldCount: Number(match[2] ?? 1), newStart: Number(match[3]), newCount: Number(match[4] ?? 1) }));
+    if (!hunks.length) return [];
+    const currentLines = source.current.split(/\r\n|\r|\n/);
+    if (currentLines.at(-1) === "") currentLines.pop();
+    const gaps = [];
+    let oldEnd = 0;
+    let newEnd = 0;
+    for (const [index, hunk] of hunks.entries()) {
+        const newTo = hunk.newCount === 0 ? hunk.newStart : hunk.newStart - 1;
+        if (newTo > newEnd) gaps.push({ before: index, newFrom: newEnd + 1, newTo, oldFrom: oldEnd + 1 });
+        oldEnd = hunk.oldCount === 0 ? hunk.oldStart : hunk.oldStart + hunk.oldCount - 1;
+        newEnd = hunk.newCount === 0 ? hunk.newStart : hunk.newStart + hunk.newCount - 1;
+    }
+    if (currentLines.length > newEnd) gaps.push({ before: hunks.length, newFrom: newEnd + 1, newTo: currentLines.length, oldFrom: oldEnd + 1 });
+    return gaps.map((gap) => ({ ...gap, key: `${gap.newFrom}-${gap.newTo}`,
+        rows: () => currentLines.slice(gap.newFrom - 1, gap.newTo).map((content, offset) =>
+            codeRow("context", gap.oldFrom + offset, gap.newFrom + offset, " ", content)) }));
+}
+
+function gapToggleRow(gap, expanded) {
+    const count = gap.newTo - gap.newFrom + 1;
+    const row = codeRow("gap-toggle", "", "", expanded ? "▴" : "▾",
+        `${expanded ? "Hide" : "Show"} ${count.toLocaleString()} unchanged line${count === 1 ? "" : "s"} (${gap.newFrom}–${gap.newTo})`);
+    row.dataset.gap = gap.key;
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    row.setAttribute("aria-expanded", String(expanded));
+    const toggle = () => {
+        const expandedGaps = state.source.expandedGaps ||= new Set();
+        if (expandedGaps.has(gap.key)) expandedGaps.delete(gap.key);
+        else expandedGaps.add(gap.key);
+        renderSource({ preserveScroll: true, focusGap: gap.key });
+    };
+    row.addEventListener("click", toggle);
+    row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            toggle();
+        }
+    });
+    return row;
+}
+
+function diffRowsWithGaps(source) {
+    const rows = parseDiff(source.diff);
+    const gaps = diffGaps(source);
+    if (!gaps.length) return rows;
+    const headers = rows.filter((row) => row.classList.contains("diff-hunk") && row.dataset.newStart);
+    const result = [];
+    const expandedGaps = source.expandedGaps || new Set();
+    const insertGap = (gap) => {
+        const expanded = expandedGaps.has(gap.key);
+        result.push(gapToggleRow(gap, expanded), ...(expanded ? gap.rows() : []));
+    };
+    let gapIndex = 0;
+    for (const row of rows) {
+        const hunkIndex = headers.indexOf(row);
+        while (hunkIndex >= 0 && gapIndex < gaps.length && gaps[gapIndex].before <= hunkIndex) insertGap(gaps[gapIndex++]);
+        result.push(row);
+    }
+    while (gapIndex < gaps.length) insertGap(gaps[gapIndex++]);
+    return result;
+}
+
+function renderSource({ preserveScroll = false, focusGap = null } = {}) {
     if (!state.source) return;
+    const previousScroll = { top: elements.source.scrollTop, left: elements.source.scrollLeft };
     elements.source_panel.classList.remove("hidden");
     elements.source_title.textContent = `${state.source.path}${state.source.start_line ? `:${state.source.start_line}` : ""}`;
     const text = state.source[state.sourceTab];
-    const rows = state.sourceTab === "diff" ? parseDiff(text) : renderPlainSource(text, state.sourceTab);
+    const rows = state.sourceTab === "diff" ? diffRowsWithGaps(state.source) : renderPlainSource(text, state.sourceTab);
     const start = Number(state.source.start_line);
     const focusSide = state.source.declaration_highlight?.side || state.source.focus_side
         || (state.source.current === null ? "base" : "current");
@@ -1317,8 +1551,10 @@ function renderSource() {
     lines.style.setProperty("--source-line-digits", String(Math.max(2, String(largestLine).length)));
     lines.append(...(rows.length ? rows : [el("p", "empty-code", "(not present in this snapshot)")]));
     elements.source.replaceChildren(lines);
-    elements.source.scrollTop = 0;
-    elements.source.scrollLeft = 0;
+    if (!preserveScroll) {
+        elements.source.scrollTop = 0;
+        elements.source.scrollLeft = 0;
+    }
     let focusStart = start;
     let focusEnd = Number(state.source.end_line || state.source.start_line);
     if (state.sourceTab !== "diff" && state.sourceTab !== focusSide) {
@@ -1367,8 +1603,17 @@ function renderSource() {
             if (index === 0) row.classList.add("focus-start");
             if (index === focused.length - 1) row.classList.add("focus-end");
         });
-        if (state.sourceTab !== "diff") focused[0]?.scrollIntoView({ block: "center" });
+        if (state.sourceTab !== "diff" && !preserveScroll) focused[0]?.scrollIntoView({ block: "center" });
     }
+    const cited = applyCitedHighlights(rows);
+    if (preserveScroll) {
+        elements.source.scrollTop = previousScroll.top;
+        elements.source.scrollLeft = previousScroll.left;
+        if (focusGap) rows.find((row) => row.dataset?.gap === focusGap)?.focus({ preventScroll: true });
+    } else if (cited[0] && !(Number.isFinite(focusStart) && focusStart > 0)) {
+        cited[0].scrollIntoView({ block: "center" });
+    }
+    renderChangeRuler(rows);
     const annotation = state.payload?.annotations?.[state.selected?.id];
     const selectedPath = state.selected?.path || state.payload?.model?.nodes?.find((node) =>
         node.id === (state.selected?.node_id || state.selected?.id))?.path;
@@ -1380,12 +1625,65 @@ function renderSource() {
     renderSourceNavigation();
 }
 
+// Lines cited by a check (for example, repository rules) stay marked in whichever tab shows them.
+function applyCitedHighlights(rows) {
+    const ranges = state.source?.highlights || [];
+    if (!ranges.length) return [];
+    const key = state.sourceTab === "base" ? "oldLine" : "newLine";
+    const marked = [];
+    for (const row of rows) {
+        const line = Number(row.dataset?.[key]);
+        if (!Number.isFinite(line) || line < 1) continue;
+        const range = ranges.find(([from, to]) => line >= from && line <= to);
+        if (!range) continue;
+        row.classList.add("cited-line");
+        if (line === range[0]) row.classList.add("cited-start");
+        if (line === range[1]) row.classList.add("cited-end");
+        marked.push(row);
+    }
+    return marked;
+}
+
+// A clickable overview of where changes, cited lines, and the focused symbol sit in a long file.
+function renderChangeRuler(rows) {
+    const ruler = elements.source_ruler;
+    ruler.replaceChildren();
+    const kinds = [["cited-line", "cited", "Cited lines"], ["focus-line", "focus", "Selected code"],
+        ["diff-add", "added", "Added lines"], ["diff-modified", "modified", "Changed lines"],
+        ["diff-delete", "removed", "Removed lines"], ["gap-removed", "removed", "Removed lines"],
+        ["gap-added", "added", "Lines added in Current"]];
+    const segments = [];
+    rows.forEach((row, index) => {
+        const kind = kinds.find(([className]) => row.classList?.contains(className));
+        if (!kind) return;
+        const last = segments.at(-1);
+        if (last && last.kind === kind[1] && last.end === index - 1) last.end = index;
+        else segments.push({ kind: kind[1], label: kind[2], start: index, end: index });
+    });
+    const scrollable = elements.source.scrollHeight > elements.source.clientHeight + 1;
+    ruler.classList.toggle("hidden", !segments.length || !scrollable || rows.length < 2);
+    if (ruler.classList.contains("hidden")) return;
+    ruler.style.setProperty("--scrollbar-width", `${elements.source.offsetWidth - elements.source.clientWidth}px`);
+    for (const segment of segments.slice(0, 400)) {
+        const mark = el("button", `ruler-mark ruler-${segment.kind}`);
+        mark.type = "button";
+        const first = rows[segment.start];
+        const number = first.dataset?.newLine || first.dataset?.oldLine;
+        mark.title = `${segment.label}${number ? ` at line ${number}` : ""}`;
+        mark.setAttribute("aria-label", mark.title);
+        mark.style.top = `${(segment.start / rows.length) * 100}%`;
+        mark.style.height = `max(3px, ${((segment.end - segment.start + 1) / rows.length) * 100}%)`;
+        mark.addEventListener("click", () => first.scrollIntoView({ block: "center" }));
+        ruler.append(mark);
+    }
+}
+
 function collectionTitle(mode) {
     if (mode === "areas") return state.areaGroup?.title || "Large change areas";
     return {
         files: "Changed files", lines: "Lines changed by file", symbols: "Changed symbols",
         edges: "New relationships", packages: "Package changes", findings: "Ranked findings",
-        decisions: "Decision changes",
+        decisions: "Code path changes",
     }[mode] || "Review details";
 }
 
@@ -1515,14 +1813,22 @@ function decisionMetric(map) {
     const totals = decisionTotals(map);
     let detail;
     if (!map) detail = "Unavailable for this review";
-    else if (map.status === "loading") detail = "Extracting decision changes…";
+    else if (map.status === "loading") detail = "Extracting code paths…";
     else if (map.status === "error") detail = "Extraction failed";
     else if (!map.callables?.length) detail = "No changed production callables";
-    else if (!totals.callables) detail = "No decision changes";
-    else detail = [`${totals.callables} callable${totals.callables === 1 ? "" : "s"}`,
-        totals.gates ? `${totals.gates} conditional gate${totals.gates === 1 ? "" : "s"}` : null].filter(Boolean).join(" · ");
-    if (map?.status !== "complete") return metric("Decisions", map?.status === "loading" ? "…" : "–", detail, "decisions");
-    return deltaMetric("Decisions", totals.added, totals.removed, detail, "decisions", totals.changed + totals.moved);
+    else if (!totals.callables) detail = "No code path changes";
+    else {
+        const untested = map.verification ? evidenceCounts(map, state.payload?.test_run).untested : null;
+        detail = [`${totals.callables} callable${totals.callables === 1 ? "" : "s"}`,
+            untested !== null ? `${untested} without test evidence`
+                : totals.gates ? `${totals.gates} conditional gate${totals.gates === 1 ? "" : "s"}` : null].filter(Boolean).join(" · ");
+    }
+    if (map?.status !== "complete") {
+        const card = metric("Code paths", map?.status === "loading" ? "…" : "–", detail, "decisions");
+        if (map?.status === "loading") card.classList.add("metric-pending");
+        return card;
+    }
+    return deltaMetric("Code paths", totals.added, totals.removed, detail, "decisions", totals.changed + totals.moved);
 }
 
 function appendCodeText(container, text) {
@@ -1572,10 +1878,18 @@ function decisionRow(callable, entry, open) {
     if (entry.after || entry.before || entry.moved) {
         const order = el("span", "decision-note decision-order");
         order.append(el("em", "", "Order"));
-        if (entry.moved) order.append(" Moved relative to other decisions.");
+        if (entry.moved) order.append(" Moved relative to other code paths.");
         if (entry.after) appendCodeText(order, ` After ${entry.after.label} (L${entry.after.line}).`);
         if (entry.before) appendCodeText(order, ` Before ${entry.before.label} (L${entry.before.line}).`);
         row.append(order);
+    }
+    const evidence = state.payload?.decision_map?.verification ? pathEvidence(callable, entry, state.payload?.test_run) : null;
+    if (evidence) {
+        const line = el("span", `decision-note decision-evidence evidence-${evidence.tone}`);
+        line.append(el("em", "", "Tests"));
+        appendCodeText(line, ` ${evidence.text}`);
+        row.dataset.evidence = evidence.level;
+        row.append(line);
     }
     row.addEventListener("click", () => open(callable, entry));
     return row;
@@ -1620,21 +1934,27 @@ function renderDecisionView(model) {
         + "“Only if” marks gates that apply only when a value is present. Static extraction does not prove runtime reachability."));
     elements.graph.replaceChildren(view);
     if (!map || map.status !== "complete") {
-        view.append(el("p", "collection-empty", map?.status === "loading" ? "Extracting decision changes…"
-            : map?.error || "Decision changes are unavailable for this review."));
+        view.append(map?.status === "loading" ? aiPlaceholder("code-paths", "Extracting code paths and linking tests…", 4)
+            : el("p", "collection-empty", map?.error || "Code paths are unavailable for this review."));
         return;
     }
-    if (map.limited) view.append(el("p", "flash", "Large review: decision extraction covered a bounded set of files and callables."));
+    if (map.limited) view.append(el("p", "flash", "Large review: code path extraction covered a bounded set of files and callables."));
     for (const warning of map.warnings || []) view.append(el("p", "flash", warning));
+    if (map.verification) view.append(renderVerificationBar(map));
+    const filter = map.verification ? state.evidenceFilter || "all" : "all";
+    const run = state.payload?.test_run;
+    const visibleEntries = (item) => filter === "all" ? item.entries || []
+        : (item.entries || []).filter((entry) => EVIDENCE_GROUPS[filter].includes(pathEvidence(item, entry, run)?.level));
     const query = state.query.toLowerCase();
     const matches = (item) => !query || `${item.qualname} ${item.path} ${JSON.stringify(item.entries)}`.toLowerCase().includes(query);
-    const changed = changedCallables(map).filter(matches).sort((a, b) =>
+    const changed = changedCallables(map).filter(matches).filter((item) => visibleEntries(item).length).sort((a, b) =>
         (b.entries?.length || 0) - (a.entries?.length || 0) || a.path.localeCompare(b.path) || (a.line || 0) - (b.line || 0));
-    const quiet = (map.callables || []).filter((item) => !changed.includes(item) && !(item.entries?.length) && matches(item));
+    const quiet = filter !== "all" ? [] : (map.callables || []).filter((item) => !changed.includes(item) && !(item.entries?.length) && matches(item));
     if (!changed.length) {
-        view.append(el("p", "collection-empty", map.callables?.length
-            ? "No decision changes: changed callables keep the same exits, error handling, and wiring."
-            : "No changed production Python callables in this review."));
+        view.append(el("p", "collection-empty", filter !== "all" ? "No code paths match this evidence filter."
+            : map.callables?.length
+                ? "No code path changes: changed callables keep the same exits, error handling, and wiring."
+                : "No changed production Python callables in this review."));
     }
     for (const item of changed) {
         const group = el("section", "decision-group");
@@ -1650,9 +1970,9 @@ function renderDecisionView(model) {
         });
         group.append(header);
         const rows = el("div", "decision-rows");
-        rows.append(...(item.entries || []).map((entry) => decisionRow(item, entry, openDecision)));
-        if (item.omitted_entries) rows.append(el("p", "muted decision-omitted", `${item.omitted_entries} more decision changes not shown.`));
-        if (item.truncated) rows.append(el("p", "muted decision-omitted", "Very large callable: only the first decisions were extracted."));
+        rows.append(...visibleEntries(item).map((entry) => decisionRow(item, entry, openDecision)));
+        if (item.omitted_entries) rows.append(el("p", "muted decision-omitted", `${item.omitted_entries} more code path changes not shown.`));
+        if (item.truncated) rows.append(el("p", "muted decision-omitted", "Very large callable: only the first code paths were extracted."));
         group.append(rows);
         view.append(group);
     }
@@ -1661,7 +1981,7 @@ function renderDecisionView(model) {
         const none = quiet.length - same;
         const details = el("details", "decision-unchanged");
         details.append(el("summary", "", [
-            same ? `${same} modified callable${same === 1 ? " keeps" : "s keep"} the same decisions` : null,
+            same ? `${same} modified callable${same === 1 ? " keeps" : "s keep"} the same code paths` : null,
             none ? `${none} added or removed callable${none === 1 ? " has" : "s have"} no exits, handlers, or wiring` : null,
         ].filter(Boolean).join(" · ")));
         const list = el("div", "decision-unchanged-list");
@@ -1678,6 +1998,127 @@ function renderDecisionView(model) {
         details.append(list);
         view.append(details);
     }
+    if (map.verification?.tests?.length) view.append(renderLinkedTests(map));
+}
+
+function testPlanFor(generation) {
+    if (state.testPlan?.generation === generation) return state.testPlan.plan;
+    if (state.testPlan?.pending !== generation) {
+        state.testPlan = { generation, pending: generation, plan: null };
+        api("/api/test-run/plan").then((plan) => {
+            if (state.testPlan?.generation !== generation) return;
+            state.testPlan = { generation, plan };
+            if (state.mode === "decisions") render();
+        }).catch((error) => { state.testPlan = { generation, plan: { available: false, reason: error.message } }; });
+    }
+    return null;
+}
+
+function renderVerificationBar(map) {
+    const run = state.payload?.test_run;
+    const counts = evidenceCounts(map, run);
+    const bar = el("section", "verification-bar");
+    const filters = el("div", "verification-filters");
+    filters.setAttribute("role", "group");
+    filters.setAttribute("aria-label", "Filter code paths by test evidence");
+    const total = counts.confirmed + counts.inferred + counts.untested;
+    for (const [key, label, count] of [["all", "All", total], ["untested", "Untested", counts.untested],
+        ["inferred", "Inferred", counts.inferred], ["confirmed", "Confirmed", counts.confirmed]]) {
+        const button = el("button", `evidence-filter evidence-filter-${key}`);
+        button.type = "button";
+        button.append(el("span", "", label), el("b", "", String(count)));
+        button.setAttribute("aria-pressed", String((state.evidenceFilter || "all") === key));
+        button.addEventListener("click", () => {
+            state.evidenceFilter = key;
+            render();
+        });
+        filters.append(button);
+    }
+    bar.append(filters);
+    const runner = el("div", "verification-run");
+    const payload = state.payload;
+    const plan = testPlanFor([payload?.review_generation, Boolean(payload?.worktree_changed), Boolean(payload?.loading),
+        payload?.decision_map?.status, payload?.decision_map?.total_ms].join(":"));
+    const status = el("p", "verification-status");
+    const button = el("button", "verification-run-button", run?.status === "running" ? "Running…" : "Run linked tests");
+    button.type = "button";
+    button.disabled = run?.status === "running" || !plan?.available;
+    button.title = plan?.available ? `Runs ${plan.tests.length} linked tests with line tracing: ${plan.command}` : plan?.reason || "Checking linked tests…";
+    button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+            await api("/api/test-run", { method: "POST", body: "{}" });
+        } catch (error) {
+            showError(error);
+            button.disabled = false;
+        }
+    });
+    runner.append(button);
+    if (run?.status === "running") {
+        const cancel = el("button", "link-button", "Cancel");
+        cancel.type = "button";
+        cancel.addEventListener("click", () => api("/api/test-run/cancel", { method: "POST", body: "{}" }).catch(showError));
+        runner.append(cancel);
+        status.textContent = `Running ${run.planned} linked tests in ${run.location || "the worktree"} with ${run.python}…`;
+        status.classList.add("is-running");
+    } else if (run?.status === "complete") {
+        const parts = ["passed", "failed", "error", "skipped"].filter((key) => run.counts?.[key]).map((key) => `${run.counts[key]} ${key}`);
+        status.textContent = `${parts.join(" · ") || "No tests ran"} · Confirmed paths use per-test line traces.${run.stale ? " Stale: the worktree changed after this run." : ""}`;
+        status.classList.toggle("is-stale", Boolean(run.stale));
+        status.classList.toggle("has-failures", Boolean(run.counts?.failed || run.counts?.error));
+    } else if (run?.status === "error") {
+        status.textContent = run.error.split("\n")[0];
+        status.classList.add("has-failures");
+    } else if (run?.status === "cancelled") {
+        status.textContent = "Test run cancelled.";
+    } else {
+        status.textContent = plan?.available
+            ? `Runs ${plan.tests.length} linked test${plan.tests.length === 1 ? "" : "s"} in ${plan.location} with ${plan.python} (${plan.python_source}). Executes repository code.`
+            : plan?.reason || "Checking linked tests…";
+    }
+    runner.append(status);
+    if (run?.status === "running") runner.append(el("span", "run-progress"));
+    if (plan?.command || run?.output) {
+        const details = el("details", "verification-command");
+        // Server updates re-render this view; keep the reader's open/closed choice.
+        details.open = Boolean(state.verificationCommandOpen);
+        details.addEventListener("toggle", () => { if (details.isConnected) state.verificationCommandOpen = details.open; });
+        details.append(el("summary", "", run?.output ? "Command and output" : "Command"));
+        details.append(el("pre", "", `${run?.command || plan.command}${run?.output ? `\n\n${run.output}` : ""}${run?.error ? `\n\n${run.error}` : ""}`));
+        runner.append(details);
+    }
+    bar.append(runner);
+    return bar;
+}
+
+function renderLinkedTests(map) {
+    const run = state.payload?.test_run;
+    const outcomeFor = (id) => run?.status === "complete" ? linkedTestOutcome(run, id) : undefined;
+    const section = el("details", "linked-tests");
+    section.open = state.linkedTestsOpen !== false;
+    section.addEventListener("toggle", () => { if (section.isConnected) state.linkedTestsOpen = section.open; });
+    const tests = map.verification.tests;
+    section.append(el("summary", "", `Linked tests · ${tests.length}${map.verification.omitted_tests ? ` of ${tests.length + map.verification.omitted_tests}` : ""}`));
+    const list = el("div", "linked-test-list");
+    for (const test of tests) {
+        const row = el("button", "linked-test");
+        row.type = "button";
+        const copy = el("span", "linked-test-copy");
+        copy.append(el("strong", "", test.name), el("small", "", `${test.path}:${test.line} · ${
+            test.link === "direct" ? "calls changed code" : test.link === "via" ? `via ${test.via}` : "name match only"} · ${test.callables.join(", ")}`));
+        row.append(copy);
+        if (test.changed) row.append(el("span", "label label-added", "changed"));
+        const outcome = outcomeFor(test.id);
+        if (outcome) row.append(el("span", `label test-outcome outcome-${outcome}`, outcome));
+        row.addEventListener("click", async () => {
+            const epoch = ++state.selectionEpoch;
+            try { await loadSource(`path=${encodeURIComponent(test.path)}&line=${test.line}&side=current`, epoch, "current", "reset"); }
+            catch (error) { if (epoch === state.selectionEpoch) showError(error); }
+        });
+        list.append(row);
+    }
+    section.append(list);
+    return section;
 }
 
 function renderSourceDecisions() {
@@ -1690,7 +2131,9 @@ function renderSourceDecisions() {
     const callables = map?.status === "complete" ? callablesForSubject(map, model, subject) : [];
     const loading = map?.status === "loading" && subject?.path?.endsWith(".py")
         && ["function", "method", "class", "module", "file"].includes(subject.kind || subject.type);
-    const key = JSON.stringify([map?.status, map?.total_ms, subject?.id, subject?.path, state.source?.path]);
+    const run = state.payload?.test_run;
+    const key = JSON.stringify([map?.status, map?.total_ms, subject?.id, subject?.path, state.source?.path,
+        run?.status, run?.finished_at, run?.stale]);
     if (key === state.sourceDecisionsKey && panel.childElementCount) return;
     state.sourceDecisionsKey = key;
     panel.replaceChildren();
@@ -1700,13 +2143,13 @@ function renderSourceDecisions() {
     }
     panel.classList.remove("hidden");
     const heading = el("div", "decisions-heading");
-    heading.append(el("strong", "", "Decision changes"));
+    heading.append(el("strong", "", "Code path changes"));
     const totals = { added: 0, changed: 0, moved: 0, removed: 0 };
     for (const item of callables) for (const status of Object.keys(totals)) totals[status] += item.counts?.[status] || 0;
     heading.append(decisionCounts({ counts: totals }));
     panel.append(heading);
     if (loading) {
-        panel.append(el("p", "muted", "Extracting decision changes…"));
+        panel.append(aiPlaceholder("code-paths-pane", "Extracting code paths…", 2));
         return;
     }
     for (const item of callables) {
@@ -1718,7 +2161,7 @@ function renderSourceDecisions() {
         }
         const rows = el("div", "decision-rows");
         rows.append(...item.entries.map((entry) => decisionRow(item, entry, (callable, value) => openDecision(callable, value, { select: false }))));
-        if (item.omitted_entries) rows.append(el("p", "muted decision-omitted", `${item.omitted_entries} more in Decision changes view.`));
+        if (item.omitted_entries) rows.append(el("p", "muted decision-omitted", `${item.omitted_entries} more in the Code path changes view.`));
         panel.append(rows);
     }
 }
@@ -1938,6 +2381,7 @@ function renderPackagePanel() {
     // Copilot explanation
     const why = el("div", "annotation-body");
     if (entry.explanation) {
+        revealOnce(why, "package-explanation");
         markdownContext.intent = null;
         markdownContext.subject = null;
         renderMarkdown(why, entry.explanation);
@@ -1952,7 +2396,7 @@ function renderPackagePanel() {
         });
         why.append(retry);
     } else {
-        why.append(el("p", "annotation-loading", "Copilot is explaining why this package was added and what uses it…"));
+        why.append(aiPlaceholder("package-explanation", "Copilot is explaining why this package was added and what uses it…", 4));
     }
     const whyHeading = el("div", "package-section-heading");
     whyHeading.append(el("h3", "", "Copilot assessment"));
@@ -2097,9 +2541,11 @@ function renderCustomAnalyses() {
         if (result?.content) {
             markdownContext.subject = null;
             markdownContext.intent = null;
-            const body = el("div", "annotation-body");
+            const body = revealOnce(el("div", "annotation-body"), `custom:${key}`);
             renderMarkdown(body, result.content);
             details.append(body);
+        } else if (["queued", "running"].includes(result?.status)) {
+            details.append(aiPlaceholder(`custom:${key}`, result.status === "queued" ? "Waiting for the previous check…" : "Copilot is running this check…", 3));
         }
         if (result?.error) details.append(el("p", "error", result.error));
         const rerun = el("button", "", result ? "Run again" : "Run now");
@@ -2506,11 +2952,17 @@ elements.rail_resize.addEventListener("keydown", (event) => {
     setRailWidth(current + (event.key === "ArrowRight" ? 20 : -20));
 });
 elements.source_close.addEventListener("click", () => {
+    const fileSelection = state.selected?.kind === "file";
     state.selectionEpoch += 1;
     state.source = null;
     state.attribution = [];
     state.sourceHistory = { entries: [], index: -1, pending: -1 };
     elements.source_panel.classList.add("hidden");
+    elements.source_ruler.classList.add("hidden");
+    if (fileSelection) {
+        clearSelection();
+        setDetailVisible(false);
+    }
 });
 elements.source_back.addEventListener("click", () => navigateSource(-1));
 elements.source_forward.addEventListener("click", () => navigateSource(1));

@@ -99,6 +99,26 @@ try {
             assert.ok(colors.every((color) => color.actual === color.expected), `${theme}: ${selector} uses its semantic color`);
         }
         assert.match(await page.locator(".quality-warning").textContent(), /Coverage unavailable.*Generate coverage\.json or coverage\.xml/);
+        const tiles = await page.locator("#summary .metric").evaluateAll((cards) => {
+            const probe = document.createElement("span");
+            probe.style.color = "var(--cp-text-muted)";
+            document.body.append(probe);
+            const muted = getComputedStyle(probe).color;
+            probe.remove();
+            return cards.map((card) => ({
+                label: card.querySelector(":scope > span").textContent,
+                zero: [...card.querySelector("strong").textContent.matchAll(/\d+/g)].every((match) => Number(match[0]) === 0),
+                empty: card.classList.contains("metric-empty"),
+                mutedCounts: [...card.querySelectorAll("strong span")].every((span) => getComputedStyle(span).color === muted),
+            }));
+        });
+        assert.ok(tiles.some((tile) => tile.zero) && tiles.some((tile) => !tile.zero), "fixture has tiles with and without changes");
+        for (const tile of tiles) {
+            assert.equal(tile.empty, tile.zero, `${theme}: ${tile.label} is greyed exactly when it has no changes`);
+            if (tile.empty) assert.ok(tile.mutedCounts, `${theme}: ${tile.label} counts are muted`);
+        }
+        assert.match(await page.locator("#summary .metric").filter({ hasText: "Architecture edges" }).textContent(),
+            /\+0\/−0Architecture edgesNo module relationship changes/, "edge detail follows the module-level count");
         assert.match(await page.locator("#repository-identity").textContent(), /review-presentation-.*Base [a-f0-9]{8}/);
         const generated = summaries;
         for (const width of [1440, 1280, 1024, 820, 600, 420]) {

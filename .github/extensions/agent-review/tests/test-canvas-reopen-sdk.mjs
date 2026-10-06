@@ -55,8 +55,14 @@ test("SDK closes and reopens the same Canvas, reloads its provider, and preserve
     const extension = extensions.extensions.find((item) => item.name === "agent-review" && item.source === "project");
     assert.ok(extension, JSON.stringify(extensions));
     if (extension.status !== "running") await session.rpc.extensions.enable({ id: extension.id });
-    const canvases = await session.rpc.canvas.list();
-    const canvas = canvases.canvases.find((item) => item.canvasId === "agent-review" && item.extensionId === extension.id);
+    // The extension registers its Canvas asynchronously after it starts.
+    let canvases;
+    let canvas;
+    for (const registered = Date.now() + 20000; Date.now() < registered; await sleep(200)) {
+        canvases = await session.rpc.canvas.list();
+        canvas = canvases.canvases.find((item) => item.canvasId === "agent-review" && item.extensionId === extension.id);
+        if (canvas) break;
+    }
     assert.ok(canvas, JSON.stringify(canvases));
     const input = { repoPath: repo, baseRef: "HEAD" };
     const request = { canvasId: canvas.canvasId, extensionId: canvas.extensionId, instanceId: "reopen-test", input };
