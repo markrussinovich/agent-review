@@ -221,6 +221,11 @@ manifests, local imports, re-exports, and compiler configuration contribute
 structural evidence; unresolved or dynamic relationships are not proof of a
 runtime dependency.
 
+Node parser facts are cached only within the compiler process: up to 256
+entries, 16 MiB of retained source, and 4 MiB per entry. There is no persistent
+cross-review Node cache; relationships are rebuilt against each saved snapshot.
+This is separate from the persisted Python scan cache described above.
+
 Dependency evidence includes npm declarations, saved lockfile versions, and
 source import locations, including package subpaths. A workspace link is local
 project code, not a public registry package. npm `package-lock.json` v2/v3
