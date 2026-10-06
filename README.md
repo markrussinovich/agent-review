@@ -139,6 +139,12 @@ not reload extension code.
 
 ## Choose a snapshot
 
+Use **Change repository** beside the repository path to review a different
+existing local checkout directly. This does not create a worktree or change
+the Copilot session's workspace. The chosen repository is retained when the
+Canvas recovers after an extension reload. This is useful when the session's
+clean worktree omits uncommitted changes in the original checkout.
+
 | Review | Compared with |
 |---|---|
 | **Worktree** | Staged, unstaged, and non-ignored untracked files against the configured baseline (default: default-branch merge base) |
@@ -183,6 +189,35 @@ Returning to a target reuses its results while the provider remains running.
   deleting that database to clear stored facts.
 
 ## Development
+
+### Language adapter boundary
+
+Snapshot loading, review lifecycle, source navigation, and UI remain shared.
+The only implemented language adapter is **Python**; Node/TypeScript and C#
+backends are not yet registered or advertised.
+
+- `analyzer/language_adapters.py` defines the snapshot contract and selects
+  adapters using both trees (including deleted sources and manifest-only changes).
+  Each adapter owns dependency parsing, graph facts, package usage, and coverage.
+  `python_adapter.py` delegates to the existing Python implementations, resolving
+  its graph in an isolated model before merging facts. Python DTOs and the
+  content-cache namespace are preserved, so existing warm scans remain reusable.
+- `language-adapters.mjs` routes post-scan code-path requests and test runners.
+  `python-review-adapter.mjs` owns Python callable/test linkage and the parser
+  process specification. Per-language results merge into the shared code-path
+  view; unknown adapters and duplicate callable IDs fail explicitly.
+- `web/languages.mjs` shares implemented source-language and test-path
+  classification between the browser and provider. Test interpreter selection,
+  command planning, and execution are dispatched through the adapter, while
+  snapshot export, cancellation, staleness, and trace-to-source mapping stay shared.
+
+New compiler adapters must use collision-free symbol/dependency identities,
+resolve against their snapshot's project configuration, version their fact
+caches, and return the existing evidence DTOs. Do not restore packages, build,
+or execute repository code during scanning. Combined execution of different
+languages' test runners is deliberately rejected until its plan/result contract
+is implemented; Python runs continue unchanged. Code-path extraction and test
+linkage still start only after scanning, and tests run only by explicit action.
 
 The [analyzer](.github/extensions/agent-review/analyzer/analyze.py) also runs
 standalone with `--repo <repository>` and emits `ReviewModel` JSON. Override Python

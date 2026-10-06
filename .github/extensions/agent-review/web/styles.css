@@ -1650,6 +1650,12 @@ html { scrollbar-gutter: stable; }
 /* Commit message and PR description provenance */
 .brief-commit summary { overflow-wrap: anywhere; }
 .review-heading { overflow-wrap: anywhere; }
+.repository-row { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+.repository-row .repository-identity { flex: 1; min-width: 0; margin-bottom: 0; overflow-wrap: anywhere; }
+#change-repository { flex: 0 0 auto; font-size: 12px; white-space: nowrap; }
+#change-repository:disabled { opacity: .5; cursor: default; }
+#repository-open { justify-self: start; }
+@media (max-width: 600px) { .repository-row { flex-wrap: wrap; } }
 .commit-preview { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 6px 0 0; color: var(--cp-text-muted); font-size: 13px; line-height: 1.5; }
 .change-brief .detail-top .brief-commit { margin-top: 8px; }
 .brief-prompt { margin-top: 12px; }

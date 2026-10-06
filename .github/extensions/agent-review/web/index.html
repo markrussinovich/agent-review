@@ -39,7 +39,10 @@
         <p id="review-options-status" class="review-options-status" role="status" aria-live="polite"></p>
         <section id="review-picker-notice" class="review-picker-notice hidden" role="status"></section>
         <p id="review-target-label" class="review-target-label"></p>
-        <p id="repository-identity" class="repository-identity"></p>
+        <div class="repository-row">
+            <p id="repository-identity" class="repository-identity"></p>
+            <button id="change-repository" class="link-button" type="button">Change repository</button>
+        </div>
         <section id="connection-notice" class="flash flash-attention worktree-notice hidden" role="status">
             <span>Connection to Agent Review was lost. Retrying automatically. If it does not return, close this canvas tab and reopen Agent Review in this same session. Your code and commits are unaffected.</span>
             <button id="reconnect" type="button">Reconnect</button>
@@ -168,6 +171,18 @@
             <div id="session-transcript" class="session-transcript"></div>
         </section>
     </main>
+    <dialog id="repository-picker" class="prompt-manager" aria-labelledby="repository-picker-title">
+        <div class="custom-heading">
+            <h2 id="repository-picker-title">Choose repository</h2>
+            <button id="repository-picker-close" type="button">Close</button>
+        </div>
+        <p class="muted">Review this local repository directly. This does not create a worktree, check out files, or change your Copilot session's workspace.</p>
+        <p id="repository-picker-error" class="error hidden" role="alert"></p>
+        <form id="repository-picker-form" class="prompt-editor">
+            <label>Repository path <input id="repository-path" required placeholder="C:\temp\agent-review-coverage-demo"></label>
+            <button id="repository-open" type="submit">Open repository</button>
+        </form>
+    </dialog>
     <dialog id="prompt-manager" class="prompt-manager" aria-labelledby="prompt-manager-title">
         <div class="custom-heading">
             <h2 id="prompt-manager-title">Custom review prompts</h2>

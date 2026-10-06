@@ -4,6 +4,7 @@ import { resolveSymbolReference } from "/symbol-links.mjs";
 import { packageEvidenceLinks } from "/package-presentation.mjs";
 import { resolveSourceReference } from "/source-references.mjs";
 import { unchangedDiffContext, diffSegments } from "/diff-context.mjs";
+import { isTestPath, languageForPath } from "/languages.mjs";
 import {
     callableName, callablesForSubject, changedCallables, decisionAction, decisionConditions, decisionSentence, decisionTotals,
     EVIDENCE_GROUPS, evidenceCounts, linkedTestOutcome, pathEvidence,
@@ -42,6 +43,8 @@ const elements = Object.fromEntries([
     "source-provenance", "source-decisions", "source-annotation", "source-close", "source", "source-ruler", "source-back", "source-forward",
     "session-history-panel", "session-history-title", "session-history-meta", "session-history-close", "session-transcript",
     "custom-analyses", "custom-results", "custom-manage", "prompt-manager", "prompt-manager-close",
+    "change-repository", "repository-picker", "repository-picker-close", "repository-picker-error",
+    "repository-picker-form", "repository-path", "repository-open",
     "prompt-manager-error", "prompt-library", "prompt-editor", "prompt-editor-title", "prompt-scope",
     "prompt-title", "prompt-text", "prompt-enabled", "prompt-save", "prompt-new",
 ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
@@ -89,10 +92,6 @@ function revealOnce(node, key) {
     node.classList.add("ai-reveal");
     node.style.animationDelay = `-${Math.round(elapsed)}ms`;
     return node;
-}
-
-function isTestPath(path) {
-    return /(^|\/)(tests?|__tests__)\//i.test(path || "") || /(^|\/)test_[^/]+\.py$|_test\.py$/i.test(path || "");
 }
 
 function sourceTestChurn(model) {
@@ -2144,7 +2143,7 @@ function renderSourceDecisions() {
     const subject = !selected ? null : selected.kind === "file" ? selected
         : model?.nodes.find((node) => node.id === (selected.node_id || selected.id)) || null;
     const callables = map?.status === "complete" ? callablesForSubject(map, model, subject) : [];
-    const loading = map?.status === "loading" && subject?.path?.endsWith(".py")
+    const loading = map?.status === "loading" && languageForPath(subject?.path)
         && ["function", "method", "class", "module", "file"].includes(subject.kind || subject.type);
     const run = state.payload?.test_run;
     const key = JSON.stringify([map?.status, map?.total_ms, subject?.id, subject?.path, state.source?.path,
@@ -2576,13 +2575,17 @@ function renderCustomAnalyses() {
 }
 
 async function loadCustomPrompts() {
+    const repo = state.payload?.repo_root;
     try {
-        state.customPrompts = (await api("/api/custom-prompts")).prompts;
+        const prompts = (await api("/api/custom-prompts")).prompts;
+        if (repo !== state.payload?.repo_root) return;
+        state.customPrompts = prompts;
         state.customLibraryError = null;
         promptManagerError(null);
         renderPromptLibrary();
         renderCustomAnalyses();
     } catch (error) {
+        if (repo !== state.payload?.repo_root) return;
         state.customLibraryError = error.message;
         promptManagerError(error);
         renderCustomAnalyses();
@@ -2674,7 +2677,8 @@ function render() {
         || "Worktree changed since this review. Reanalyze to include the latest edits.";
     elements.worktree_reanalyze.disabled = Boolean(payload?.loading || state.connectionLost);
     elements.repository_identity.textContent = model?.metadata?.repo_root
-        ? `${model.metadata.repo_root} · ${state.reviewPickerPending ? "Choose a comparison" : `Base ${model.metadata.base_sha?.slice(0, 8) || "empty tree"}`}` : "";
+        ? `${model.metadata.repo_root} · ${state.reviewPickerPending ? "Choose a comparison" : `Base ${model.metadata.base_sha?.slice(0, 8) || "empty tree"}`}` : payload?.repo_root || "";
+    elements.change_repository.disabled = Boolean(payload?.loading || state.repositorySubmitting || state.connectionLost);
     const progress = payload?.progress;
     elements.status.textContent = payload?.loading ? `Analyzing ${progress?.percent || 0}%`
         : payload?.cancelled ? "Analysis cancelled" : model ? payload.restored_from_cache ? "Saved review" : "Analysis current" : "Waiting";
@@ -3192,6 +3196,40 @@ async function openSelectedReview() {
     }
 }
 
+elements.change_repository.addEventListener("click", () => {
+    elements.repository_path.value = state.payload?.repo_root || state.payload?.model?.metadata?.repo_root || "";
+    elements.repository_picker_error.classList.add("hidden");
+    elements.repository_picker.showModal();
+    elements.repository_path.focus();
+    elements.repository_path.select();
+});
+elements.repository_picker_close.addEventListener("click", () => elements.repository_picker.close());
+elements.repository_picker_form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    state.repositorySubmitting = true;
+    elements.repository_open.disabled = true;
+    elements.repository_picker_error.classList.add("hidden");
+    try {
+        await api("/api/repository", { method: "POST", body: JSON.stringify({ repoPath: elements.repository_path.value }) });
+        state.payload = await api("/api/state");
+        resetReviewNavigation();
+        state.reviewTargetKey = null;
+        state.reviewPickerPending = false;
+        state.customPrompts = [];
+        state.customLibraryError = null;
+        elements.repository_picker.close();
+        loadCustomPrompts();
+        render();
+    } catch (error) {
+        elements.repository_picker_error.textContent = error.message;
+        elements.repository_picker_error.classList.remove("hidden");
+    } finally {
+        state.repositorySubmitting = false;
+        elements.repository_open.disabled = false;
+        render();
+    }
+});
+
 elements.custom_manage.addEventListener("click", () => {
     promptManagerError(null);
     editCustomPrompt();
@@ -3266,11 +3304,18 @@ function connectEvents() {
         if (state.eventSource !== events) return;
         const update = JSON.parse(event.data);
         const payload = update.partial ? { ...state.payload, ...update } : update;
+        if (payload.type === "repository-changed") {
+            resetReviewNavigation();
+            state.reviewTargetKey = null;
+            state.reviewPickerPending = false;
+            state.customPrompts = [];
+            state.customLibraryError = null;
+        }
         if (state.payload?.review_generation !== payload.review_generation
             && payload.model && !payload.loading) resetReviewNavigation();
         state.connectionLost = false;
         state.payload = payload;
-        if (["connected", "refreshed"].includes(state.payload.type)) loadCustomPrompts();
+        if (["connected", "refreshed", "repository-changed"].includes(state.payload.type)) loadCustomPrompts();
         render();
         if (state.payload.type === "session-history" && state.source?.path) {
             const epoch = state.selectionEpoch;

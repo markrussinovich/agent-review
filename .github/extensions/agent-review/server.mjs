@@ -16,6 +16,7 @@ const staticFiles = new Map([
     ["/source-references.mjs", "source-references.mjs"],
     ["/diff-context.mjs", "diff-context.mjs"],
     ["/decision-map.mjs", "decision-map.mjs"],
+    ["/languages.mjs", "languages.mjs"],
     ["/styles.css", "styles.css"],
 ]);
 const contentTypes = {
@@ -53,7 +54,7 @@ export function startReviewServer(state, options = {}) {
         let update = event;
         if (["progress", "refresh-started", "worktree-changed"].includes(event.type)) {
             update = Object.fromEntries(["type", "loading", "cancelled", "disposed", "error", "progress",
-                "review_target", "review_generation", "analyzed_at", "restored_from_cache",
+                "review_target", "review_generation", "repo_root", "analyzed_at", "restored_from_cache",
                 "worktree_changed", "worktree_check_error"].map((key) => [key, event[key]]));
             update.partial = true;
             if (event.model === null) update.model = null;
@@ -109,6 +110,16 @@ export function startReviewServer(state, options = {}) {
                 sendJson(res, path
                     ? await state.sourceForPackageDeclaration(path, packageName)
                     : await state.sourceFor(requestUrl.searchParams.get("id")));
+                return;
+            }
+            if (req.method === "POST" && pathname === "/api/repository") {
+                const input = await readJson(req);
+                const snapshot = options.changeRepository
+                    ? await options.changeRepository(input) : await state.setRepository(input);
+                state.refresh().catch((error) => {
+                    if (error.name !== "AbortError") console.error("[agent-review repository analysis]", error);
+                });
+                sendJson(res, { ok: true, ...snapshot }, 202);
                 return;
             }
             if (req.method === "POST" && pathname === "/api/rule-check") {

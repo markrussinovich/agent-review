@@ -191,6 +191,12 @@ async function buildInstance(instanceId, input, serverOptions) {
         server = await startReviewServer(state, {
             port: preferredPort(requestedPath, input.baseRef),
             ...serverOptions,
+            changeRepository: async (request) => {
+                if ([...lifecycle.owners.values()].filter((owner) => owner === state).length > 1) {
+                    throw new Error("This review is shared by multiple canvases. Close the other canvases before changing its repository.");
+                }
+                return state.setRepository(request);
+            },
         });
     } catch (error) {
         lifecycle.owners.delete(instanceId);
@@ -209,10 +215,17 @@ async function buildInstance(instanceId, input, serverOptions) {
         sessionId: session.sessionId,
         instanceId,
         port: server.port,
-        input: { repoPath: requestedPath, baseRef: input.baseRef || null, reviewTarget: state.reviewTarget },
+        input: { repoPath: state.repoRoot,
+            baseRef: state.repositoryBaseOverride !== undefined ? state.repositoryBaseOverride : input.baseRef || null,
+            reviewTarget: state.reviewTarget },
     });
     const instance = { state, server, unsubscribeMarker: state.subscribe((event) => {
-        if (event.type === "refreshed") {
+        if (event.type === "repository-changed") {
+            for (const [key, value] of reviewStates) if (value === state) reviewStates.delete(key);
+            const key = `${state.repoRoot}|${state.repositoryBaseOverride || ""}`;
+            reviewStates.set(reviewStates.has(key) ? `${key}|${instanceId}` : key, state);
+        }
+        if (["refreshed", "repository-changed"].includes(event.type)) {
             persistMarker().catch((error) => console.error("[agent-review] Unable to persist review target:", error));
         }
     }) };

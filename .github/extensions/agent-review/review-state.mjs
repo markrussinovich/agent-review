@@ -14,17 +14,16 @@ import { buildSessionContext, findSessionAttribution, mergeSessionContexts } fro
 import { spawnOwnedAnalyzer } from "./ownership-guard.mjs";
 import { fingerprintWorktree } from "./worktree-changes.mjs";
 import { callablesForSubject, decisionPromptContext } from "./web/decision-map.mjs";
-import { exportSnapshot, linkedTestPlan, mapExecutedPaths, resolveTestPython, runLinkedTests, testCommand } from "./test-run.mjs";
+import { exportSnapshot, mapExecutedPaths } from "./test-run.mjs";
 import { repositoryRuleSources, RULES_PROMPT, ruleCheckContext } from "./review-contracts.mjs";
+import { buildCodePathRequests, mergeCodePathMaps, reviewAdapter, sourceAdapter, testAdapterForMap } from "./language-adapters.mjs";
+import { isTestPath } from "./web/languages.mjs";
+import { pythonCandidates } from "./python-runtime.mjs";
 
 const execFileAsync = promisify(execFile);
 const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const analyzerPath = join(extensionRoot, "analyzer", "analyze.py");
-const decisionsPath = join(extensionRoot, "analyzer", "decisions.py");
-
-export function isTestPath(path) {
-    return /(^|\/)(tests?|__tests__)\//i.test(path) || /(^|\/)test_[^/]+\.py$|_test\.py$/i.test(path);
-}
+export { isTestPath };
 
 function withTimeout(promise, timeoutMs, message) {
     let timer;
@@ -75,13 +74,6 @@ export async function loadReviewConfig(repoRoot) {
         if (error.code === "ENOENT") return {};
         throw new Error(`Unable to load ${path}: ${error.message}`);
     }
-}
-
-function pythonCandidates() {
-    if (process.env.AGENT_REVIEW_PYTHON) return [[process.env.AGENT_REVIEW_PYTHON, []]];
-    return process.platform === "win32"
-        ? [["py", ["-3.11"]], ["python", []], ["python3", []]]
-        : [["python3", []], ["python", []]];
 }
 
 export function runAnalyzerProcess(executable, args, onProgress = () => {}, options = {}) {
@@ -160,97 +152,9 @@ export async function runAnalyzer(repoRoot, baseRef, onProgress, currentRef = nu
     throw new Error(`Unable to run the Python 3.11+ analyzer:\n${failures.join("\n")}`);
 }
 
-const MAX_TEST_FILES = 150;
-const MAX_TEST_BYTES = 8 * 1024 * 1024;
-
-function callableIdentity(symbol) {
-    const parts = String(symbol.qualname || "").split(".");
-    return {
-        name: parts.at(-1),
-        owner: symbol.kind === "method" && parts.length > 1 ? parts.at(-2) : null,
-        module: symbol.module || null,
-    };
-}
-
-// Changed production callables only; tests and unchanged code stay out of the decision map.
+// Compatibility entry point for callers that request the Python map directly.
 export function buildDecisionRequest(model, repoRoot) {
-    const byPath = new Map();
-    const knownClasses = {};
-    const symbols = new Map((model?.symbols || []).map((symbol) => [symbol.id, symbol]));
-    const callersOf = new Map();
-    for (const edge of model?.edges || []) {
-        if (edge.type !== "calls") continue;
-        if (!callersOf.has(edge.target)) callersOf.set(edge.target, []);
-        callersOf.get(edge.target).push(edge.source);
-    }
-    const callers = (id) => {
-        const found = [];
-        let frontier = [id];
-        for (let depth = 0; depth < 2 && found.length < 10; depth++) {
-            const next = [];
-            for (const target of frontier) {
-                for (const source of callersOf.get(target) || []) {
-                    const caller = symbols.get(source);
-                    if (!caller || source === id || !["function", "method"].includes(caller.kind) || isTestPath(caller.path)) continue;
-                    if (found.some((item) => item.id === source)) continue;
-                    found.push({ id: source, ...callableIdentity(caller) });
-                    next.push(source);
-                }
-            }
-            frontier = next;
-        }
-        return found.slice(0, 10).map(({ id: _id, ...item }) => item);
-    };
-    for (const symbol of model?.symbols || []) {
-        if (symbol.kind === "class" && symbol.name && symbol.module) {
-            const modules = knownClasses[symbol.name] ||= [];
-            if (!modules.includes(symbol.module)) modules.push(symbol.module);
-        }
-        if (!["function", "method"].includes(symbol.kind) || !["added", "modified", "removed"].includes(symbol.classification)
-            || !symbol.path?.endsWith(".py") || isTestPath(symbol.path)) continue;
-        if (!byPath.has(symbol.path)) byPath.set(symbol.path, []);
-        const { name: _name, ...identity } = callableIdentity(symbol);
-        byPath.get(symbol.path).push({ id: symbol.id, qualname: symbol.qualname, change: symbol.classification, ...identity,
-            callers: symbol.classification === "removed" ? [] : callers(symbol.id) });
-    }
-    if (!byPath.size) return null;
-    const names = new Set();
-    for (const callables of byPath.values()) {
-        for (const item of callables) {
-            names.add(String(item.qualname).split(".").at(-1));
-            if (item.owner) names.add(item.owner);
-            for (const caller of item.callers) names.add(caller.name);
-        }
-    }
-    const pattern = new RegExp(`\\b(?:${[...names].map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`);
-    const addedLines = new Map((model.changes || []).map((change) => [change.path, change.added_lines || []]));
-    const tests = [];
-    let testBytes = 0;
-    let testsLimited = false;
-    for (const [path, saved] of Object.entries(model.source_files || {})) {
-        if (!path.endsWith(".py") || !isTestPath(path) || saved?.binary || typeof saved?.current !== "string") continue;
-        if (!pattern.test(saved.current)) continue;
-        if (tests.length >= MAX_TEST_FILES || testBytes + saved.current.length > MAX_TEST_BYTES) {
-            testsLimited = true;
-            continue;
-        }
-        testBytes += saved.current.length;
-        tests.push({ path, current: saved.current, added_lines: addedLines.get(path) || [] });
-    }
-    return {
-        repo: model.metadata?.repo_root || repoRoot,
-        base_sha: model.metadata?.base_sha || null,
-        files: [...byPath]
-            .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
-            .map(([path, callables]) => {
-                const saved = model.source_files?.[path];
-                return { path, current: saved && !saved.binary ? saved.current ?? null : null, callables };
-            }),
-        tests,
-        tests_limited: testsLimited,
-        known_classes: knownClasses,
-        known_modules: (model.nodes || []).filter((node) => node.kind === "module").map((node) => node.name),
-    };
+    return reviewAdapter("python").buildCodePathRequest(model, repoRoot);
 }
 
 // Existing coverage reports show whether a path's lines ran in the suite, not which test ran them.
@@ -278,17 +182,19 @@ export async function runDecisionExtractor(request, options = {}) {
     const input = join(directory, "request.json");
     try {
         await writeFile(input, JSON.stringify(request));
+        const parser = reviewAdapter(request.adapter_id || "python").codePathProcess(extensionRoot, input);
         const failures = [];
-        for (const [executable, prefix] of pythonCandidates()) {
+        for (const [executable, prefix] of parser.candidates) {
             try {
-                return await runAnalyzerProcess(executable, [...prefix, decisionsPath, "--input", input], () => {}, options);
+                const result = await runAnalyzerProcess(executable, [...prefix, ...parser.args], () => {}, options);
+                return { ...result, adapter_id: request.adapter_id || "python" };
             } catch (error) {
                 options.signal?.throwIfAborted();
                 if (error.code !== "ENOENT") throw error;
                 failures.push(`${executable}: ${error.message}`);
             }
         }
-        throw new Error(`Unable to run the Python 3.11+ decision extractor:\n${failures.join("\n")}`);
+        throw new Error(`Unable to run the ${parser.runtime} code path extractor:\n${failures.join("\n")}`);
     } finally {
         await rm(directory, { recursive: true, force: true });
     }
@@ -321,7 +227,7 @@ export class ReviewState {
         this.decisionMap = null;
         this.decisionPromise = null;
         this.decisionController = null;
-        this.runTests = options.runTests || runLinkedTests;
+        this.runTests = options.runTests || null;
         this.testRun = null;
         this.testRunController = null;
         this.ruleCheck = null;
@@ -367,6 +273,7 @@ export class ReviewState {
 
     snapshot() {
         return {
+            repo_root: this.repoRoot,
             model: this.model,
             loading: this.loading,
             cancelled: this.cancelled,
@@ -396,6 +303,81 @@ export class ReviewState {
     subscribe(listener) {
         this.listeners.add(listener);
         return () => this.listeners.delete(listener);
+    }
+
+    async setRepository(input) {
+        if (this.disposed) throw new Error("This review has been closed.");
+        if (!input || typeof input.repoPath !== "string" || !input.repoPath.trim()) {
+            throw new Error("Enter the local path of the repository to review.");
+        }
+        if (input.baseRef !== undefined && input.baseRef !== null && typeof input.baseRef !== "string") {
+            throw new Error("baseRef must be a string.");
+        }
+        if (this.loading || this.refreshPromise || this.switchingTarget || this.switchingRepository
+            || this.packageRiskPromises.size || this.packageAssessmentPromises.size) {
+            throw new Error("Wait for the active analysis or package assessment to finish before changing repositories.");
+        }
+        this.switchingRepository = true;
+        const generation = this.reviewGeneration;
+        try {
+            const repoRoot = await resolveRepoRoot(input.repoPath.trim());
+            const config = await loadReviewConfig(repoRoot);
+            if (this.disposed) throw new Error("This review has been closed.");
+            if (generation !== this.reviewGeneration || this.loading || this.refreshPromise || this.switchingTarget
+                || this.packageRiskPromises.size || this.packageAssessmentPromises.size) {
+                throw new Error("The review changed while validating the repository. Try again.");
+            }
+            this.reviewGeneration += 1;
+            this.worktreeCheckController?.abort();
+            this.decisionController?.abort();
+            this.stopTestRun();
+            await Promise.all([this.decisionPromise, this.testRunPromise]);
+            if (this.disposed) throw new Error("This review has been closed.");
+            this.repoRoot = repoRoot;
+            this.repositoryBaseOverride = input.baseRef || null;
+            this.worktreeBaseRef = this.repositoryBaseOverride || config.base_ref || process.env.COPILOT_DEFAULT_BRANCH || null;
+            this.baseRef = this.worktreeBaseRef;
+            this.resolveBaseRef = async () => this.repositoryBaseOverride
+                || (await loadReviewConfig(this.repoRoot)).base_ref || process.env.COPILOT_DEFAULT_BRANCH || null;
+            this.reviewTarget = { mode: "worktree", label: "Worktree", currentRef: null };
+            this.model = null;
+            this.annotations = {};
+            this.annotationPromises = new Map();
+            this.generatedObservations = [];
+            this.selection = null;
+            this.reviewCache.clear();
+            this.packageRisks = {};
+            this.packageRiskPromises.clear();
+            this.packageAssessments.clear();
+            this.packageAssessmentPromises.clear();
+            this.decisionMap = null;
+            this.decisionPromise = null;
+            this.decisionController = null;
+            this.testRun = null;
+            this.testRunPromise = null;
+            this.ruleCheck = null;
+            this.ruleCheckPromise = null;
+            this.customAnalyses = {};
+            this.customAnalysisPromises = new WeakMap();
+            this.customPromptError = null;
+            this.customPromptStore = null;
+            this.sessionContext = null;
+            this.sessionHistories.clear();
+            this.historicalContextPromise = null;
+            this.worktreeFingerprint = null;
+            this.worktreeChanged = false;
+            this.worktreeCheckError = null;
+            this.lastAnalyzedAt = null;
+            this.restoredFromCache = false;
+            this.error = null;
+            this.cancelled = false;
+            this.loading = true;
+            this.progress = { phase: "starting", percent: 0, message: "Starting analysis of the selected repository" };
+            this.broadcast("repository-changed");
+            return this.snapshot();
+        } finally {
+            this.switchingRepository = false;
+        }
     }
 
     broadcast(type = "state") {
@@ -728,11 +710,15 @@ export class ReviewState {
         const started = Date.now();
         const current = () => this.model === model && !controller.signal.aborted && !this.disposed;
         const promise = new Promise((resolve) => setImmediate(resolve))
-            .then(() => {
+            .then(async () => {
                 controller.signal.throwIfAborted();
-                const request = buildDecisionRequest(model, this.repoRoot);
-                if (!request) return { callables: [], totals: {}, limited: false, warnings: [], elapsed_ms: 0 };
-                return this.runDecisions(request, { signal: controller.signal, workspacePath: this.workspacePath });
+                const maps = [];
+                for (const request of buildCodePathRequests(model, this.repoRoot)) {
+                    controller.signal.throwIfAborted();
+                    const map = await this.runDecisions(request, { signal: controller.signal, workspacePath: this.workspacePath });
+                    maps.push({ ...map, adapter_id: request.adapter_id });
+                }
+                return mergeCodePathMaps(maps);
             })
             .then((result) => attachCoverage({ ...result, status: "complete", total_ms: Date.now() - started }, model),
                 (error) => ({ status: "error", error: `Decision extraction failed: ${error.message}` }))
@@ -759,14 +745,16 @@ export class ReviewState {
     }
 
     async testRunPlan() {
-        const plan = linkedTestPlan(this.decisionMap, this.repoRoot);
-        const python = resolveTestPython(this.repoRoot, await loadReviewConfig(this.repoRoot));
+        const adapter = testAdapterForMap(this.decisionMap);
+        const plan = adapter.tests.plan(this.decisionMap, this.repoRoot);
+        const python = adapter.tests.resolveRuntime(this.repoRoot, await loadReviewConfig(this.repoRoot));
         const worktree = this.reviewTarget.mode === "worktree";
         let reason = plan.reason;
         if (this.loading) reason = "Wait for the analysis to finish.";
         else if (worktree && this.worktreeChanged) reason = "The worktree changed since this review. Reanalyze before running linked tests.";
         else if (!worktree && !this.reviewTarget.currentRef) reason = "This snapshot has no commit to export for testing.";
-        return { ...plan, python: python.executable, python_source: python.source, command: testCommand(python, plan).join(" "),
+        return { ...plan, adapter_id: adapter.id, python: python.executable, python_source: python.source,
+            command: adapter.tests.command(python, plan).join(" "),
             location: worktree ? "the worktree" : `a temporary export of ${this.reviewTarget.label || this.reviewTarget.currentRef.slice(0, 7)}`,
             available: !reason, reason };
     }
@@ -804,10 +792,12 @@ export class ReviewState {
         const generation = this.reviewGeneration;
         let plan;
         let python;
+        let adapter;
         try {
             plan = await this.testRunPlan();
             if (!plan.available) throw new Error(plan.reason);
-            python = resolveTestPython(this.repoRoot, await loadReviewConfig(this.repoRoot));
+            adapter = testAdapterForMap(map);
+            python = adapter.tests.resolveRuntime(this.repoRoot, await loadReviewConfig(this.repoRoot));
             if (this.disposed || this.loading || this.refreshPromise || generation !== this.reviewGeneration
                 || this.decisionMap !== map || this.testRunStale()) {
                 throw new Error("The review changed before the linked tests could start. Try again.");
@@ -825,7 +815,8 @@ export class ReviewState {
         this.testRunPromise = (async () => {
             const root = snapshotRef ? await exportSnapshot(this.repoRoot, snapshotRef, { signal: controller.signal }) : this.repoRoot;
             try {
-                const result = await this.runTests({ repoRoot: root, python, plan: { ...plan, files: linkedTestPlan(map, root).files },
+                const executeTests = this.runTests || adapter.tests.run;
+                const result = await executeTests({ repoRoot: root, python, plan: { ...plan, files: adapter.tests.plan(map, root).files },
                     signal: controller.signal, workspacePath: this.workspacePath });
                 return { result, root };
             } finally {
@@ -1358,12 +1349,13 @@ export class ReviewState {
         const subjectName = String(subject.name || "");
         if (/^[A-Za-z_][A-Za-z0-9_]{2,}$/.test(subjectName)) {
             const matcher = new RegExp(`\\b${subjectName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
-            const pythonPaths = [...new Set(
+            const adapter = sourceAdapter(path);
+            const sourcePaths = [...new Set(
                 this.model.nodes
-                    .filter((candidate) => candidate.kind === "module" && candidate.path?.endsWith(".py"))
+                    .filter((candidate) => candidate.kind === "module" && adapter?.sourcePath(candidate.path))
                     .map((candidate) => candidate.path)
             )];
-            for (const candidatePath of pythonPaths) {
+            for (const candidatePath of sourcePaths) {
                 let candidateSource;
                 try {
                     candidateSource = await this.readCurrentSource(candidatePath);
