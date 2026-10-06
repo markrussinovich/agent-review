@@ -4,7 +4,7 @@ import { resolveSymbolReference } from "/symbol-links.mjs";
 import { packageEvidenceLinks } from "/package-presentation.mjs";
 import { resolveSourceReference } from "/source-references.mjs";
 import { unchangedDiffContext, diffSegments } from "/diff-context.mjs";
-import { isTestPath, languageForPath } from "/languages.mjs";
+import { isReviewSymbol, isTestPath, languageForPath } from "/languages.mjs";
 import {
     callableName, callablesForSubject, changedCallables, decisionAction, decisionConditions, decisionSentence, decisionTotals,
     EVIDENCE_GROUPS, evidenceCounts, linkedTestOutcome, pathEvidence,
@@ -235,7 +235,7 @@ function renderSummary(model) {
         });
         elements.summary.append(quality);
     }
-    elements.summary.title = `${meta.base_ref || "base"} @ ${(meta.base_sha || "").slice(0, 8)} → ${(meta.head_sha || "").slice(0, 8)} · ${meta.python_loc || 0} Python LOC`;
+    elements.summary.title = `${meta.base_ref || "base"} @ ${(meta.base_sha || "").slice(0, 8)} → ${(meta.head_sha || "").slice(0, 8)} · ${meta.python_loc || 0} Python LOC${meta.csharp_loc != null ? ` · ${meta.csharp_loc} C# LOC` : ""}`;
 }
 
 function evidenceLabel(id) {
@@ -427,7 +427,7 @@ function childNodes(model) {
     const parent = state.stack.at(-1);
     if (!parent) return model.nodes.filter((node) => node.kind === "component");
     if (parent.kind === "component") return model.nodes.filter((node) => node.kind === "module" && node.component_id === parent.id);
-    if (parent.kind === "module") return model.nodes.filter((node) => node.module_id === parent.id && ["class", "function", "method"].includes(node.kind));
+    if (parent.kind === "module") return model.nodes.filter((node) => node.module_id === parent.id && isReviewSymbol(node));
     return [];
 }
 
@@ -542,7 +542,7 @@ function drillChildren(model, item) {
         return model.nodes.filter((node) => node.kind === "module" && node.component_id === item.id && visible(node));
     }
     return model.nodes.filter((node) =>
-        node.module_id === item.id && ["class", "function", "method"].includes(node.kind) && visible(node));
+        node.module_id === item.id && isReviewSymbol(node) && visible(node));
 }
 
 function maybeDrill(item) {
@@ -1198,7 +1198,10 @@ function sourceReferenceButton(label, reference, title = null) {
         const packageName = reference.packageName || (state.selected?.id?.startsWith("package:")
             && [...(state.selected.declared_current || []), ...(state.selected.declared_base || [])].some((item) => item.source === reference.path)
             ? state.selected.name : null);
-        if (packageName) query.set("package", packageName);
+        if (packageName) {
+            query.set("package", packageName);
+            if (state.selected?.ecosystem) query.set("ecosystem", state.selected.ecosystem);
+        }
         try {
             await loadSource(query.toString(), epoch, "current", "push");
         } catch (error) {
@@ -1209,7 +1212,7 @@ function sourceReferenceButton(label, reference, title = null) {
 }
 
 function appendTextWithSourceReferences(container, text) {
-    const pattern = /((?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:py|toml|txt|json|ya?ml|md|mjs|js|css|html)(?::\d+(?:-\d+)?(?:,\d+(?:-\d+)*)*)?)/g;
+    const pattern = /((?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:csproj|cs|slnx?|props|targets|py|toml|txt|json|ya?ml|md|mjs|js|css|html)(?::\d+(?:-\d+)?(?:,\d+(?:-\d+)*)*)?)/g;
     let offset = 0;
     for (const match of text.matchAll(pattern)) {
         if (match.index > offset) container.append(document.createTextNode(text.slice(offset, match.index)));
@@ -1719,7 +1722,7 @@ function collectionItems(model, mode) {
         );
     }
     if (mode === "symbols") return model.nodes
-        .filter((node) => ["class", "function", "method"].includes(node.kind) && node.change !== "unchanged")
+        .filter((node) => isReviewSymbol(node) && node.change !== "unchanged")
         .sort((a, b) => (b.metrics?.lines_changed || 0) - (a.metrics?.lines_changed || 0));
     if (mode === "edges") return model.edges
         .filter((edge) => edge.change === "added")
@@ -1968,7 +1971,7 @@ function renderDecisionView(model) {
         view.append(el("p", "collection-empty", filter !== "all" ? "No code paths match this evidence filter."
             : map.callables?.length
                 ? "No code path changes: changed callables keep the same exits, error handling, and wiring."
-                : "No changed production Python callables in this review."));
+                : "No changed production callables in supported languages in this review."));
     }
     for (const item of changed) {
         const group = el("section", "decision-group");
@@ -2057,7 +2060,7 @@ function renderVerificationBar(map) {
     const button = el("button", "verification-run-button", run?.status === "running" ? "Running…" : "Run linked tests");
     button.type = "button";
     button.disabled = run?.status === "running" || !plan?.available;
-    button.title = plan?.available ? `Runs ${plan.tests.length} linked tests with line tracing: ${plan.command}` : plan?.reason || "Checking linked tests…";
+    button.title = plan?.available ? `Runs ${plan.tests.length} linked tests${plan.adapter_id === "csharp" ? " with TRX outcomes (no per-test path tracing)" : " with line tracing"}: ${plan.command}` : plan?.reason || "Checking linked tests…";
     button.addEventListener("click", async () => {
         button.disabled = true;
         try {
@@ -2077,7 +2080,7 @@ function renderVerificationBar(map) {
         status.classList.add("is-running");
     } else if (run?.status === "complete") {
         const parts = ["passed", "failed", "error", "skipped"].filter((key) => run.counts?.[key]).map((key) => `${run.counts[key]} ${key}`);
-        status.textContent = `${parts.join(" · ") || "No tests ran"} · Confirmed paths use per-test line traces.${run.stale ? " Stale: the worktree changed after this run." : ""}`;
+        status.textContent = `${parts.join(" · ") || "No tests ran"} · ${run.path_evidence_limitation || "Confirmed paths use per-test line traces."}${run.stale ? " Stale: the worktree changed after this run." : ""}`;
         status.classList.toggle("is-stale", Boolean(run.stale));
         status.classList.toggle("has-failures", Boolean(run.counts?.failed || run.counts?.error));
     } else if (run?.status === "error") {
@@ -2087,7 +2090,7 @@ function renderVerificationBar(map) {
         status.textContent = "Test run cancelled.";
     } else {
         status.textContent = plan?.available
-            ? `Runs ${plan.tests.length} linked test${plan.tests.length === 1 ? "" : "s"} in ${plan.location} with ${plan.python} (${plan.python_source}). Executes repository code.`
+            ? `Runs ${plan.tests.length} linked test${plan.tests.length === 1 ? "" : "s"} in ${plan.location} with ${plan.python} (${plan.python_source}). ${plan.prerequisites || "Executes repository code."}`
             : plan?.reason || "Checking linked tests…";
     }
     runner.append(status);
@@ -2144,7 +2147,7 @@ function renderSourceDecisions() {
         : model?.nodes.find((node) => node.id === (selected.node_id || selected.id)) || null;
     const callables = map?.status === "complete" ? callablesForSubject(map, model, subject) : [];
     const loading = map?.status === "loading" && languageForPath(subject?.path)
-        && ["function", "method", "class", "module", "file"].includes(subject.kind || subject.type);
+        && (isReviewSymbol(subject) || ["module", "file"].includes(subject.kind || subject.type));
     const run = state.payload?.test_run;
     const key = JSON.stringify([map?.status, map?.total_ms, subject?.id, subject?.path, state.source?.path,
         run?.status, run?.finished_at, run?.stale]);
@@ -2223,7 +2226,7 @@ function loadPackageData(item) {
     };
     const request = (explain) => api("/api/package-risk", {
         method: "POST",
-        body: JSON.stringify({ name: item.name, explain }),
+        body: JSON.stringify({ name: item.name, ecosystem: item.ecosystem, explain }),
     });
     if (!entry.assessment && !entry.assessmentPromise) {
         entry.assessmentError = null;
@@ -2268,7 +2271,7 @@ function renderPackageView(model) {
         const usage = item.usage_locations?.length || 0;
         row.append(
             heading,
-            el("small", "", `${packageVersionText(item)}${item.change === "removed" ? "" : usage ? ` · used in ${usage} file${usage === 1 ? "" : "s"}` : " · no usages found"}`),
+            el("small", "", `${item.ecosystem === "nuget" ? "NuGet · " : ""}${packageVersionText(item)}${item.change === "removed" ? "" : usage ? ` · used in ${usage} file${usage === 1 ? "" : "s"}` : item.ecosystem === "nuget" ? " · usage unresolved" : " · no usages found"}`),
         );
         row.addEventListener("click", () => selectPackage(item));
         list.append(row);
@@ -2358,6 +2361,7 @@ function renderPackagePanel() {
     header.append(
         titleRow,
         el("p", "muted", [
+            item.ecosystem === "nuget" ? "NuGet" : null,
             `Version ${packageVersionText(item)}`,
             declared?.source ? `declared in ${declared.source}` : null,
             declared?.group ? `${declared.group} dependency` : null,
@@ -2368,8 +2372,27 @@ function renderPackagePanel() {
     declaration.append(document.createTextNode(`Reported because a dependency declaration was ${item.change} in `));
     if (declared?.source) declaration.append(sourceReferenceButton(declared.source, { path: declared.source, lines: [], packageName: item.name }));
     else declaration.append(document.createTextNode("the package manifest"));
-    declaration.append(document.createTextNode(". Manifest changes are reviewed even when no Python import is found."));
+    declaration.append(document.createTextNode(". Manifest changes are reviewed even when no static usage is resolved."));
     sections.push(declaration);
+    if (item.ecosystem === "nuget") {
+        const declarations = el("ul", "usage-list");
+        for (const entry of item.declared_current?.length ? item.declared_current : item.declared_base || []) {
+            const row = el("li", "");
+            row.append(el("code", "inline-code", entry.specifier || "unresolved version"), document.createTextNode(" in "),
+                sourceReferenceButton(`${entry.source}:${entry.line}`, {
+                    path: entry.source, lines: [entry.line], packageName: item.name,
+                }));
+            if (entry.version_source && entry.version_source !== entry.source) {
+                row.append(document.createTextNode(" · version from "), sourceReferenceButton(
+                    `${entry.version_source}:${entry.version_line}`, {
+                        path: entry.version_source, lines: [entry.version_line],
+                    }));
+            }
+            if (entry.resolution_error) row.append(el("small", "muted", ` · ${entry.resolution_error}`));
+            declarations.append(row);
+        }
+        sections.push(packageSection("Saved project declarations", declarations));
+    }
 
     if (item.change === "removed") {
         sections.push(el("p", "flash flash-attention", "This dependency was removed. Check that nothing in the repository still imports it."));
@@ -2389,7 +2412,9 @@ function renderPackagePanel() {
     } else if (entry.assessmentError) {
         sections.push(el("p", "flash flash-danger", entry.assessmentError));
     } else {
-        sections.push(el("p", "flash flash-neutral", "Checking PyPI, OSV, OpenSSF Scorecard, and download statistics…"));
+        sections.push(el("p", "flash flash-neutral", item.ecosystem === "nuget"
+            ? "Checking NuGet metadata and OSV for the saved project version..."
+            : "Checking PyPI, OSV, OpenSSF Scorecard, and download statistics…"));
     }
 
     // Copilot explanation
@@ -2429,8 +2454,10 @@ function renderPackagePanel() {
         usageList.append(row);
     }
     sections.push(packageSection(
-        `Python import locations (${usage.length})`,
-        usage.length ? usageList : el("p", "flash flash-attention", "No Python import was mapped to this declaration. This is a manifest change, not an observed import. Verify why the dependency is needed: it may support tooling, dynamic loading, use a different import name, or be unused."),
+        `Static usage locations (${usage.length})`,
+        usage.length ? usageList : el("p", "flash flash-attention", item.ecosystem === "nuget"
+            ? "NuGet-to-assembly usage is unresolved. Namespace spelling does not prove package usage. Review the saved manifest and implementation."
+            : "No Python import was mapped to this declaration. This is a manifest change, not an observed import. Verify why the dependency is needed: it may support tooling, dynamic loading, use a different import name, or be unused."),
     ));
 
     if (assessment) {
@@ -2438,7 +2465,7 @@ function renderPackagePanel() {
         const maintenance = indicators.maintenance || {};
         const vulns = indicators.known_vulnerabilities || [];
         const score = indicators.scorecard_score;
-        const links = packageEvidenceLinks(item.name, assessment.version, indicators.repository_url);
+        const links = packageEvidenceLinks(item.name, assessment.version, indicators.repository_url, item.ecosystem);
         const tiles = el("div", "stat-grid");
         tiles.append(
             statTile("Known vulnerabilities", formatCount(indicators.vulnerability_count),
@@ -2514,7 +2541,7 @@ function renderPackagePanel() {
             sections.push(packageSection("Provenance", list));
         }
         const statuses = el("ul", "source-status evidence-sources");
-        const sourceUrls = { pypi: links.registry, osv: links.vulnerabilities, osv_history: links.vulnerabilities,
+        const sourceUrls = { pypi: links.registry, nuget: links.registry, osv: links.vulnerabilities, osv_history: links.vulnerabilities,
             scorecard: links.scorecard, pypistats: links.downloads };
         for (const [name, source] of Object.entries(assessment.sources || {})) {
             const row = el("li", `source-${source.status}`);

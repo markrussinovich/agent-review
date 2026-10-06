@@ -25,7 +25,9 @@ class LanguageAdapterTests(unittest.TestCase):
             ({}, {"pyproject.toml": b"[project]\ndependencies=[]"}),
         ):
             self.assertEqual(active_adapters(self.snapshot(baseline, current)), (PYTHON_ADAPTER,))
-        self.assertEqual(active_adapters(self.snapshot({}, {"app.ts": b"export const x=1;", "app.cs": b"class X {}"})), ())
+        self.assertEqual([adapter.id for adapter in active_adapters(
+            self.snapshot({}, {"app.ts": b"export const x=1;", "app.cs": b"class X {}"}))], ["csharp"])
+        self.assertEqual(active_adapters(self.snapshot({}, {"app.ts": b"export const x=1;"})), ())
 
     def test_duplicate_adapter_ids_fail_explicitly(self):
         with self.assertRaisesRegex(ValueError, "unique IDs"):

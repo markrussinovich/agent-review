@@ -334,6 +334,10 @@ function calculateRisk(indicators, sources) {
  * Only the supplied package coordinates and a validated public GitHub URL are sent.
  */
 export async function assessPackageRisk(name, version, options = {}) {
+  if (options.ecosystem === "nuget") {
+    const { assessNugetPackageRisk } = await import("./nuget-package-risk.mjs");
+    return assessNugetPackageRisk(name, version, options);
+  }
   if (typeof name !== "string" || !name.trim()) throw new TypeError("name must be a non-empty string");
   const metadataOnly = options.metadataOnly === true;
   if (metadataOnly ? version !== null : typeof version !== "string" || !version.trim()) {

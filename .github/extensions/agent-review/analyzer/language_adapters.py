@@ -42,11 +42,16 @@ class LanguageAdapter(Protocol):
 def active_adapters(
     snapshot: AnalysisSnapshot, adapters: Sequence[LanguageAdapter] | None = None,
 ) -> tuple[LanguageAdapter, ...]:
+    paths = set(snapshot.baseline) | set(snapshot.current)
     if adapters is None:
         from python_adapter import PYTHON_ADAPTER
 
         adapters = (PYTHON_ADAPTER,)
-    paths = set(snapshot.baseline) | set(snapshot.current)
+        if any(path.lower().endswith((".cs", ".csproj", ".sln", ".slnx"))
+               for path in paths):
+            from dotnet_adapter import DOTNET_ADAPTER
+
+            adapters = (*adapters, DOTNET_ADAPTER)
     ids = [adapter.id for adapter in adapters]
     if len(ids) != len(set(ids)):
         raise ValueError("Language adapters must have unique IDs.")

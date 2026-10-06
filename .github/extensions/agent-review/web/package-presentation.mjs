@@ -1,5 +1,11 @@
-export function packageEvidenceLinks(name, version, repositoryUrl) {
+export function packageEvidenceLinks(name, version, repositoryUrl, ecosystem = "pypi") {
     const packageName = encodeURIComponent(name);
+    if (ecosystem === "nuget") {
+        const registry = `https://www.nuget.org/packages/${packageName}`;
+        return { registry, release: version ? `${registry}/${encodeURIComponent(version)}` : registry,
+            maintenance: registry, vulnerabilities: `https://osv.dev/list?q=${packageName}&ecosystem=NuGet`,
+            downloads: registry, scorecard: null };
+    }
     const links = {
         registry: `https://pypi.org/project/${packageName}/`,
         release: version ? `https://pypi.org/project/${packageName}/${encodeURIComponent(version)}/`

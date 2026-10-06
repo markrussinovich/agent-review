@@ -754,7 +754,8 @@ export class ReviewState {
         else if (worktree && this.worktreeChanged) reason = "The worktree changed since this review. Reanalyze before running linked tests.";
         else if (!worktree && !this.reviewTarget.currentRef) reason = "This snapshot has no commit to export for testing.";
         return { ...plan, adapter_id: adapter.id, python: python.executable, python_source: python.source,
-            command: adapter.tests.command(python, plan).join(" "),
+            command: adapter.tests.formatCommand ? adapter.tests.formatCommand(python, plan)
+                : adapter.tests.command(python, plan).join(" "),
             location: worktree ? "the worktree" : `a temporary export of ${this.reviewTarget.label || this.reviewTarget.currentRef.slice(0, 7)}`,
             available: !reason, reason };
     }
@@ -826,9 +827,11 @@ export class ReviewState {
             .then(({ result, root }) => {
                 const results = Object.entries(result.trace.tests || {}).map(([id, record]) => ({
                     id, outcome: record.outcome, duration_ms: record.duration_ms }));
-                const { executed, ran } = mapExecutedPaths(map, result.trace, root);
+                const { executed, ran } = result.trace.per_test_path_evidence === false
+                    ? { executed: {}, ran: {} } : mapExecutedPaths(map, result.trace, root);
                 return { ...run, status: "complete", finished_at: new Date().toISOString(), exit_code: result.exit_code,
                     output: result.output, tests: results, executed, ran,
+                    ...(result.path_evidence_limitation ? { path_evidence_limitation: result.path_evidence_limitation } : {}),
                     counts: Object.fromEntries(["passed", "failed", "error", "skipped"].map((outcome) =>
                         [outcome, results.filter((test) => test.outcome === outcome).length])) };
             }, (error) => controller.signal.aborted
@@ -1063,7 +1066,8 @@ export class ReviewState {
         if (!id) return { metadata: this.model.metadata, summary: this.model.summary, session_context: this.sessionContext };
         const node = this.model.nodes?.find((item) => item.id === id);
         const edge = this.model.edges?.find((item) => item.id === id);
-        const packageChange = this.model.package_changes?.find((item) => item.id === id || `package:${item.name}` === id);
+        const packageChange = this.model.package_changes?.find((item) => item.id === id
+            || ((!item.ecosystem || item.ecosystem === "pypi") && `package:${item.name}` === id));
         const attention = this.model.attention?.find((item) => item.id === id);
         const observation = this.generatedObservations.find((item) => item.id === id);
         const evidence = this.model.evidence?.[id];
@@ -1429,10 +1433,13 @@ export class ReviewState {
         };
     }
 
-    async packageRiskFor(name, requestedVersion = null, { explain = true } = {}) {
+    async packageRiskFor(name, requestedVersion = null, { explain = true, ecosystem = null } = {}) {
         if (this.disposed) throw new Error("This review has been closed.");
         const generation = this.reviewGeneration;
-        const dependency = this.model?.package_dependencies?.find((item) => item.name === name);
+        const matches = this.model?.package_dependencies?.filter((item) => item.name === name
+            && (!ecosystem || (item.ecosystem || "pypi") === ecosystem)) || [];
+        if (matches.length > 1) throw new Error(`Package ${name} occurs in multiple ecosystems; specify its ecosystem.`);
+        const dependency = matches[0];
         if (!dependency) throw new Error(`Unknown package dependency: ${name}`);
         const declared = dependency.declared_current?.map((item) => item.specifier).filter(Boolean) || [];
         const resolutionError = dependency.declared_current?.find((item) => item.resolution_error)?.resolution_error;
@@ -1446,8 +1453,8 @@ export class ReviewState {
             throw new Error(`An exact project version is required to assess ${name}; declared ${declared.join(", ") || "without a version"}. Pin or resolve the dependency, then reanalyze.`);
         }
         if (requestedVersion && requestedVersion !== version) throw new Error(`Requested version ${requestedVersion} does not match the reviewed project version ${name}@${version}.`);
-        const cacheKey = `${name}@${version ?? "<unresolved>"}`;
-        const assessment = await this.packageAssessmentFor(cacheKey, name, version);
+        const cacheKey = `${dependency.ecosystem && dependency.ecosystem !== "pypi" ? `${dependency.ecosystem}:` : ""}${name}@${version ?? "<unresolved>"}`;
+        const assessment = await this.packageAssessmentFor(cacheKey, name, version, dependency.ecosystem);
         if (this.disposed || generation !== this.reviewGeneration) throw new Error("The review changed while assessing this package.");
         if (!explain) return { assessment, explanation: this.packageRisks[cacheKey]?.explanation ?? null };
         if (this.packageRisks[cacheKey]) return this.packageRisks[cacheKey];
@@ -1470,12 +1477,12 @@ export class ReviewState {
     }
 
     // Public-registry indicators are fast and independent of the slower Copilot explanation.
-    packageAssessmentFor(cacheKey, name, version) {
+    packageAssessmentFor(cacheKey, name, version, ecosystem = undefined) {
         if (this.disposed) return Promise.reject(new Error("This review has been closed."));
         if (this.packageAssessments.has(cacheKey)) return Promise.resolve(this.packageAssessments.get(cacheKey));
         if (!this.packageAssessmentPromises.has(cacheKey)) {
             const generation = this.reviewGeneration;
-            const promise = assessPackageRisk(name, version, { includePopularity: true, metadataOnly: version === null })
+            const promise = assessPackageRisk(name, version, { includePopularity: true, metadataOnly: version === null, ecosystem })
                 .then((assessment) => {
                     if (this.disposed || generation !== this.reviewGeneration) throw new Error("The review changed while assessing this package.");
                     this.packageAssessments.set(cacheKey, assessment);
@@ -1507,9 +1514,12 @@ export class ReviewState {
             || source.current === null ? "base" : "current" };
     }
 
-    async sourceForPackageDeclaration(path, name) {
-        const dependency = this.model?.package_changes?.find((item) => item.name === name)
-            || this.model?.package_dependencies?.find((item) => item.name === name);
+    async sourceForPackageDeclaration(path, name, ecosystem = null) {
+        const matches = (item) => item.name === name && (!ecosystem || (item.ecosystem || "pypi") === ecosystem)
+            && [...item.declared_current || [], ...item.declared_base || [], ...item.declared_baseline || []]
+                .some((declaration) => declaration.source === path);
+        const dependency = this.model?.package_changes?.find(matches)
+            || this.model?.package_dependencies?.find(matches);
         if (!dependency) throw new Error(`Unknown package dependency: ${name}`);
         const current = dependency.declared_current?.find((item) => item.source === path);
         const declaration = current || dependency.declared_base?.find((item) => item.source === path);
