@@ -6,6 +6,7 @@ import { resolveSourceReference } from "/source-references.mjs";
 import { unchangedDiffContext, diffSegments } from "/diff-context.mjs";
 import { isReviewSymbol, isTestPath, languageForPath } from "/languages.mjs";
 import { ConnectionFeedback } from "/connection-feedback.mjs";
+import { describeAnalysisWarning } from "/analysis-limitations.mjs";
 import {
     callableName, callablesForSubject, changedCallables, decisionAction, decisionConditions, decisionSentence, decisionTotals,
     EVIDENCE_GROUPS, evidenceCounts, linkedTestOutcome, pathEvidence,
@@ -208,10 +209,13 @@ function renderSummary(model) {
     const meta = model.metadata || {};
     const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
     // Match the module-level count and the Architecture edges view this tile opens.
-    const topEdge = (model.aggregate_edges || [])
+    const topEdge = (summary.new_arch_edges || summary.arch_edges_removed) ? (model.aggregate_edges || [])
         .filter((edge) => edge.level === "module" && (edge.added_count > 0 || edge.removed_count > 0))
-        .sort((a, b) => (b.added_count + b.removed_count) - (a.added_count + a.removed_count))[0];
-    const moduleName = (id) => String(nodeById.get(id)?.name || id).split(".").pop();
+        .sort((a, b) => (b.added_count + b.removed_count) - (a.added_count + a.removed_count))[0] : null;
+    const moduleName = (id) => {
+        const node = nodeById.get(id);
+        return node?.language === "csharp" && node.path ? node.path.split(/[\\/]/).pop() : String(node?.name || id).split(".").pop();
+    };
     const split = sourceTestChurn(model);
     const fileDetail = [
         `${summary.files_added || 0} added`,
@@ -241,7 +245,7 @@ function renderSummary(model) {
     if (!model.coverage?.available) qualityIssues.push(historical
         ? "Coverage is unavailable for this historical snapshot. Working-tree coverage reports are not applied to commit or PR reviews."
         : `No usable coverage report for this worktree snapshot. ${coveragePrerequisite}, then Reanalyze.`);
-    if (warnings.length) qualityIssues.push(`${warnings.length} analyzer warning${warnings.length === 1 ? " requires" : "s require"} review.`);
+    if (warnings.length) qualityIssues.push(`${warnings.length} static-analysis note${warnings.length === 1 ? "" : "s"} describe what could not be verified.`);
     if (qualityIssues.length) {
         const quality = el("button", "quality-warning");
         quality.type = "button";
@@ -250,7 +254,7 @@ function renderSummary(model) {
             state.selected = {
                 id: "analysis-quality", kind: "analysis", name: "Analysis limitations",
                 reason: qualityIssues.join("\n"),
-                impact_factors: model.warnings || [],
+                analysis_warnings: warnings,
             };
             renderDetail(state.selected);
         });
@@ -1216,6 +1220,7 @@ function sourceReferenceButton(label, reference, title = null) {
         const epoch = ++state.selectionEpoch;
         const query = new URLSearchParams({ path: reference.path });
         if (reference.lines[0]) query.set("line", String(reference.lines[0]));
+        if (reference.side) query.set("side", reference.side);
         const packageName = reference.packageName || (state.selected?.id?.startsWith("package:")
             && [...(state.selected.declared_current || []), ...(state.selected.declared_base || [])].some((item) => item.source === reference.path)
             ? state.selected.name : null);
@@ -1224,7 +1229,7 @@ function sourceReferenceButton(label, reference, title = null) {
             if (state.selected?.ecosystem) query.set("ecosystem", state.selected.ecosystem);
         }
         try {
-            await loadSource(query.toString(), epoch, "current", "push");
+            await loadSource(query.toString(), epoch, reference.side || "current", "push");
         } catch (error) {
             if (epoch === state.selectionEpoch) showError(error);
         }
@@ -1345,6 +1350,30 @@ function renderAnnotation(item, annotation, loading = false) {
     }
 }
 
+function analysisWarningList(warnings) {
+    const list = el("ul", "analysis-warning-list");
+    for (const warning of warnings) {
+        const note = describeAnalysisWarning(warning, state.payload?.model);
+        const row = el("li", "analysis-warning-item");
+        const heading = el("div", "analysis-warning-heading");
+        heading.append(el("strong", "", note.kind));
+        if (note.subject) heading.append(el("code", "inline-code", note.subject));
+        if (note.snapshot) heading.append(el("span", "muted", note.snapshot));
+        if (note.framework) heading.append(el("span", "muted", note.framework));
+        row.append(heading);
+        if (note.reference) row.append(sourceReferenceButton(
+            `${note.reference.path}${note.reference.lines[0] ? `:${note.reference.lines[0]}` : ""}`, note.reference));
+        row.append(el("p", "analysis-warning-explanation", note.explanation || note.message));
+        if (note.explanation) {
+            const details = el("details", "analysis-warning-raw");
+            details.append(el("summary", "", "Analyzer detail"), el("p", "", note.raw));
+            row.append(details);
+        }
+        list.append(row);
+    }
+    return list;
+}
+
 function renderDetail(item) {
     setDetailVisible(true);
     const panel = elements.detail;
@@ -1382,6 +1411,11 @@ function renderDetail(item) {
     grid.append(...fields);
     panel.append(grid);
     if (item.body || item.reason || item.summary) panel.append(el("p", "detail-copy", item.body || item.reason || item.summary));
+    if (item.analysis_warnings?.length) {
+        panel.append(el("p", "analysis-warning-intro",
+            "These are limits of the static analysis, not confirmed code defects. Missing graph links do not mean calls or imports fail at runtime."));
+        panel.append(analysisWarningList(item.analysis_warnings));
+    }
     if (item.impact_factors?.length) {
         const factors = el("div", "factor-chips");
         factors.append(...item.impact_factors.map((factor) => el("span", "", factor)));
@@ -1972,12 +2006,37 @@ function renderDecisionView(model) {
         + "“Only if” marks gates that apply only when a value is present. Static extraction does not prove runtime reachability."));
     elements.graph.replaceChildren(view);
     if (!map || map.status !== "complete") {
-        view.append(map?.status === "loading" ? aiPlaceholder("code-paths", "Extracting code paths and linking tests…", 4)
-            : el("p", "collection-empty", map?.error || "Code paths are unavailable for this review."));
+        if (map?.status === "loading") {
+            view.append(aiPlaceholder("code-paths", "Extracting code paths and linking tests…", 4));
+        } else if (map?.error) {
+            const failure = el("section", "flash flash-danger code-path-error");
+            failure.append(el("strong", "", "Code paths could not be analyzed"),
+                el("p", "", "This is an analyzer failure, not a finding about your code. No code-path results were produced."));
+            if (/Invalid command format|Did you mean:\s*copilot/.test(map.error)) {
+                failure.append(el("p", "", "The provider used Copilot's executable instead of Node. Reload extensions and reopen this Canvas to use the installed runtime fix."));
+            }
+            const details = el("details", "");
+            details.append(el("summary", "", "Technical details"), el("pre", "", map.error));
+            failure.append(details);
+            view.append(failure);
+        } else {
+            view.append(el("p", "collection-empty", "Code paths are unavailable for this review."));
+        }
         return;
     }
     if (map.limited) view.append(el("p", "flash", "Large review: code path extraction covered a bounded set of files and callables."));
-    for (const warning of map.warnings || []) view.append(el("p", "flash", warning));
+    if (map.warnings?.length) {
+        const notes = el("details", "code-path-notes");
+        const key = `${state.payload?.review_generation}:${map.total_ms}`;
+        notes.open = state.codePathNotesOpenKey === key;
+        notes.addEventListener("toggle", () => {
+            if (notes.isConnected) state.codePathNotesOpenKey = notes.open ? key : null;
+        });
+        notes.append(el("summary", "", `${map.warnings.length} analysis notes about these code paths`),
+            el("p", "analysis-warning-intro", "These explain incomplete static analysis. They are not confirmed runtime failures."),
+            analysisWarningList(map.warnings));
+        view.append(notes);
+    }
     if (map.verification) view.append(renderVerificationBar(map));
     const filter = map.verification ? state.evidenceFilter || "all" : "all";
     const run = state.payload?.test_run;

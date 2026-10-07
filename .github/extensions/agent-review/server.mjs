@@ -18,6 +18,7 @@ const staticFiles = new Map([
     ["/decision-map.mjs", "decision-map.mjs"],
     ["/languages.mjs", "languages.mjs"],
     ["/connection-feedback.mjs", "connection-feedback.mjs"],
+    ["/analysis-limitations.mjs", "analysis-limitations.mjs"],
     ["/styles.css", "styles.css"],
 ]);
 const contentTypes = {

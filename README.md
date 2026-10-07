@@ -26,6 +26,10 @@ Drill from components to modules, classes, functions, and relationships. Added,
 modified, and removed items have distinct styling; graph edges expose callers
 and dependencies. A ranked attention queue highlights rule-based concerns,
 with evidence, exact source locations, and persistent **Close / Reopen** controls.
+Analysis limitations are a readable list of static-analysis notes, with plain
+explanations and clickable saved source/project locations. Baseline/current and
+target-framework labels distinguish their scope; unresolved graph links are
+not automatically classified as runtime bugs.
 
 ### Follow code paths
 
@@ -106,12 +110,15 @@ never as instructions to the reviewer.
 
 ### Review dependency decisions
 
-Added, changed, and removed Python and npm dependencies link to manifest
+Added, changed, and removed Python, npm, and NuGet dependencies link to manifest
 declarations and consuming code. On-demand Python assessments explain adoption
 and expose PyPI metadata, OSV advisories, OpenSSF Scorecard, maintenance, and downloads.
 npm assessments currently expose registry metadata and OSV advisories only;
 broader risk, maintenance, popularity, and Scorecard signals remain unknown.
 Workspace links and private npm packages skip public assessments.
+NuGet explanations receive bounded saved source from the declaring projects,
+including unchanged implementations. When no assembly usage edge is resolved,
+candidate associations are explicitly inferred; namespace spelling is not proof.
 Vulnerability checks use the **exact project version**, never the latest release.
 Unresolved ranges still permit metadata and usage explanations, but
 version-specific vulnerability status remains unknown. Service failures are visible.

@@ -643,12 +643,19 @@ export function analyzeSnapshot({ baseline = {}, current = {}, use_cache = true 
   const components = [...grouped].map(([name, module_ids]) => ({
     id: id('component', name), name, language: 'node', module_ids: module_ids.sort(),
   }));
+  const warningSides = new Map();
+  for (const [side, notes] of [["Base", before.warnings], ["Current", after.warnings]]) {
+    for (const note of notes) {
+      if (!warningSides.has(note)) warningSides.set(note, new Set());
+      warningSides.get(note).add(side);
+    }
+  }
   return {
     symbols: symbols.sort((a, b) => a.id.localeCompare(b.id)),
     edges: edges.sort((a, b) => a.id.localeCompare(b.id)),
     evidence: evidence.sort((a, b) => a.id.localeCompare(b.id)),
     aggregates: { modules, components, edges: aggregateEdges(symbols, modules, components, edges) },
-    warnings: [...new Set([...before.warnings, ...after.warnings])].sort(),
+    warnings: [...warningSides].map(([note, sides]) => `[${sides.size === 2 ? "Base/current" : [...sides][0]}] ${note}`).sort(),
   };
 }
 
