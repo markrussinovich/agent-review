@@ -481,7 +481,7 @@ class ReviewModel:
     @staticmethod
     def _declared_package_text(declarations: list[dict[str, Any]]) -> str:
         return ", ".join(
-            f"{item['name']}{' ' if item.get('ecosystem') == 'nuget' and item.get('specifier') else ''}{item.get('specifier', '')}"
+            f"{item['name']}{' ' if item.get('ecosystem') in ('nuget', 'npm') and item.get('specifier') else ''}{item.get('specifier', '')}"
             for item in declarations
         )
 

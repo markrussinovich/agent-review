@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { isTestPath } from "./web/languages.mjs";
 import { linkedNodeTestPlan, resolveTestNode, nodeTestCommand, runLinkedNodeTests } from "./node-test-run.mjs";
+import { nodeExecutable } from "./node-runtime.mjs";
 
 export const NODE_SOURCE_EXTENSIONS = Object.freeze([".js", ".ts", ".jsx", ".tsx", ".cjs", ".mjs", ".cts", ".mts"]);
 export const isNodeSourcePath = (path) => NODE_SOURCE_EXTENSIONS.some((extension) => String(path || "").toLowerCase().endsWith(extension));
@@ -45,7 +46,7 @@ export const NODE_REVIEW_ADAPTER = Object.freeze({
     sourcePath: isNodeSourcePath,
     codePathProcess: (extensionRoot, input) => ({
         runtime: "node",
-        candidates: [[process.execPath, []]],
+        candidates: [[nodeExecutable(), []]],
         args: [join(extensionRoot, "node-codepaths.mjs"), "--input", input],
     }),
     tests: Object.freeze({

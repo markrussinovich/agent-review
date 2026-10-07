@@ -5,6 +5,7 @@ import { packageEvidenceLinks } from "/package-presentation.mjs";
 import { resolveSourceReference } from "/source-references.mjs";
 import { unchangedDiffContext, diffSegments } from "/diff-context.mjs";
 import { isReviewSymbol, isTestPath, languageForPath } from "/languages.mjs";
+import { ConnectionFeedback } from "/connection-feedback.mjs";
 import {
     callableName, callablesForSubject, changedCallables, decisionAction, decisionConditions, decisionSentence, decisionTotals,
     EVIDENCE_GROUPS, evidenceCounts, linkedTestOutcome, pathEvidence,
@@ -48,6 +49,12 @@ const elements = Object.fromEntries([
     "prompt-manager-error", "prompt-library", "prompt-editor", "prompt-editor-title", "prompt-scope",
     "prompt-title", "prompt-text", "prompt-enabled", "prompt-save", "prompt-new",
 ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
+const connectionFeedback = new ConnectionFeedback({
+    onChange: (phase) => {
+        state.connectionLost = phase !== "connected";
+        renderConnectionNotice();
+    },
+});
 
 function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -111,16 +118,27 @@ function churnBar(fraction, kind) {
 
 async function api(path, options = {}) {
     let response;
-    try {
-        response = await fetch(path, {
-            ...options,
-            headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-        });
-    } catch (cause) {
-        markDisconnected();
-        const error = new Error("Connection to Agent Review was interrupted.", { cause });
-        error.code = "connection_lost";
-        throw error;
+    const retryStartupRead = (options.method || "GET").toUpperCase() === "GET" && !connectionFeedback.hasConnected;
+    const deadline = performance.now() + 2500;
+    let retryDelay = 150;
+    for (;;) {
+        try {
+            response = await fetch(path, {
+                ...options,
+                headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+            });
+            break;
+        } catch (cause) {
+            markDisconnected();
+            if (retryStartupRead && performance.now() + retryDelay < deadline) {
+                await new Promise((resolve) => setTimeout(resolve, retryDelay));
+                retryDelay = Math.min(750, retryDelay * 2);
+                continue;
+            }
+            const error = new Error("Connection to Agent Review was interrupted.", { cause });
+            error.code = "connection_lost";
+            throw error;
+        }
     }
     const body = await response.json();
     if (!response.ok) {
@@ -2643,6 +2661,7 @@ async function loadCustomPrompts() {
         renderCustomAnalyses();
     } catch (error) {
         if (repo !== state.payload?.repo_root) return;
+        if (error.code === "connection_lost") return;
         state.customLibraryError = error.message;
         promptManagerError(error);
         renderCustomAnalyses();
@@ -3320,14 +3339,17 @@ elements.prompt_editor.addEventListener("submit", async (event) => {
 
 loadCustomPrompts();
 api("/api/state").then((payload) => {
+    if (state.eventSnapshotReceived) return;
     state.payload = payload;
     render();
 }).catch(showError);
 
 function renderConnectionNotice() {
-    elements.connection_notice.classList.toggle("hidden", !state.connectionLost);
+    const showWarning = state.connectionLost && connectionFeedback.phase === "lost";
+    elements.connection_notice.classList.toggle("hidden", !showWarning);
     if (state.connectionLost) {
-        elements.status.textContent = "Connection lost";
+        elements.status.textContent = showWarning ? "Connection lost"
+            : connectionFeedback.hasConnected ? "Reconnecting…" : "Connecting…";
         elements.status.classList.add("working");
         elements.analysis_progress.classList.add("hidden");
         elements.refresh.disabled = true;
@@ -3338,8 +3360,7 @@ function renderConnectionNotice() {
 }
 
 function markDisconnected() {
-    state.connectionLost = true;
-    renderConnectionNotice();
+    connectionFeedback.failed();
     if (!elements.clean_review.classList.contains("hidden")) {
         elements.clean_review.querySelector("h2").textContent = "Previous snapshot had no changes";
         elements.clean_review.querySelector("p").textContent = "This is the last saved result; it cannot confirm the current worktree while disconnected.";
@@ -3360,6 +3381,7 @@ function connectEvents() {
     events.addEventListener("state", (event) => {
         if (state.eventSource !== events) return;
         const update = JSON.parse(event.data);
+        state.eventSnapshotReceived = true;
         const payload = update.partial ? { ...state.payload, ...update } : update;
         if (payload.type === "repository-changed") {
             resetReviewNavigation();
@@ -3370,7 +3392,7 @@ function connectEvents() {
         }
         if (state.payload?.review_generation !== payload.review_generation
             && payload.model && !payload.loading) resetReviewNavigation();
-        state.connectionLost = false;
+        connectionFeedback.connected();
         state.payload = payload;
         if (["connected", "refreshed", "repository-changed"].includes(state.payload.type)) loadCustomPrompts();
         render();

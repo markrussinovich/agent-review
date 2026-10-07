@@ -81,6 +81,12 @@ try {
         await page.waitForFunction(() => document.querySelector("#status").textContent === "Analysis current");
         assert.match(state.model.source_files["main.py"].current, /return 3/);
         const snapshot = state.model;
+        // Keep the outage analysis pending: closing only the HTTP server does not stop a real scan.
+        // This verifies the cached result during a genuinely incomplete analysis, independent of timing.
+        state.runAnalyzer = (_repo, _base, progress, _ref, { signal }) => {
+            progress({ phase: "python_graph", message: "Analysis is pending", percent: 42 });
+            return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+        };
         const outage = page.waitForResponse((res) => res.url().endsWith("/api/refresh"));
         await page.click("#refresh");
         assert.equal((await outage).status(), 202);

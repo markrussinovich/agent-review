@@ -1,13 +1,13 @@
 import { fork, spawn, execFile } from "node:child_process";
 import { stat, rm, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { isSea } from "node:sea";
+import { nodeExecutable } from "./node-runtime.mjs";
 
 const guardPath = fileURLToPath(import.meta.url);
 
 function forkGuard(config, stdio) {
     return fork(guardPath, [JSON.stringify(config)], {
-        execPath: isSea() || process.versions.bun ? "node" : process.execPath,
+        execPath: nodeExecutable(),
         execArgv: [],
         stdio,
         windowsHide: true,

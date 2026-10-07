@@ -60,6 +60,9 @@ class MixedPackageIdentityTests(unittest.TestCase):
         self.assertEqual(by_id["package:npm:shared"]["resolved_current"], "2.1")
         self.assertEqual(by_id["package:nuget:shared"]["resolved_current"], "3.0")
         self.assertNotIn("ecosystem", by_id["package:shared"])
+        reasons = [item["reason"] for item in result["attention"]]
+        self.assertTrue(any("shared ^2.0" in reason for reason in reasons), "npm names and ranges have readable spacing")
+        self.assertTrue(any("shared==1.0" in reason for reason in reasons), "Python declaration formatting remains unchanged")
 
 
 if __name__ == "__main__":

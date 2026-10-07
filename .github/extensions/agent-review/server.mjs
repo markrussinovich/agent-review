@@ -17,6 +17,7 @@ const staticFiles = new Map([
     ["/diff-context.mjs", "diff-context.mjs"],
     ["/decision-map.mjs", "decision-map.mjs"],
     ["/languages.mjs", "languages.mjs"],
+    ["/connection-feedback.mjs", "connection-feedback.mjs"],
     ["/styles.css", "styles.css"],
 ]);
 const contentTypes = {

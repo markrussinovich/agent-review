@@ -229,6 +229,10 @@ session, then ask Copilot:
 When updating, reload extensions and reopen only the Canvas in the same session.
 **Do not delete the session or worktree.** Reanalyze updates a snapshot; it does
 not reload extension code.
+Brief startup interruptions show a neutral Connecting/Reconnecting status while
+read requests and the event stream retry. A persistent outage shows the connection
+warning after three seconds; actions that execute tests or modify review state
+are never automatically retried.
 
 ## Choose a snapshot
 
