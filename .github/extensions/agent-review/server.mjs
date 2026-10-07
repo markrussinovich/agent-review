@@ -108,7 +108,7 @@ export function startReviewServer(state, options = {}) {
                     return;
                 }
                 sendJson(res, path
-                    ? await state.sourceForPackageDeclaration(path, packageName)
+                    ? await state.sourceForPackageDeclaration(path, packageName, requestUrl.searchParams.get("ecosystem"))
                     : await state.sourceFor(requestUrl.searchParams.get("id")));
                 return;
             }

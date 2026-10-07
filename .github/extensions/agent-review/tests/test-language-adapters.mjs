@@ -5,9 +5,11 @@ import { buildDecisionRequest } from "../review-state.mjs";
 import { isTestPath, languageForPath } from "../web/languages.mjs";
 import { pythonCandidates } from "../python-runtime.mjs";
 
-test("language support is shared and does not advertise unimplemented C# adapters", () => {
+test("language support is shared and advertises implemented adapters only", () => {
     assert.equal(languageForPath("src/main.py").id, "python");
-    for (const path of ["App.cs", "README.md", undefined]) {
+    assert.equal(languageForPath("App.cs").id, "csharp");
+    assert.equal(sourceAdapter("App.cs"), reviewAdapter("csharp"));
+    for (const path of ["README.md", undefined]) {
         assert.equal(languageForPath(path), null);
         assert.equal(sourceAdapter(path), null);
     }

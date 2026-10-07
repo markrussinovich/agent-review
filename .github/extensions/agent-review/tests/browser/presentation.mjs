@@ -184,8 +184,8 @@ try {
         assert.match(await page.locator("#packages").textContent(), /Version 25\.0/);
         assert.match(await page.locator("#attention .impact-score").first().textContent(), /Priority \d+\/100/);
         const panel = await page.locator("#package-detail").textContent();
-        assert.match(panel, /Manifest changes are reviewed even when no Python import is found/);
-        assert.match(panel, /Python import locations \(0\)/);
+        assert.match(panel, /Manifest changes are reviewed even when no static usage is resolved/);
+        assert.match(panel, /Static usage locations \(0\)/);
         assert.match(panel, /not an observed import/);
         assert.match(panel, /Reviewed version/);
         assert.match(panel, /Affects reviewed version 25\.0/);

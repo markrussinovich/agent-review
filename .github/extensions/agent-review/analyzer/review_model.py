@@ -11,20 +11,56 @@ def stable_id(kind: str, *parts: object) -> str:
     return f"{kind}:{hashlib.sha256(value.encode()).hexdigest()[:16]}"
 
 
-def package_key(package: dict[str, Any]) -> str:
-    ecosystem = package.get("ecosystem")
-    return f"{ecosystem}:{package['name']}" if ecosystem and ecosystem != "pypi" else package["name"]
+def _package_key(item: dict[str, Any]) -> tuple[str, str]:
+    ecosystem = item.get("ecosystem", "pypi")
+    return ecosystem, item["name"].lower() if ecosystem == "nuget" else item["name"]
 
 
-def package_identity(package: dict[str, Any]) -> dict[str, Any]:
-    return {"ecosystem": package["ecosystem"]} if package.get("ecosystem") else {}
+def _package_id(key: tuple[str, str]) -> str:
+    ecosystem, name = key
+    return f"package:{name}" if ecosystem == "pypi" else f"package:{ecosystem}:{name}"
+
+
+def _package_metadata(key: tuple[str, str]) -> dict[str, str]:
+    if key[0] == "nuget":
+        return {"ecosystem": key[0], "language": "csharp", "identity": key[1]}
+    return {"ecosystem": key[0]} if key[0] != "pypi" else {}
+
+
+def _resolved_package_version(declarations: list[dict[str, Any]]) -> str | None:
+    if declarations and declarations[0].get("ecosystem") in ("nuget", "npm"):
+        if any(item.get("resolution_error") for item in declarations):
+            return None
+        versions = {item.get("resolved_version") for item in declarations}
+        return next(iter(versions)) if len(versions) == 1 and None not in versions else None
+    return next((item["resolved_version"] for item in declarations if "resolved_version" in item), None)
 
 
 def resolved_package_version(declarations: list[dict[str, Any]]) -> str | None:
-    if any(item.get("ecosystem") == "npm" for item in declarations):
-        versions = {item.get("resolved_version") for item in declarations}
-        return next(iter(versions)) if len(versions) == 1 else None
-    return next((item["resolved_version"] for item in declarations if "resolved_version" in item), None)
+    return _resolved_package_version(declarations)
+
+
+def _symbol_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    metadata = {key: item[key] for key in ("language", "ecosystem") if key in item}
+    if (
+        item.get("language") == "csharp" or str(item.get("path", "")).lower().endswith(".cs")
+    ) and "identity" in item:
+        metadata["identity"] = item["identity"]
+    return metadata
+
+
+def _is_csharp_symbol(node: dict[str, Any]) -> bool:
+    return node.get("language") == "csharp" and node["type"] in {
+        "property", "interface", "namespace", "struct", "enum", "record",
+        "constructor", "field", "event", "delegate", "operator", "accessor",
+    }
+
+
+def _is_callable_node(node: dict[str, Any]) -> bool:
+    return node["type"] in ("function", "method") or (
+        node.get("language") == "csharp"
+        and node["type"] in ("property", "constructor", "operator", "accessor")
+    )
 
 
 @dataclass
@@ -72,7 +108,6 @@ class ReviewModel:
                 "confidence": edge["confidence"],
                 "count": edge.get("count", 1),
                 "evidence_ids": edge["evidence_ids"],
-                **({"language": edge["language"]} if edge.get("language") else {}),
             }
             for edge in self.edges
         ]
@@ -86,7 +121,13 @@ class ReviewModel:
             if package["change"] == "added" and usage_count == 0:
                 score += 12
             attention.append({
-                "id": stable_id("attention", "package", package["id"][8:]),
+                "id": (
+                    stable_id("attention", "package", package["name"])
+                    if package.get("ecosystem", "pypi") == "pypi"
+                    else stable_id("attention", "package", package["id"][8:])
+                    if package.get("ecosystem") == "npm"
+                    else stable_id("attention", "package", package["ecosystem"], package["identity"])
+                ),
                 "type": "package",
                 "package_id": package["id"],
                 "title": f"Package dependency {package['change']}",
@@ -107,7 +148,8 @@ class ReviewModel:
         package_dependencies = self._package_dependencies(package_changes)
         changed_symbols = [
             node for node in nodes
-            if node["type"] in ("class", "function", "method") and node["change"] != "unchanged"
+            if (node["type"] in ("class", "function", "method") or _is_csharp_symbol(node))
+            and node["change"] != "unchanged"
         ]
         changed_modules = [
             node for node in nodes if node["type"] == "module" and node["change"] != "unchanged"
@@ -118,7 +160,7 @@ class ReviewModel:
         ]
         changed_uncovered = [
             node for node in nodes
-            if node["type"] in ("function", "method")
+            if _is_callable_node(node)
             and node["change"] != "removed"
             and node["metrics"]["changed_lines_uncovered"] > 0
         ]
@@ -137,6 +179,13 @@ class ReviewModel:
                 "generated_at": self.repository.get("generated_at"),
                 "python_loc": self.repository.get("python_loc", 0),
                 **({"node_loc": self.repository["node_loc"]} if "node_loc" in self.repository else {}),
+                **({"csharp_loc": self.repository["csharp_loc"]} if "csharp_loc" in self.repository else {}),
+                **(
+                    {"review_languages": self.repository["review_languages"]}
+                    if "review_languages" in self.repository
+                    else {"review_languages": self.repository["languages"]}
+                    if "languages" in self.repository else {}
+                ),
             },
             "summary": {
                 "files_changed": len(changed),
@@ -285,17 +334,18 @@ class ReviewModel:
                 "parent_id": None, "module_id": None, "component_id": component["id"],
                 "path": None, "start_line": None, "end_line": None, "change": change,
                 "metrics": component_metrics, "signatures": {"base": None, "current": None},
+                **_symbol_metadata(component),
             })
         for module in self.aggregates["modules"]:
             component_id = component_ids[module["component"]]
             result.append({
-                "id": module["id"], "type": "module", "name": module["name"],
+                "id": module["id"], "type": "module", "name": module.get("display_name", module["name"]),
                 "parent_id": component_id, "module_id": module["id"],
                 "component_id": component_id, "path": module["path"],
                 "start_line": 1, "end_line": self._line_count(module["path"]),
                 "change": module["change"], "metrics": metrics(module["path"]),
                 "signatures": {"base": None, "current": None},
-                **({"language": module["language"]} if module.get("language") else {}),
+                **_symbol_metadata(module),
             })
         symbol_ids = {symbol["identity"]: symbol["id"] for symbol in self.symbols}
         for symbol in self.symbols:
@@ -304,9 +354,16 @@ class ReviewModel:
                 continue
             component_id = component_ids[module["component"]]
             parent_id = module["id"]
-            if "." in symbol["qualname"]:
+            if symbol.get("parent_identity"):
+                parent_id = symbol_ids.get(symbol["parent_identity"], parent_id)
+            elif (
+                symbol.get("language") != "csharp"
+                and not str(symbol.get("path", "")).lower().endswith(".cs")
+                and "." in symbol["qualname"]
+            ):
                 parent_identity = f"{symbol['module']}:{symbol['qualname'].rsplit('.', 1)[0]}"
                 parent_id = symbol_ids.get(parent_identity, parent_id)
+            parent_id = symbol.get("parent_id") or parent_id
             direct, transitive = callers(symbol["id"])
             value_metrics = metrics(
                 symbol["path"], symbol["range"]["start_line"], symbol["range"]["end_line"]
@@ -329,27 +386,26 @@ class ReviewModel:
                 "end_line": symbol["range"]["end_line"],
                 "change": symbol["classification"], "metrics": value_metrics,
                 "fields": symbol.get("fields", []),
+                **_symbol_metadata(symbol),
                 "signatures": {
                     "base": symbol.get("signature_base"),
                     "current": symbol.get("signature_current"),
                 },
-                **({"language": symbol["language"]} if symbol.get("language") else {}),
             })
-        package_names = sorted(
-            {package_key(item) for item in self.packages["baseline"]}
-            | {package_key(item) for item in self.packages["current"]}
-        )
-        changes = {package_key(item): item["kind"] for item in self.packages["changes"]}
-        declarations = {package_key(item): item for item in self.packages["baseline"] + self.packages["current"]}
+        package_items = {
+            _package_key(item): item
+            for item in [*self.packages["baseline"], *self.packages["current"]]
+        }
+        changes = self._package_change_kinds()
         change_map = {"version_changed": "modified", "added": "added", "removed": "removed"}
-        for name in package_names:
+        for key, item in sorted(package_items.items()):
             result.append({
-                "id": f"package:{name}", "type": "package", "name": declarations[name]["name"],
-                **package_identity(declarations[name]),
+                "id": _package_id(key), "type": "package", "name": item["name"],
                 "parent_id": None, "module_id": None, "component_id": None,
                 "path": None, "start_line": None, "end_line": None,
-                "change": change_map.get(changes.get(name, ""), "unchanged"),
+                "change": change_map.get(changes.get(key, ""), "unchanged"),
                 "metrics": metrics(None), "signatures": {"base": None, "current": None},
+                **_package_metadata(key),
             })
         return sorted(result, key=lambda item: item["id"])
 
@@ -360,87 +416,100 @@ class ReviewModel:
         return 0
 
     def _package_changes(self) -> list[dict[str, Any]]:
-        baseline: dict[str, list[dict[str, Any]]] = {}
-        current: dict[str, list[dict[str, Any]]] = {}
+        baseline: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        current: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for item in self.packages["baseline"]:
-            baseline.setdefault(package_key(item), []).append(item)
+            baseline.setdefault(_package_key(item), []).append(item)
         for item in self.packages["current"]:
-            current.setdefault(package_key(item), []).append(item)
-        change_kind = {package_key(item): item["kind"] for item in self.packages["changes"]}
+            current.setdefault(_package_key(item), []).append(item)
+        change_kind = self._package_change_kinds()
         result = []
-        for name in sorted(set(baseline) | set(current)):
-            if name not in change_kind:
+        for key in sorted(set(baseline) | set(current)):
+            if key not in change_kind:
                 continue
-            declaration = (current.get(name) or baseline[name])[0]
+            name = (current.get(key) or baseline[key])[0]["name"]
             usage = sorted({
                 source
-                for item in current.get(name, [])
+                for item in current.get(key, [])
                 for source in item.get("used_by", [])
             })
             evidence_ids = sorted({
                 evidence
                 for edge in self.edges
-                if edge["kind"] == "uses_package" and edge["target"] == f"package:{name}"
+                if edge["kind"] == "uses_package" and edge["target"] == _package_id(key)
                 for evidence in edge["evidence_ids"]
             })
             if not evidence_ids:
                 evidence_ids = [self.add_evidence(
                     "package_change",
                     {
-                        "name": declaration["name"],
-                        **package_identity(declaration),
-                        "change": change_kind.get(name, "unchanged"),
-                        "declared_base": baseline.get(name, []),
-                        "declared_baseline": baseline.get(name, []),
-                        "declared_current": current.get(name, []),
+                        "name": name,
+                        "change": change_kind.get(key, "unchanged"),
+                        "declared_base": baseline.get(key, []),
+                        "declared_baseline": baseline.get(key, []),
+                        "declared_current": current.get(key, []),
+                        **_package_metadata(key),
                     },
                 )]
             result.append({
-                "id": f"package:{name}", "name": declaration["name"],
-                **package_identity(declaration),
+                "id": _package_id(key), "name": name,
                 "change": {"version_changed": "modified"}.get(
-                    change_kind.get(name, "unchanged"), change_kind.get(name, "unchanged")
+                    change_kind.get(key, "unchanged"), change_kind.get(key, "unchanged")
                 ),
-                "declared_base": baseline.get(name, []),
-                "declared_baseline": baseline.get(name, []),
-                "declared_current": current.get(name, []),
-                "resolved_current": resolved_package_version(current.get(name, [])),
+                "declared_base": baseline.get(key, []),
+                "declared_baseline": baseline.get(key, []),
+                "declared_current": current.get(key, []),
+                "resolved_current": _resolved_package_version(current.get(key, [])),
                 "usage_locations": usage,
                 "evidence_ids": evidence_ids,
+                **_package_metadata(key),
             })
         return result
+
+    def _package_change_kinds(self) -> dict[tuple[str, str], str]:
+        changes = {_package_key(item): item["kind"] for item in self.packages["changes"]}
+        baseline = {_package_key(item) for item in self.packages["baseline"]}
+        current = {_package_key(item) for item in self.packages["current"]}
+        for key in changes:
+            if key[0] == "nuget":
+                changes[key] = (
+                    "version_changed" if key in baseline and key in current
+                    else "added" if key in current else "removed"
+                )
+        return changes
 
     @staticmethod
     def _declared_package_text(declarations: list[dict[str, Any]]) -> str:
         return ", ".join(
-            f"{item['name']}{item.get('specifier', '')}" for item in declarations
+            f"{item['name']}{' ' if item.get('ecosystem') == 'nuget' and item.get('specifier') else ''}{item.get('specifier', '')}"
+            for item in declarations
         )
 
     def _package_dependencies(
         self, package_changes: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        changes = {package_key(item): item for item in package_changes}
-        grouped: dict[str, list[dict[str, Any]]] = {}
-        baseline: dict[str, list[dict[str, Any]]] = {}
+        changes = {_package_key(item): item for item in package_changes}
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        baseline: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for item in self.packages["baseline"]:
-            baseline.setdefault(package_key(item), []).append(item)
+            baseline.setdefault(_package_key(item), []).append(item)
         for item in self.packages["current"]:
-            grouped.setdefault(package_key(item), []).append(item)
+            grouped.setdefault(_package_key(item), []).append(item)
         result = []
-        for name, declarations in sorted(grouped.items()):
-            change = changes.get(name)
+        for key, declarations in sorted(grouped.items()):
+            change = changes.get(key)
             result.append({
-                "id": f"package:{name}",
+                "id": _package_id(key),
                 "name": declarations[0]["name"],
-                **package_identity(declarations[0]),
                 "change": change["change"] if change else "unchanged",
                 "declared_current": declarations,
-                "declared_baseline": baseline.get(name, []),
-                "resolved_current": resolved_package_version(declarations),
+                "declared_baseline": baseline.get(key, []),
+                "resolved_current": _resolved_package_version(declarations),
                 "usage_locations": sorted({
                     source for item in declarations for source in item.get("used_by", [])
                 }),
                 "evidence_ids": change["evidence_ids"] if change else [],
+                **_package_metadata(key),
             })
         return result
 
@@ -472,7 +541,7 @@ class ReviewModel:
                     "signature", {"path": node["path"], "line": node["start_line"],
                                   "detail": f"{node['signatures']['base']} -> {node['signatures']['current']}"}
                 )
-            if metrics["changed_lines_uncovered"] > 0 and node["type"] in ("function", "method"):
+            if metrics["changed_lines_uncovered"] > 0 and _is_callable_node(node):
                 node["_coverage_evidence"] = self.add_evidence(
                     "coverage", {"path": node["path"], "line": node["start_line"],
                                  "detail": f"{metrics['changed_lines_uncovered']} changed lines uncovered"}
@@ -483,7 +552,10 @@ class ReviewModel:
                     "broad_impact", {"path": node["path"], "line": node["start_line"],
                                      "detail": f"{caller_count} direct/transitive callers"}
                 )
-            if metrics["lines_changed"] >= 25 and node["type"] in ("module", "class", "function", "method"):
+            if metrics["lines_changed"] >= 25 and (
+                node["type"] in ("module", "class", "function", "method")
+                or _is_csharp_symbol(node)
+            ):
                 node["_size_evidence"] = self.add_evidence(
                     "line_delta", {"path": node["path"], "line": node["start_line"],
                                    "detail": f"+{metrics['lines_added']} / -{metrics['lines_removed']} lines"}
@@ -534,7 +606,9 @@ class ReviewModel:
                 [f"complexity {metrics['complexity_current']}", f"{metrics['lines_changed']} changed lines"],
             )
             append_finding(
-                node, "signature", "_signature_evidence", "Public callable contract changed",
+                node, "signature", "_signature_evidence",
+                "Public symbol contract changed" if _is_csharp_symbol(node)
+                else "Public callable contract changed",
                 f"{node['name']} changed its signature with {callers} direct or transitive callers to verify.",
                 50 + min(32, callers * 3),
                 ["signature changed", f"{callers} callers"],

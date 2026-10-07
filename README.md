@@ -1,7 +1,7 @@
 # Agent Review
 
-A GitHub Copilot Canvas extension for reviewing agent-made changes in Python and
-Node.js/TypeScript repositories. Start with the change's intent and architecture,
+A GitHub Copilot Canvas extension for reviewing agent-made changes in Python,
+Node.js/TypeScript, and C#/.NET repositories. Start with the change's intent and architecture,
 then follow its impact down to findings, dependency evidence, and source diffs.
 
 [![Agent Review: change brief, architecture graph, attention queue, package changes, source diff, originating prompt, and AI briefing](docs/agent-review.png)](docs/agent-review.png)
@@ -130,6 +130,80 @@ Requires a Git repository, Python **3.11+**, Node.js **20+** on PATH, and a
 **github.com only** and require the `gh` CLI and `gh auth login`; private
 repositories also need HTTPS Git credentials (for example, `gh auth setup-git`).
 No separate model API key or Python packages are needed for the analyzer.
+
+### C# / .NET tooling and safety
+
+C# reviews additionally require a **.NET 10 runtime** and the prepared Roslyn
+helper. With **.NET SDK 10** installed, prepare the extension's own trusted
+tool once (not a project under review):
+
+```powershell
+dotnet build .github\extensions\agent-review\dotnet-analyzer\AgentReview.DotnetAnalyzer.csproj -c Release -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false -p:UseSharedCompilation=false -nodeReuse:false
+```
+
+The helper references Roslyn bundled with the SDK, without a NuGet package
+dependency. Copy its Release binaries, dependency/runtime configuration and
+Roslyn assemblies with the extension (not its cache), or set
+`AGENT_REVIEW_DOTNET_HELPER` to the built `AgentReview.Dotnet.dll`.
+Prepare it in a trusted development checkout or a separate owned tooling
+directory, never inside an untrusted repository being reviewed.
+`AGENT_REVIEW_DOTNET` selects the analysis runtime. Missing tooling fails with an
+actionable message; it does not silently fall back to pretend semantics.
+Python-only reviews do not start a compiler or .NET process.
+Syntax content facts use a bounded .NET-specific cache (256 entries, 16 MiB
+total, 1 MiB per entry) under `AGENT_REVIEW_CACHE_DIR/dotnet-facts`, or the
+standard Agent Review cache directory. `AGENT_REVIEW_DOTNET_CACHE` overrides
+that location. Content, compiler/extractor and parse configuration invalidate
+facts; semantic compilation, relationships and test links are rebuilt for
+each snapshot. `--no-cache` disables the scan's persistent .NET facts cache.
+
+Scanning reads **both saved trees** and never invokes reviewed MSBuild targets,
+restores packages, builds projects, or executes reviewed code. Project XML is
+interpreted conservatively rather than evaluated by MSBuild. Unsupported
+conditions, generated sources, custom imports/targets, unavailable assemblies,
+and target-framework/reference mismatches are reported as incomplete analysis.
+Roslyn's resolved source relationships are evidence; namespace spelling alone
+is not proof of NuGet package usage.
+C# code paths are syntax-derived control-flow summaries with snapshot spans,
+not a symbolic-execution proof of path feasibility. Conditional compilation is
+configuration-scoped; unsupported MSBuild evaluation is not guessed.
+
+NuGet `PackageReference` and nearest `Directory.Packages.props` declarations
+are snapshot-scoped, with manifest links. Existing **saved** lock/assets files
+can resolve versions; scanning never creates them. Ranges and unresolved
+properties stay unresolved. NuGet and PyPI identities and assessment caches
+are separate; NuGet lookups query NuGet metadata and OSV's **NuGet** ecosystem,
+never PyPI. Maintenance/provenance signals not implemented for NuGet remain
+unknown, not a clean bill of health.
+Malformed authoritative project/central manifests fail explicitly rather than
+being mistaken for package removals. Differing project pins remain visible in
+the saved declaration list; a grouped package does not acquire a guessed
+version-specific advisory result.
+
+Saved Coverlet **Cobertura XML** reports contribute line and branch evidence
+only for unambiguously matched C# snapshot paths. Reports must be tracked or
+non-ignored snapshot files (the common root `coverage.xml` is excluded by the
+existing snapshot policy; use a saved report such as
+`TestResults/coverage.cobertura.xml`). A historical review never borrows a
+live worktree report. Aggregate coverage does not identify which test ran a
+path or prove that the report was generated for the saved source.
+
+Static xUnit links are inferred. **Run linked tests** explicitly invokes
+`dotnet test <project> --filter ... --logger trx`, which **can restore, build,
+and execute project code**. The command and prerequisites are displayed before
+execution. A .NET SDK matching the test project's target framework,
+`Microsoft.NET.Test.Sdk`, and `xunit.runner.visualstudio` are required.
+Configure `test_dotnet` in `.agent-review.json` or `AGENT_REVIEW_TEST_DOTNET` if
+needed. A run currently supports one linked test project and at most 100 exact
+test names; mixed-language combined execution remains unsupported.
+Commit/PR runs use the same disposable Git-object export as Python and are
+cancellable. Runs disable shared compilation and MSBuild server/node reuse,
+keeping their build/test processes owned by the run rather than a shared
+background compiler. TRX reports individual test outcomes, **not per-test path traces**:
+a passing xUnit test never upgrades a path to **Confirmed**. Existing Python
+line-trace confirmation behavior is unchanged.
+Snapshot isolation selects the reviewed source tree; it is not a sandbox for
+MSBuild targets or test side effects.
 
 Copy the [extension directory](.github/extensions/agent-review/) to either:
 
@@ -316,8 +390,7 @@ disposable repository is separate from this persistent demo.
 ### Language adapter boundary
 
 Snapshot loading, review lifecycle, source navigation, and UI remain shared.
-Implemented language adapters are **Python** and **Node.js/TypeScript**; a C#
-backend is not yet registered or advertised.
+Implemented language adapters are **Python**, **Node.js/TypeScript**, and **C#/.NET**.
 
 - `analyzer/language_adapters.py` defines the snapshot contract and selects
   adapters using both trees (including deleted sources and manifest-only changes).
@@ -328,7 +401,8 @@ backend is not yet registered or advertised.
 - `language-adapters.mjs` routes post-scan code-path requests and test runners.
   `python-review-adapter.mjs` owns Python callable/test linkage and the parser
   process specification; `node-review-adapter.mjs` routes the Node compiler,
-  static linkage, and isolated `node:test` runner. Per-language results merge
+  static linkage, and isolated `node:test` runner; `dotnet-review-adapter.mjs`
+  routes Roslyn and the opt-in xUnit runner. Per-language results merge
   into the shared code-path view; unknown adapters and duplicate callable IDs
   fail explicitly.
 - `web/languages.mjs` shares implemented source-language and test-path

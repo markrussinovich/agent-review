@@ -131,11 +131,19 @@ try {
             assert.match(await page.locator("#package-detail").textContent(), new RegExp(item.resolved_current.replaceAll(".", "\\.")));
             const sourceLink = page.locator("#package-detail .usage-list .source-reference").first();
             await keyboardFocus(page, sourceLink);
+            state.broadcast("package-risk");
+            await page.waitForTimeout(100);
+            assert.equal(await sourceLink.evaluate((element) => document.activeElement === element), true,
+                "package and AI updates preserve the focused source link");
             if (item.name === "picocolors") {
                 await page.screenshot({ path: join(artifacts, `node-${theme}-package-focus.png`), fullPage: true });
             }
             await sourceLink.press("Enter");
-            await page.waitForFunction(() => /packages\/ui\/src\/.+:\d+/.test(document.querySelector("#source-title")?.textContent || ""));
+            try {
+                await page.waitForFunction(() => /packages\/ui\/src\/.+:\d+/.test(document.querySelector("#source-title")?.textContent || ""));
+            } catch (error) {
+                throw new Error(`Opening ${await sourceLink.textContent()} failed: title=${await page.locator("#source-title").textContent()}; error=${await page.locator("#error").textContent()}`, { cause: error });
+            }
             await page.locator("#source-close").click();
             await page.locator("#package-detail .package-declaration-note .source-reference").first().click();
             await page.waitForFunction(() => /^package\.json:\d+$/.test(document.querySelector("#source-title")?.textContent || ""));

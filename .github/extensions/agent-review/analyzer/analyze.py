@@ -77,6 +77,8 @@ def build_review(
             progress(adapter.graph_phase, message, graph_percent)
 
         adapter.scan(analysis_snapshot, model, dependencies[adapter.id], graph_progress)
+    if any(adapter.id != "python" for adapter in adapters):
+        model.repository["review_languages"] = [adapter.id for adapter in adapters]
     progress("relationships", "Resolving package usage and aggregate architecture edges", 68)
     for adapter in adapters:
         adapter.resolve_package_usage(model, dependencies[adapter.id])

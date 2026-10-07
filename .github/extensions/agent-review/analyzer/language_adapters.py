@@ -53,6 +53,11 @@ def active_adapters(
             from node_adapter import NODE_ADAPTER
 
             adapters += (NODE_ADAPTER,)
+        if any(path.lower().endswith((".cs", ".csproj", ".sln", ".slnx"))
+               for path in paths):
+            from dotnet_adapter import DOTNET_ADAPTER
+
+            adapters = (*adapters, DOTNET_ADAPTER)
     ids = [adapter.id for adapter in adapters]
     if len(ids) != len(set(ids)):
         raise ValueError("Language adapters must have unique IDs.")

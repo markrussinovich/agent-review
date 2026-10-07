@@ -756,7 +756,8 @@ export class ReviewState {
         else if (worktree && this.worktreeChanged) reason = "The worktree changed since this review. Reanalyze before running linked tests.";
         else if (!worktree && !this.reviewTarget.currentRef) reason = "This snapshot has no commit to export for testing.";
         return { ...plan, adapter_id: adapter.id, python: python.executable, python_source: python.source,
-            command: adapter.tests.command(python, plan).join(" "),
+            command: adapter.tests.formatCommand ? adapter.tests.formatCommand(python, plan)
+                : adapter.tests.command(python, plan).join(" "),
             location: worktree ? "the worktree" : `a temporary export of ${this.reviewTarget.label || this.reviewTarget.currentRef.slice(0, 7)}`,
             available: !reason, reason };
     }
@@ -828,9 +829,11 @@ export class ReviewState {
             .then(({ result, root }) => {
                 const results = Object.entries(result.trace.tests || {}).map(([id, record]) => ({
                     id, outcome: record.outcome, duration_ms: record.duration_ms }));
-                const { executed, ran } = mapExecutedPaths(map, result.trace, root);
+                const { executed, ran } = result.trace.per_test_path_evidence === false
+                    ? { executed: {}, ran: {} } : mapExecutedPaths(map, result.trace, root);
                 return { ...run, status: "complete", finished_at: new Date().toISOString(), exit_code: result.exit_code,
                     output: result.output, tests: results, executed, ran,
+                    ...(result.path_evidence_limitation ? { path_evidence_limitation: result.path_evidence_limitation } : {}),
                     counts: Object.fromEntries(["passed", "failed", "error", "skipped"].map((outcome) =>
                         [outcome, results.filter((test) => test.outcome === outcome).length])) };
             }, (error) => controller.signal.aborted
@@ -1065,7 +1068,8 @@ export class ReviewState {
         if (!id) return { metadata: this.model.metadata, summary: this.model.summary, session_context: this.sessionContext };
         const node = this.model.nodes?.find((item) => item.id === id);
         const edge = this.model.edges?.find((item) => item.id === id);
-        const packageChange = this.model.package_changes?.find((item) => item.id === id || `package:${item.name}` === id);
+        const packageChange = this.model.package_changes?.find((item) => item.id === id
+            || ((!item.ecosystem || item.ecosystem === "pypi") && `package:${item.name}` === id));
         const attention = this.model.attention?.find((item) => item.id === id);
         const observation = this.generatedObservations.find((item) => item.id === id);
         const evidence = this.model.evidence?.[id];
@@ -1436,7 +1440,7 @@ export class ReviewState {
         const generation = this.reviewGeneration;
         const candidates = (this.model?.package_dependencies || []).filter((item) => item.name === name
             && (!ecosystem || (item.ecosystem || "pypi") === ecosystem));
-        if (candidates.length > 1) throw new Error(`Package ${name} is ambiguous; specify its ecosystem.`);
+        if (candidates.length > 1) throw new Error(`Package ${name} is ambiguous across multiple ecosystems; specify its ecosystem.`);
         const dependency = candidates[0];
         if (!dependency) throw new Error(`Unknown package dependency: ${name}`);
         if (dependency.ecosystem === "npm" && dependency.declared_current?.some((item) =>
@@ -1456,7 +1460,7 @@ export class ReviewState {
         }
         if (requestedVersion && requestedVersion !== version) throw new Error(`Requested version ${requestedVersion} does not match the reviewed project version ${name}@${version}.`);
         const packageEcosystem = dependency.ecosystem || "pypi";
-        if (!["npm", "pypi"].includes(packageEcosystem)) throw new Error(`Package assessment for ${packageEcosystem} is not implemented.`);
+        if (!["npm", "nuget", "pypi"].includes(packageEcosystem)) throw new Error(`Package assessment for ${packageEcosystem} is not implemented.`);
         const cacheKey = `${packageEcosystem === "pypi" ? "" : `${packageEcosystem}:`}${name}@${version ?? "<unresolved>"}`;
         const assessment = await this.packageAssessmentFor(cacheKey, name, version, packageEcosystem);
         if (this.disposed || generation !== this.reviewGeneration) throw new Error("The review changed while assessing this package.");
@@ -1487,7 +1491,7 @@ export class ReviewState {
         if (!this.packageAssessmentPromises.has(cacheKey)) {
             const generation = this.reviewGeneration;
             const assessor = ecosystem === "npm" ? assessNpmPackageRisk : assessPackageRisk;
-            const promise = assessor(name, version, { includePopularity: true, metadataOnly: version === null })
+            const promise = assessor(name, version, { includePopularity: true, metadataOnly: version === null, ecosystem })
                 .then((assessment) => {
                     if (this.disposed || generation !== this.reviewGeneration) throw new Error("The review changed while assessing this package.");
                     this.packageAssessments.set(cacheKey, assessment);
@@ -1519,9 +1523,12 @@ export class ReviewState {
             || source.current === null ? "base" : "current" };
     }
 
-    async sourceForPackageDeclaration(path, name) {
-        const dependency = this.model?.package_changes?.find((item) => item.name === name)
-            || this.model?.package_dependencies?.find((item) => item.name === name);
+    async sourceForPackageDeclaration(path, name, ecosystem = null) {
+        const matches = (item) => item.name === name && (!ecosystem || (item.ecosystem || "pypi") === ecosystem)
+            && [...item.declared_current || [], ...item.declared_base || [], ...item.declared_baseline || []]
+                .some((declaration) => declaration.source === path);
+        const dependency = this.model?.package_changes?.find(matches)
+            || this.model?.package_dependencies?.find(matches);
         if (!dependency) throw new Error(`Unknown package dependency: ${name}`);
         const current = dependency.declared_current?.find((item) => item.source === path);
         const declaration = current || dependency.declared_base?.find((item) => item.source === path);

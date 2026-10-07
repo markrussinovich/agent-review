@@ -60,7 +60,8 @@ export function decisionText(entry, path = null, evidence = null) {
 }
 
 export function callableName(item) {
-    return item.qualname || item.id || "callable";
+    const name = item.qualname || item.id || "callable";
+    return item.language === "csharp" && item.target_framework ? `${name} [${item.target_framework}]` : name;
 }
 
 const testName = (id) => String(id).split("::").at(-1);
@@ -166,10 +167,21 @@ export function decisionTotals(map) {
 export function callablesForSubject(map, model, subject) {
     if (!map?.callables?.length || !subject) return [];
     const path = subject.path;
-    if (["function", "method"].includes(subject.kind) || ["function", "method"].includes(subject.type)) {
+    if (["function", "method", "property", "accessor"].includes(subject.kind) || ["function", "method", "property", "accessor"].includes(subject.type)) {
         return map.callables.filter((item) => item.id === subject.id);
     }
-    if (subject.kind === "class" || subject.type === "class") {
+    if (["class", "interface", "struct", "record", "namespace"].includes(subject.kind || subject.type)) {
+        if (subject.language === "csharp") {
+            const descendants = new Set([subject.id]);
+            let size;
+            do {
+                size = descendants.size;
+                for (const symbol of model?.symbols || []) {
+                    if (descendants.has(symbol.parent_id)) descendants.add(symbol.id);
+                }
+            } while (descendants.size !== size);
+            return map.callables.filter((item) => descendants.has(item.id));
+        }
         const prefix = model?.symbols?.find((symbol) => symbol.id === subject.id)?.qualname;
         return prefix ? map.callables.filter((item) => item.path === path && item.qualname.startsWith(`${prefix}.`)) : [];
     }

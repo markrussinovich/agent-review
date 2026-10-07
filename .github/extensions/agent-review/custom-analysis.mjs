@@ -96,8 +96,8 @@ export function validateCustomAnalysis(content, context) {
     };
     // Rule files may name paths outside the evidence; those may be mentioned, never cited with lines.
     const mentions = new Set(context.allowed_mentions || []);
-    for (const match of text.matchAll(/(?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:py|toml|txt|json|ya?ml|md|mjs|js|css|html)(?::~?\d+(?:-~?\d+)?(?:,~?\d+(?:-~?\d+)?)*)?/g)) {
-        const reference = /^(.+\.(?:py|toml|txt|json|ya?ml|md|mjs|js|css|html))(?::(.+))?$/.exec(match[0]);
+    for (const match of text.matchAll(/(?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:csproj|cs|slnx?|props|targets|py|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html)(?![A-Za-z0-9_])(?::~?\d+(?:-~?\d+)?(?:,~?\d+(?:-~?\d+)?)*)?/g)) {
+        const reference = /^(.+\.(?:csproj|cs|slnx?|props|targets|py|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html))(?::(.+))?$/.exec(match[0]);
         if (!reference) continue;
         const path = resolvePath(reference[1]);
         if (!paths.has(path) && mentions.has(path) && !reference[2]) continue;
