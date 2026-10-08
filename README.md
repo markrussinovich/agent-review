@@ -138,6 +138,46 @@ Requires a Git repository, Python **3.11+**, Node.js **20+** on PATH, and a
 repositories also need HTTPS Git credentials (for example, `gh auth setup-git`).
 No separate model API key or Python packages are needed for the analyzer.
 
+### Install
+
+1. Copy the [extension directory](.github/extensions/agent-review/) to one of
+   these locations:
+
+   - **Personal:** `~/.copilot/extensions/agent-review`
+   - **Project:** `.github/extensions/agent-review` in the repository being
+     reviewed
+
+2. In the installed extension directory, install Agent Review's locked
+   TypeScript tooling:
+
+   ```powershell
+   npm ci --ignore-scripts
+   ```
+
+This installs extension tooling only. Analysis never automatically installs
+reviewed-project dependencies, runs their install scripts, or builds the
+project. Linked Node test execution additionally requires Node.js **22.15+**.
+
+### Open and use
+
+1. Start a Copilot session in the repository to review. If the session was
+   already open when you installed Agent Review, reload extensions first.
+2. Ask Copilot:
+
+   > Open the Agent Review canvas for this session's existing repository.
+
+3. In the Canvas, choose a [worktree, commit, or pull request](#choose-a-snapshot).
+   Reanalyze after the selected worktree changes.
+
+When updating Agent Review, reload extensions and reopen only the Canvas in the
+same session. **Do not delete the session or worktree.** Reanalyze updates a
+snapshot; it does not reload extension code.
+
+Brief startup interruptions show a neutral Connecting/Reconnecting status while
+read requests and the event stream retry. A persistent outage shows the
+connection warning after three seconds; actions that execute tests or modify
+review state are never automatically retried.
+
 ### C# / .NET tooling and safety
 
 C# reviews additionally require a **.NET 10 runtime** and the prepared Roslyn
@@ -211,35 +251,6 @@ a passing xUnit test never upgrades a path to **Confirmed**. Existing Python
 line-trace confirmation behavior is unchanged.
 Snapshot isolation selects the reviewed source tree; it is not a sandbox for
 MSBuild targets or test side effects.
-
-Copy the [extension directory](.github/extensions/agent-review/) to either:
-
-- **Personal:** `~/.copilot/extensions/agent-review`
-- **Project:** `.github/extensions/agent-review` in the repository being reviewed
-
-Install the extension's own TypeScript tooling once **inside that installed
-extension directory**, not in the reviewed project's root:
-
-```powershell
-npm ci --ignore-scripts
-```
-
-This installs extension tooling only. Analysis never automatically installs
-reviewed-project dependencies, runs their install scripts, or builds the project.
-Linked Node test execution additionally requires Node.js **22.15+**.
-
-Start a session after installation, or reload extensions in your existing
-session, then ask Copilot:
-
-> Open the Agent Review canvas for this session's existing repository.
-
-When updating, reload extensions and reopen only the Canvas in the same session.
-**Do not delete the session or worktree.** Reanalyze updates a snapshot; it does
-not reload extension code.
-Brief startup interruptions show a neutral Connecting/Reconnecting status while
-read requests and the event stream retry. A persistent outage shows the connection
-warning after three seconds; actions that execute tests or modify review state
-are never automatically retried.
 
 ## Choose a snapshot
 
