@@ -50,3 +50,18 @@ test("Node warning locations retain their actual snapshot without duplicating id
     assert.ok(same.warnings.some((warning) => warning.startsWith("[Base/current] main.js:1: unresolved call")));
     assert.equal(same.warnings.length, new Set(same.warnings).size);
 });
+
+test("Rust limitations explain saved-syntax and source-matched coverage boundaries", () => {
+    const syntax = describeAnalysisWarning(
+        "Rust saved-syntax analysis does not expand macros, evaluate cfg/build scripts, or perform type-directed/dynamic trait dispatch; unresolved relationships remain unknown.",
+        model,
+    );
+    assert.equal(syntax.kind, "Rust syntax analysis is conservative");
+    assert.match(syntax.explanation, /never runs Cargo or rustc/);
+    const coverage = describeAnalysisWarning(
+        "Rust coverage ignored: add rust-coverage.json with revision, report, and source_hashes evidence.",
+        model,
+    );
+    assert.equal(coverage.kind, "Rust coverage unavailable");
+    assert.match(coverage.explanation, /exact reviewed revision/);
+});

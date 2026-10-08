@@ -120,7 +120,7 @@ export function ruleCheckContext(baseContext, sources) {
     }
     const mentioned = new Set();
     for (const source of sources) {
-        for (const match of source.text.matchAll(/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:csproj|cs|slnx?|props|targets|py|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html)\b/g)) {
+        for (const match of source.text.matchAll(/(?:[A-Za-z0-9_.-]+\/)*(?:Cargo\.lock|[A-Za-z0-9_.-]+\.(?:csproj|cs|slnx?|props|targets|py|rs|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html))\b/g)) {
             mentioned.add(match[0].replace(/^\.\//, ""));
         }
     }

@@ -1,5 +1,5 @@
 export function parseSourceReference(value) {
-    const match = /^((?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:csproj|cs|slnx?|props|targets|py|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html))(?::(\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*))?$/.exec(value.trim());
+    const match = /^((?:[A-Za-z0-9_.-]+[\\/])*(?:Cargo\.lock|[A-Za-z0-9_.-]+\.(?:csproj|cs|slnx?|props|targets|py|rs|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html)))(?::(\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*))?$/.exec(value.trim());
     if (!match) return null;
     const lines = [];
     for (const part of match[2]?.split(",") || []) {

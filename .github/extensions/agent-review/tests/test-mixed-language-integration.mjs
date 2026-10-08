@@ -14,7 +14,8 @@ test("C# constructors and operators stay visible as reviewable constructs", () =
 
 test("all implemented source languages validate citations without matching partial extensions", () => {
     for (const file of ["core.ts", "view.tsx", "badge.jsx", "resolver.mjs", "legacy.cjs", "types.mts", "node.cts",
-        "Widget.cs", "App.csproj", "Solution.sln", "Directory.Packages.props", "rules.targets", "styles.css"]) {
+        "Widget.cs", "App.csproj", "Solution.sln", "Directory.Packages.props", "rules.targets",
+        "lib.rs", "Cargo.toml", "Cargo.lock", "styles.css"]) {
         const context = { files: [{ path: `src/${file}`, current_line_count: 4 }] };
         const content = `## Findings\n\nNo supported findings.\n\n## Verification\n\n- Check \`src/${file}:3\`.`;
         assert.equal(validateCustomAnalysis(content, context), content);
@@ -24,23 +25,25 @@ test("all implemented source languages validate citations without matching parti
     }
 });
 
-test("three same-named dependency ecosystems route distinct assessments and registry links", async () => {
+test("same-named dependency ecosystems route distinct assessments and registry links", async () => {
     const state = new ReviewState("C:\\repo");
     state.model = { nodes: [], edges: [], changes: [], evidence: {}, source_files: {}, package_dependencies: [
         { name: "shared", declared_current: [{ specifier: "==1.0" }] },
         { name: "shared", ecosystem: "npm", resolved_current: "2.0", declared_current: [{ specifier: "^2.0" }] },
         { name: "shared", ecosystem: "nuget", resolved_current: "3.0", declared_current: [{ specifier: "3.0" }] },
+        { name: "shared", ecosystem: "cargo", resolved_current: "4.0.0", declared_current: [{ specifier: "4" }] },
     ] };
     const calls = [];
     state.packageAssessmentFor = async (key, name, version, ecosystem) => {
         calls.push({ key, ecosystem, version });
         return { name, version };
     };
-    for (const ecosystem of ["pypi", "npm", "nuget"]) await state.packageRiskFor("shared", null, { explain: false, ecosystem });
+    for (const ecosystem of ["pypi", "npm", "nuget", "cargo"]) await state.packageRiskFor("shared", null, { explain: false, ecosystem });
     assert.deepEqual(calls, [
         { key: "shared@1.0", ecosystem: "pypi", version: "1.0" },
         { key: "npm:shared@2.0", ecosystem: "npm", version: "2.0" },
         { key: "nuget:shared@3.0", ecosystem: "nuget", version: "3.0" },
+        { key: "cargo:shared@4.0.0", ecosystem: "cargo", version: "4.0.0" },
     ]);
     assert.notEqual(packageEvidenceLinks("shared", "2.0", null, "npm").registry,
         packageEvidenceLinks("shared", "3.0", null, "nuget").registry);

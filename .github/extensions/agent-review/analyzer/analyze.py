@@ -58,7 +58,7 @@ def build_review(
     model.changes = snapshot.changes()
     model.source_files = snapshot.source_files(model.changes)
     analysis_snapshot = AnalysisSnapshot(repo, snapshot.baseline, snapshot.current, base_commit,
-                                         bool(current_arg), use_cache)
+                                         bool(current_arg), use_cache, head)
     adapters = active_adapters(analysis_snapshot)
     progress("dependencies", "Comparing package declarations and project version pins", 32)
     dependencies = {}

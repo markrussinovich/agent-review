@@ -9,6 +9,7 @@ const ACTIONS = {
     stop: "Stops loop",
     handled: "Handles error and continues",
     wired: "Wires by name",
+    propagate: "Propagates error",
 };
 
 export const DECISION_STATUSES = ["added", "changed", "moved", "removed"];
@@ -170,8 +171,8 @@ export function callablesForSubject(map, model, subject) {
     if (["function", "method", "property", "accessor"].includes(subject.kind) || ["function", "method", "property", "accessor"].includes(subject.type)) {
         return map.callables.filter((item) => item.id === subject.id);
     }
-    if (["class", "interface", "struct", "record", "namespace"].includes(subject.kind || subject.type)) {
-        if (subject.language === "csharp") {
+    if (["class", "interface", "struct", "enum", "trait", "record", "namespace"].includes(subject.kind || subject.type)) {
+        if (["csharp", "rust"].includes(subject.language)) {
             const descendants = new Set([subject.id]);
             let size;
             do {

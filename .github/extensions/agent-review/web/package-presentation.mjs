@@ -6,6 +6,13 @@ export function packageEvidenceLinks(name, version, repositoryUrl, ecosystem = "
             maintenance: registry, vulnerabilities: `https://osv.dev/list?q=${packageName}&ecosystem=NuGet`,
             downloads: registry, scorecard: null };
     }
+    if (ecosystem === "cargo") {
+        const registry = `https://crates.io/crates/${packageName}`;
+        return { registry, release: version ? `${registry}/${encodeURIComponent(version)}` : registry,
+            maintenance: `${registry}/versions`,
+            vulnerabilities: `https://osv.dev/list?q=${packageName}&ecosystem=crates.io`,
+            downloads: registry, scorecard: null };
+    }
     const links = {
         registry: `https://pypi.org/project/${packageName}/`,
         release: version ? `https://pypi.org/project/${packageName}/${encodeURIComponent(version)}/`

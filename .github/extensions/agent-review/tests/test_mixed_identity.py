@@ -37,26 +37,28 @@ class MixedPackageIdentityTests(unittest.TestCase):
         self.assertEqual(modules["csharp/helper.py"]["component_id"], components["csharp"])
         self.assertEqual(modules["App/Widget.cs"]["component_id"], components["C# / .NET"])
 
-    def test_pypi_npm_and_nuget_same_names_remain_separate(self):
+    def test_pypi_npm_nuget_and_cargo_same_names_remain_separate(self):
         model = ReviewModel({})
         model.packages["current"] = [
             {"name": "shared", "specifier": "==1.0", "source": "requirements.txt", "resolved_version": "1.0"},
             {"name": "shared", "ecosystem": "npm", "specifier": "^2.0", "source": "package.json", "resolved_version": "2.1"},
             {"name": "Shared", "ecosystem": "nuget", "specifier": "3.0", "source": "App.csproj", "resolved_version": "3.0"},
+            {"name": "shared", "ecosystem": "cargo", "specifier": "4", "source": "Cargo.toml", "resolved_version": "4.0.0"},
         ]
         model.packages["changes"] = [
             {"name": item["name"], "kind": "added", **({"ecosystem": item["ecosystem"]} if "ecosystem" in item else {})}
             for item in model.packages["current"]
         ]
         result = model.to_dict()
-        expected = {"package:shared", "package:npm:shared", "package:nuget:shared"}
+        expected = {"package:shared", "package:npm:shared", "package:nuget:shared", "package:cargo:shared"}
         self.assertEqual({item["id"] for item in result["package_dependencies"]}, expected)
         self.assertEqual({item["id"] for item in result["package_changes"]}, expected)
-        self.assertEqual(len({item["id"] for item in result["attention"]}), 3)
-        self.assertEqual(len({item["id"] for item in result["nodes"] if item["kind"] == "package"}), 3)
+        self.assertEqual(len({item["id"] for item in result["attention"]}), 4)
+        self.assertEqual(len({item["id"] for item in result["nodes"] if item["kind"] == "package"}), 4)
         by_id = {item["id"]: item for item in result["package_changes"]}
         self.assertEqual(by_id["package:npm:shared"]["ecosystem"], "npm")
         self.assertEqual(by_id["package:nuget:shared"]["ecosystem"], "nuget")
+        self.assertEqual(by_id["package:cargo:shared"]["ecosystem"], "cargo")
         self.assertEqual(by_id["package:npm:shared"]["resolved_current"], "2.1")
         self.assertEqual(by_id["package:nuget:shared"]["resolved_current"], "3.0")
         self.assertNotIn("ecosystem", by_id["package:shared"])

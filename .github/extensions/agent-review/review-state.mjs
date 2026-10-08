@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { assessPackageRisk } from "./package-risk.mjs";
 import { assessNpmPackageRisk } from "./node-package-risk.mjs";
+import { assessNugetPackageRisk } from "./nuget-package-risk.mjs";
+import { assessCratePackageRisk } from "./crate-package-risk.mjs";
 import { buildPackageUsageContext } from "./package-context.mjs";
 import { CustomPromptStore } from "./custom-prompts.mjs";
 import { customAnalysisContext, validateCustomAnalysis } from "./custom-analysis.mjs";
@@ -1452,6 +1454,10 @@ export class ReviewState {
             item.workspace_link || item.local || item.private || /^(?:workspace:|file:|link:|portal:|git(?:\+|:)|https?:|github:|npm:)/.test(item.specifier || ""))) {
             throw new Error(`${name} is a local, workspace, alias, or non-registry dependency. Public npm assessment is not applicable.`);
         }
+        if (dependency.ecosystem === "cargo" && dependency.declared_current?.some((item) =>
+            item.local || item.non_registry || item.path_dependency || item.git || item.public_registry === false)) {
+            throw new Error(`${name} is a path, Git, or non-registry crate. Public crates.io assessment is not applicable.`);
+        }
         const declared = dependency.declared_current?.map((item) => item.specifier).filter(Boolean) || [];
         const resolutionError = dependency.declared_current?.find((item) => item.resolution_error)?.resolution_error;
         if (resolutionError) throw new Error(resolutionError);
@@ -1465,7 +1471,7 @@ export class ReviewState {
         }
         if (requestedVersion && requestedVersion !== version) throw new Error(`Requested version ${requestedVersion} does not match the reviewed project version ${name}@${version}.`);
         const packageEcosystem = dependency.ecosystem || "pypi";
-        if (!["npm", "nuget", "pypi"].includes(packageEcosystem)) throw new Error(`Package assessment for ${packageEcosystem} is not implemented.`);
+        if (!["npm", "nuget", "cargo", "pypi"].includes(packageEcosystem)) throw new Error(`Package assessment for ${packageEcosystem} is not implemented.`);
         const cacheKey = `${packageEcosystem === "pypi" ? "" : `${packageEcosystem}:`}${name}@${version ?? "<unresolved>"}`;
         const assessment = await this.packageAssessmentFor(cacheKey, name, version, packageEcosystem);
         if (this.disposed || generation !== this.reviewGeneration) throw new Error("The review changed while assessing this package.");
@@ -1495,7 +1501,9 @@ export class ReviewState {
         if (this.packageAssessments.has(cacheKey)) return Promise.resolve(this.packageAssessments.get(cacheKey));
         if (!this.packageAssessmentPromises.has(cacheKey)) {
             const generation = this.reviewGeneration;
-            const assessor = ecosystem === "npm" ? assessNpmPackageRisk : assessPackageRisk;
+            const assessor = ecosystem === "npm" ? assessNpmPackageRisk
+                : ecosystem === "nuget" ? assessNugetPackageRisk
+                    : ecosystem === "cargo" ? assessCratePackageRisk : assessPackageRisk;
             const promise = assessor(name, version, { includePopularity: true, metadataOnly: version === null, ecosystem })
                 .then((assessment) => {
                     if (this.disposed || generation !== this.reviewGeneration) throw new Error("The review changed while assessing this package.");

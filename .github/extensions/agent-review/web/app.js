@@ -245,9 +245,11 @@ function renderSummary(model) {
     const historical = ["commit", "pr"].includes(state.payload?.review_target?.mode);
     const warnings = (model.warnings || []).filter((warning) => !historical
         || warning !== "Worktree coverage is not applicable to a historical commit or PR snapshot.");
-    const coveragePrerequisite = meta.node_loc !== undefined
-        ? `Provide source-matched LCOV/Istanbul JSON${meta.python_loc ? " or Python coverage.json/coverage.xml" : ""}`
-        : "Generate coverage.json or coverage.xml in this checkout";
+    const coveragePrerequisite = meta.rust_loc !== undefined
+        ? "Provide LCOV plus rust-coverage.json with the exact revision and SHA-256 source hashes"
+        : meta.node_loc !== undefined
+            ? `Provide source-matched LCOV/Istanbul JSON${meta.python_loc ? " or Python coverage.json/coverage.xml" : ""}`
+            : "Generate coverage.json or coverage.xml in this checkout";
     if (!model.coverage?.available) qualityIssues.push(historical
         ? "Coverage is unavailable for this historical snapshot. Working-tree coverage reports are not applied to commit or PR reviews."
         : `No usable coverage report for this worktree snapshot. ${coveragePrerequisite}, then Reanalyze.`);
@@ -266,7 +268,7 @@ function renderSummary(model) {
         });
         elements.summary.append(quality);
     }
-    elements.summary.title = `${meta.base_ref || "base"} @ ${(meta.base_sha || "").slice(0, 8)} → ${(meta.head_sha || "").slice(0, 8)} · ${meta.python_loc || 0} Python LOC${meta.node_loc !== undefined ? ` · ${meta.node_loc} JavaScript/TypeScript LOC` : ""}${meta.csharp_loc != null ? ` · ${meta.csharp_loc} C# LOC` : ""}`;
+    elements.summary.title = `${meta.base_ref || "base"} @ ${(meta.base_sha || "").slice(0, 8)} → ${(meta.head_sha || "").slice(0, 8)} · ${meta.python_loc || 0} Python LOC${meta.node_loc !== undefined ? ` · ${meta.node_loc} JavaScript/TypeScript LOC` : ""}${meta.csharp_loc != null ? ` · ${meta.csharp_loc} C# LOC` : ""}${meta.rust_loc != null ? ` · ${meta.rust_loc} Rust LOC` : ""}`;
 }
 
 function evidenceLabel(id) {
@@ -2295,7 +2297,7 @@ function renderVerificationBar(map, { compact = false, callables = null } = {}) 
     const button = el("button", "verification-run-button", run?.status === "running" ? "Running…" : "Run linked tests");
     button.type = "button";
     button.disabled = run?.status === "running" || !plan?.available;
-    button.title = plan?.available ? `Runs ${plan.tests.length} linked tests${plan.adapter_id === "csharp" ? " with TRX outcomes (no per-test path tracing)" : " with line tracing"}: ${plan.command}` : plan?.reason || "Checking linked tests…";
+    button.title = plan?.available ? `Runs ${plan.tests.length} linked tests${["csharp", "rust"].includes(plan.adapter_id) ? " with test outcomes (no per-test path tracing)" : " with line tracing"}: ${plan.command}` : plan?.reason || "Checking linked tests…";
     button.addEventListener("click", async () => {
         button.disabled = true;
         try {
@@ -2593,7 +2595,7 @@ function renderPackageView(model) {
         const usage = item.usage_locations?.length || 0;
         row.append(
             heading,
-            el("small", "", `${item.ecosystem === "nuget" ? "NuGet · " : ""}${packageVersionText(item)}${item.change === "removed" ? "" : usage ? ` · used in ${usage} file${usage === 1 ? "" : "s"}` : item.ecosystem === "nuget" ? " · usage unresolved" : " · no usages found"}`),
+            el("small", "", `${item.ecosystem === "nuget" ? "NuGet · " : item.ecosystem === "cargo" ? "Cargo · " : ""}${packageVersionText(item)}${item.change === "removed" ? "" : usage ? ` · used in ${usage} file${usage === 1 ? "" : "s"}` : item.ecosystem === "nuget" ? " · usage unresolved" : " · no usages found"}`),
         );
         row.addEventListener("click", () => selectPackage(item));
         list.append(row);
@@ -2685,7 +2687,7 @@ function renderPackagePanel() {
     header.append(
         titleRow,
         el("p", "muted", [
-            item.ecosystem === "nuget" ? "NuGet" : null,
+            item.ecosystem === "nuget" ? "NuGet" : item.ecosystem === "cargo" ? "Cargo" : null,
             `Version ${packageVersionText(item)}`,
             item.ecosystem ? `${item.ecosystem} ecosystem` : null,
             declared?.source ? `declared in ${declared.source}` : null,
@@ -2699,7 +2701,7 @@ function renderPackagePanel() {
     else declaration.append(document.createTextNode("the package manifest"));
     declaration.append(document.createTextNode(". Manifest changes are reviewed even when no static usage is resolved."));
     sections.push(declaration);
-    if (item.ecosystem === "nuget") {
+    if (["nuget", "cargo"].includes(item.ecosystem)) {
         const declarations = el("ul", "usage-list");
         for (const entry of item.declared_current?.length ? item.declared_current : item.declared_base || []) {
             const row = el("li", "");
@@ -2712,6 +2714,13 @@ function renderPackagePanel() {
                     `${entry.version_source}:${entry.version_line}`, {
                         path: entry.version_source, lines: [entry.version_line],
                     }));
+            }
+            if (entry.lock_source && entry.lock_line) {
+                row.append(document.createTextNode(" · exact version from "), sourceReferenceButton(
+                    `${entry.lock_source}:${entry.lock_line}`, {
+                        path: entry.lock_source, lines: [entry.lock_line],
+                    }), entry.lock_package_source
+                    ? document.createTextNode(` · ${entry.lock_package_source}`) : document.createTextNode(""));
             }
             if (entry.resolution_error) row.append(el("small", "muted", ` · ${entry.resolution_error}`));
             declarations.append(row);
@@ -2741,6 +2750,7 @@ function renderPackagePanel() {
         sections.push(el("p", "flash flash-neutral", item.ecosystem === "npm"
             ? "Checking npm registry metadata and OSV advisories…"
             : item.ecosystem === "nuget" ? "Checking NuGet metadata and OSV for the saved project version…"
+                : item.ecosystem === "cargo" ? "Checking crates.io metadata and OSV for the exact saved Cargo.lock version…"
                 : "Checking PyPI, OSV, OpenSSF Scorecard, and download statistics…"));
     }
 
@@ -2869,7 +2879,7 @@ function renderPackagePanel() {
             sections.push(packageSection("Provenance", list));
         }
         const statuses = el("ul", "source-status evidence-sources");
-        const sourceUrls = { pypi: links.registry, npm: links.registry, nuget: links.registry, osv: links.vulnerabilities, osv_history: links.vulnerabilities,
+        const sourceUrls = { pypi: links.registry, npm: links.registry, nuget: links.registry, crates_io: links.registry, osv: links.vulnerabilities, osv_history: links.vulnerabilities,
             scorecard: links.scorecard, pypistats: links.downloads };
         for (const [name, source] of Object.entries(assessment.sources || {})) {
             const row = el("li", `source-${source.status}`);
