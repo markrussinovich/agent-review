@@ -33,6 +33,7 @@ test("same-named dependency ecosystems route distinct assessments and registry l
         { name: "shared", declared_current: [{ specifier: "==1.0" }] },
         { name: "shared", ecosystem: "npm", resolved_current: "2.0", declared_current: [{ specifier: "^2.0" }] },
         { name: "shared", ecosystem: "nuget", resolved_current: "3.0", declared_current: [{ specifier: "3.0" }] },
+        { name: "shared", ecosystem: "gomod", resolved_current: "v4.0.0", declared_current: [{ specifier: "v4.0.0" }] },
         { name: "shared", ecosystem: "cargo", resolved_current: "4.0.0", declared_current: [{ specifier: "4" }] },
     ] };
     const calls = [];
@@ -40,17 +41,21 @@ test("same-named dependency ecosystems route distinct assessments and registry l
         calls.push({ key, ecosystem, version });
         return { name, version };
     };
-    for (const ecosystem of ["pypi", "npm", "nuget", "cargo"]) await state.packageRiskFor("shared", null, { explain: false, ecosystem });
+    for (const ecosystem of ["pypi", "npm", "nuget", "gomod", "cargo"]) {
+        await state.packageRiskFor("shared", null, { explain: false, ecosystem });
+    }
     assert.deepEqual(calls, [
         { key: "shared@1.0", ecosystem: "pypi", version: "1.0" },
         { key: "npm:shared@2.0", ecosystem: "npm", version: "2.0" },
         { key: "nuget:shared@3.0", ecosystem: "nuget", version: "3.0" },
+        { key: "gomod:shared@v4.0.0", ecosystem: "gomod", version: "v4.0.0" },
         { key: "cargo:shared@4.0.0", ecosystem: "cargo", version: "4.0.0" },
     ]);
     assert.notEqual(packageEvidenceLinks("shared", "2.0", null, "npm").registry,
         packageEvidenceLinks("shared", "3.0", null, "nuget").registry);
     assert.match(packageEvidenceLinks("shared", "2.0", null, "npm").registry, /npmjs/);
     assert.match(packageEvidenceLinks("shared", "3.0", null, "nuget").registry, /nuget/);
+    assert.match(packageEvidenceLinks("shared", "v4.0.0", null, "gomod").registry, /pkg\.go\.dev/);
     await assert.rejects(state.packageRiskFor("shared"), /multiple ecosystems/);
     await state.dispose();
 });
