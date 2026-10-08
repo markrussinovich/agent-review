@@ -67,9 +67,9 @@ def build_review(
         dependencies[adapter.id] = declarations
         for key in ("baseline", "current", "changes"):
             model.packages[key].extend(declarations[key])
+    graph_percent = 42
     for adapter in adapters:
-        progress(adapter.graph_phase, adapter.graph_message, 42)
-        graph_percent = 42
+        progress(adapter.graph_phase, adapter.graph_message, graph_percent)
 
         def graph_progress(message: str, percent: int) -> None:
             nonlocal graph_percent

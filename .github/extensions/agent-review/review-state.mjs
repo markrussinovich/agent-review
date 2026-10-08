@@ -499,7 +499,12 @@ export class ReviewState {
                 signal.throwIfAborted();
                 return this.runAnalyzer(this.repoRoot, this.baseRef, (progress) => {
                     if (signal.aborted || this.activeRun !== run) return;
-                    this.progress = { ...this.progress, ...progress, updated_at: new Date().toISOString() };
+                    const previousPercent = Number(this.progress?.percent);
+                    const reportedPercent = Number(progress?.percent);
+                    const percent = Number.isFinite(reportedPercent)
+                        ? Math.max(Number.isFinite(previousPercent) ? previousPercent : 0, reportedPercent)
+                        : Number.isFinite(previousPercent) ? previousPercent : 0;
+                    this.progress = { ...this.progress, ...progress, percent, updated_at: new Date().toISOString() };
                     this.broadcast("progress");
                 }, this.reviewTarget.currentRef, { signal, workspacePath: this.workspacePath });
             })

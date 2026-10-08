@@ -146,6 +146,31 @@ test("base ref is re-resolved on every refresh", async () => {
     assert.equal(state.baseRef, "ref-2");
 });
 
+test("analysis progress never moves backward when adapters report overlapping ranges", async () => {
+    const percentages = [];
+    const state = new ReviewState("C:\\repo", {
+        resolveBaseRef: async () => null,
+        getSessionEvents: async () => [],
+        getHistoricalSessionContexts: async () => ({ contexts: [], failures: [] }),
+        runAnalyzer: async (_repo, _base, onProgress) => {
+            for (const percent of [42, 58, 67, 42, 55, 68]) {
+                onProgress({ phase: "graph", message: `Graph ${percent}`, percent });
+            }
+            return {
+                metadata: {}, summary: {}, changes: [], source_files: {}, symbols: [],
+                nodes: [], edges: [], attention: [], coverage: {}, warnings: [],
+            };
+        },
+    });
+    state.subscribe((event) => {
+        if (event.type === "progress") percentages.push(event.progress.percent);
+    });
+
+    await state.refresh();
+
+    assert.deepEqual(percentages, [42, 58, 67, 67, 67, 68]);
+});
+
 test("summary from an older analysis cannot overwrite the current review", async () => {
     let finish;
     const state = new ReviewState("C:\\repo", { generateAnnotation: () => new Promise((resolve) => { finish = resolve; }) });
