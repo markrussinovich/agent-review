@@ -205,7 +205,8 @@ class Snapshot:
         result: dict[str, dict[str, object]] = {}
         retain_baseline = any(
             path.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"))
-            or path.rsplit("/", 1)[-1] == "package.json"
+            or path.lower().endswith(".go")
+            or path.rsplit("/", 1)[-1] in {"package.json", "go.mod", "go.sum"}
             for path in set(self.baseline) | set(self.current)
         )
         for change in changes:
