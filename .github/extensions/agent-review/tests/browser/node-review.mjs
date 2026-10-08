@@ -110,7 +110,7 @@ try {
         assert.match(await page.locator(".review-plan-row").first().textContent(), /resolveReference/);
         assert.match(await page.locator(".quality-warning").textContent(), /source-matched LCOV\/Istanbul JSON/);
         assert.doesNotMatch(await page.locator(".quality-warning").textContent(), /Generate coverage\.json or coverage\.xml/);
-        await page.getByRole("button", { name: "Architecture", exact: true }).click();
+        await page.locator("#zoom-out").click();
         assert.ok(await page.locator("#graph .node").count() > 0, "actual structural graph is rendered");
         await page.screenshot({ path: join(artifacts, `node-${theme}-graph.png`), fullPage: true });
         await page.setViewportSize({ width: 560, height: 1000 });
@@ -140,7 +140,8 @@ try {
             assert.match(await page.locator('.review-plan-row[data-disposition="follow-up"]').textContent(),
                 /Exercise the legacy-reference error branch/);
         }
-        await page.getByRole("button", { name: "Architecture", exact: true }).click();
+        if (theme === "light") await page.locator("#zoom-out").click();
+        else await page.getByRole("button", { name: "Architecture", exact: true }).click();
         await page.locator("#summary .metric").filter({ hasText: "Packages" }).click();
         for (const item of packages) {
             await page.locator("#packages .review-card").filter({ hasText: new RegExp(item.name) }).click();

@@ -79,6 +79,8 @@ try {
         await page.goto(`${server.url}?scoutTheme=${theme}`);
         await page.locator("#change-brief .brief-ai").waitFor();
         assert.equal(await page.locator("#change-brief .review-heading").textContent(), "Uncommitted changes");
+        await page.locator(".review-plan-row").first().waitFor();
+        await page.locator("#zoom-out").click();
         for (const [selector, property, token] of [
             ["#graph .node-metric .delta-add", "fill", "--cp-success"],
             ["#graph .node-metric .delta-remove", "fill", "--cp-danger"],
@@ -257,7 +259,7 @@ try {
         await page.waitForFunction(() => document.querySelector("#status").textContent === "Saved review");
         await page.locator("#change-brief .brief-ai").waitFor();
         assert.equal(summaries, generated, "switching reuses the previous AI summary");
-        assert.equal(await page.locator("#graph-title").textContent(), "Structural change map");
+        assert.equal(await page.locator("#graph-title").textContent(), "Risk-first walkthrough");
         assert.equal(await page.locator(".workspace").evaluate((node) => node.classList.contains("package-mode")), false);
         assert.equal(await page.locator(".detail").isVisible(), false);
         assert.equal(await page.locator("#attention").isVisible(), true);
