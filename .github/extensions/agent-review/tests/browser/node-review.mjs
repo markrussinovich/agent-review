@@ -128,7 +128,18 @@ try {
         assert.match(await page.locator("#source-risk").textContent(), /Cyclomatic complexity increased.*Priority \d+\/100/);
         await page.locator("#source-decisions .source-verification").waitFor();
         assert.match(await page.locator("#source-decisions .source-verification").textContent(), /Run linked tests/);
+        if (theme === "light") {
+            await page.locator(".source-review-disposition").selectOption("follow-up");
+            await page.locator(".source-review-note").fill("Exercise the legacy-reference error branch.");
+            await page.locator(".source-review-save").click();
+        }
         await page.locator("#source-close").click();
+        if (theme === "light") {
+            await page.getByRole("button", { name: "Review plan", exact: true }).click();
+            assert.match(await page.locator(".review-progress").textContent(), /0 of \d+ reviewed · 1 needs follow-up/);
+            assert.match(await page.locator('.review-plan-row[data-disposition="follow-up"]').textContent(),
+                /Exercise the legacy-reference error branch/);
+        }
         await page.getByRole("button", { name: "Architecture", exact: true }).click();
         await page.locator("#summary .metric").filter({ hasText: "Packages" }).click();
         for (const item of packages) {

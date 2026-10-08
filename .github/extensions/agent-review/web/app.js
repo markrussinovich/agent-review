@@ -9,6 +9,10 @@ import { ConnectionFeedback } from "/connection-feedback.mjs";
 import { describeAnalysisWarning } from "/analysis-limitations.mjs";
 import { buildReviewPlan } from "/review-plan.mjs";
 import {
+    REVIEW_DISPOSITIONS, isReviewComplete, nextReviewItem, parseReviewLedger, reviewProgress,
+    reviewSnapshotKey, serializeReviewLedger,
+} from "/review-ledger.mjs";
+import {
     callableName, callablesForSubject, changedCallables, decisionAction, decisionConditions, decisionSentence, decisionTotals,
     EVIDENCE_GROUPS, evidenceCounts, linkedTestOutcome, pathEvidence,
 } from "/decision-map.mjs";
@@ -36,6 +40,7 @@ const state = {
     sourceHistory: { entries: [], index: -1, pending: -1 },
     appliedServerSelection: null,
     closedFindingKeys: new Set(),
+    reviewLedger: new Map(),
     customOpenKeys: new Set(),
 };
 const elements = Object.fromEntries([
@@ -398,6 +403,48 @@ function toggleFinding(item) {
         state.queueError = `Unable to save closed findings: ${error.message}`;
         showError(new Error(state.queueError));
     }
+}
+
+function loadReviewLedger(model) {
+    const key = reviewSnapshotKey(model, state.payload?.review_target);
+    if (state.reviewLedgerStorageKey === key) return;
+    state.reviewLedgerStorageKey = key;
+    state.reviewLedgerError = null;
+    try {
+        state.reviewLedger = parseReviewLedger(localStorage.getItem(key));
+    } catch (error) {
+        state.reviewLedger = new Map();
+        state.reviewLedgerError = `Unable to restore review progress: ${error.message}`;
+    }
+}
+
+function saveReviewLedger() {
+    try {
+        localStorage.setItem(state.reviewLedgerStorageKey, serializeReviewLedger(state.reviewLedger));
+        state.reviewLedgerError = null;
+    } catch (error) {
+        state.reviewLedgerError = `Unable to save review progress: ${error.message}`;
+        showError(new Error(state.reviewLedgerError));
+        return false;
+    }
+    return true;
+}
+
+function setReviewDisposition(item, disposition, note = "") {
+    const record = {
+        disposition,
+        note: note.trim(),
+        path: state.source?.path || item.path || "",
+        line: Number(state.source?.start_line) || item.line || null,
+        updated_at: new Date().toISOString(),
+    };
+    const entries = new Map(state.reviewLedger);
+    if (disposition === "pending" && !record.note) entries.delete(item.id);
+    else entries.set(item.id, record);
+    state.reviewLedger = entries;
+    if (!saveReviewLedger()) return;
+    render();
+    if (state.source) renderSourceRisk();
 }
 
 function markSelectedCards() {
@@ -1790,20 +1837,25 @@ function openReviewPlanItem(item) {
 
 function renderReviewPlan(model, findings) {
     const query = state.query.toLowerCase();
-    const plan = buildReviewPlan(model, state.payload?.decision_map, state.payload?.test_run, findings)
+    const allPlan = buildReviewPlan(model, state.payload?.decision_map, state.payload?.test_run, findings);
+    const plan = allPlan
         .filter((item) => !query || `${item.title} ${item.path || ""} ${item.reasons.join(" ")}`.toLowerCase().includes(query));
+    const progress = reviewProgress(allPlan, state.reviewLedger);
+    const next = nextReviewItem(allPlan, state.reviewLedger);
     const view = el("div", "collection-list review-plan");
     const intro = el("section", "review-plan-intro");
     const introCopy = el("div", "");
     introCopy.append(
         el("strong", "", "Review highest-risk unverified changes first"),
         el("p", "muted", "Priority combines rule-based impact, changed lines, caller reach, and the strongest available test evidence. It updates after linked tests run."),
+        el("p", "review-progress", `${progress.completed} of ${progress.total} reviewed${progress.followUp ? ` · ${progress.followUp} needs follow-up` : ""}`),
     );
     intro.append(introCopy);
-    if (plan.length) {
-        const start = el("button", "review-next", "Review next");
+    if (allPlan.length) {
+        const start = el("button", "review-next", next ? "Review next" : "Review complete");
         start.type = "button";
-        start.addEventListener("click", () => openReviewPlanItem(plan[0]));
+        start.disabled = !next;
+        if (next) start.addEventListener("click", () => openReviewPlanItem(next));
         intro.append(start);
     }
     view.append(intro);
@@ -1812,15 +1864,29 @@ function renderReviewPlan(model, findings) {
         elements.graph.replaceChildren(view);
         return;
     }
+    const dispositionLabels = Object.fromEntries(REVIEW_DISPOSITIONS);
     for (const [index, item] of plan.entries()) {
+        const record = state.reviewLedger.get(item.id);
+        const disposition = record?.disposition || "pending";
         const row = el("button", "review-plan-row");
         row.type = "button";
         row.dataset.reviewId = item.id;
+        row.dataset.disposition = disposition;
+        row.classList.toggle("is-reviewed", isReviewComplete(disposition));
+        row.classList.toggle("needs-follow-up", disposition === "follow-up");
         const copy = el("span", "review-plan-copy");
         const heading = el("span", "review-plan-heading");
-        heading.append(el("strong", "", item.title), el("b", "impact-score", `Priority ${item.score}/100`));
+        heading.append(el("strong", "", item.title));
+        const badges = el("span", "review-plan-badges");
+        if (disposition !== "pending") badges.append(el("span", `review-disposition disposition-${disposition}`, dispositionLabels[disposition]));
+        badges.append(el("b", "impact-score", `Priority ${item.score}/100`));
+        heading.append(badges);
         copy.append(heading);
         if (item.path) copy.append(el("span", "review-plan-path", `${item.path}${item.line ? `:${item.line}` : ""}`));
+        if (record?.note) {
+            const note = el("span", "review-plan-note", `${record.path}${record.line ? `:${record.line}` : ""} · ${record.note}`);
+            copy.append(note);
+        }
         const reasons = el("span", "review-plan-reasons");
         for (const reason of item.reasons) reasons.append(el("span", "", reason));
         copy.append(reasons);
@@ -2341,7 +2407,36 @@ function renderSourceRisk() {
     for (const reason of item.reasons.filter((reason) => reason !== item.finding?.title)) {
         reasons.append(el("span", "", reason));
     }
-    panel.append(heading, reasons);
+    const record = state.reviewLedger.get(item.id);
+    const controls = el("div", "source-review-controls");
+    const dispositionLabel = el("label", "");
+    dispositionLabel.append(document.createTextNode("Disposition"));
+    const disposition = el("select", "source-review-disposition");
+    for (const [value, label] of REVIEW_DISPOSITIONS) {
+        const option = el("option", "", label);
+        option.value = value;
+        option.selected = (record?.disposition || "pending") === value;
+        disposition.append(option);
+    }
+    dispositionLabel.append(disposition);
+    const note = el("input", "source-review-note");
+    note.type = "text";
+    note.maxLength = 500;
+    note.value = record?.note || "";
+    note.placeholder = `Review note for ${state.source.path}:${state.source.start_line || item.line || 1}`;
+    note.setAttribute("aria-label", "Review note");
+    const save = el("button", "source-review-save", "Save review");
+    save.type = "button";
+    const saveEntry = () => setReviewDisposition(item, disposition.value, note.value);
+    save.addEventListener("click", saveEntry);
+    note.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            saveEntry();
+        }
+    });
+    controls.append(dispositionLabel, note, save);
+    panel.append(heading, reasons, controls);
 }
 
 function renderSourceDecisions() {
@@ -2991,7 +3086,9 @@ function render() {
         return;
     }
     loadClosedFindingKeys(model);
+    loadReviewLedger(model);
     if (state.queueError) showError(new Error(state.queueError));
+    if (state.reviewLedgerError) showError(new Error(state.reviewLedgerError));
     if (!state.connectionLost && !payload.loading && !payload.cancelled) {
         const summaryKey = JSON.stringify([model.metadata?.repo_root, payload.review_generation, payload.review_target]);
         if (state.summaryKey !== summaryKey) {
@@ -3293,6 +3390,9 @@ function resetReviewNavigation() {
     state.mode = "walkthrough";
     state.areaGroup = null;
     state.appliedServerSelection = null;
+    state.reviewLedger = new Map();
+    state.reviewLedgerStorageKey = null;
+    state.reviewLedgerError = null;
     state.sourceHistory = { entries: [], index: -1, pending: -1 };
     state.packageData.clear();
     state.query = "";

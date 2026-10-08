@@ -20,12 +20,22 @@ to explain behavior changes, suggest a review order, and distinguish demonstrate
 cases from evidence gaps. Clickable metrics include all reviewable files, not
 just analyzed source languages.
 
+The default **Review plan** ranks changed callables and dependencies by rule-based
+impact, churn, caller reach, and the strongest available test evidence. It updates
+after linked tests run and opens the highest-risk unreviewed or follow-up path
+directly in source. The architecture graph remains available for exploratory
+drill-down.
+
 ### Follow architecture and impact
 
 Drill from components to modules, classes, functions, and relationships. Added,
 modified, and removed items have distinct styling; graph edges expose callers
 and dependencies. A ranked attention queue highlights rule-based concerns,
 with evidence, exact source locations, and persistent **Close / Reopen** controls.
+Snapshot-scoped review dispositions and source-line notes record reviewed,
+follow-up, accepted-risk, and false-positive decisions. Progress survives
+reanalyzing unchanged source and is isolated automatically when reviewed source
+changes.
 Analysis limitations are a readable list of static-analysis notes, with plain
 explanations and clickable saved source/project locations. Baseline/current and
 target-framework labels distinguish their scope; unresolved graph links are
@@ -82,6 +92,8 @@ explicitly labeled unchanged context. New diffs start at the top while keeping
 referenced lines highlighted. Compact gutters, clickable source links,
 and back/forward navigation keep the code central. Copilot briefings explain
 usage, behavior changes, motivation, risk, and what to verify.
+The source workspace keeps the diff first, shows its risk priority and reasons,
+and places linked-test execution and path-level results beside the affected code.
 
 ### Recover the agent's intent
 
