@@ -174,6 +174,7 @@ public readonly struct Score
         await page.goto(`${server.url}?scoutTheme=${theme}`);
         await page.locator("#summary .metric").first().waitFor();
         assert.match(await page.locator("body").textContent(), /ThresholdDemo|Raise C# acceptance/);
+        await page.locator("#zoom-out").click();
         const graphNode = state.model.nodes.find((node) => node.id === changed.id);
         assert.ok(graphNode, "changed C# symbol participates in the rendered graph model");
         const component = state.model.nodes.find((node) => node.id === graphNode.component_id);

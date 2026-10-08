@@ -147,6 +147,8 @@ try {
             await page.locator("#packages .review-card").filter({ hasText: new RegExp(item.name) }).click();
             await page.locator("#package-detail .usage-list").waitFor();
             assert.match(await page.locator("#package-detail").textContent(), new RegExp(item.resolved_current.replaceAll(".", "\\.")));
+            await page.waitForFunction(() => !/Checking .* metadata/i.test(
+                document.querySelector("#package-detail")?.textContent || ""));
             const sourceLink = page.locator("#package-detail .usage-list .source-reference").first();
             await keyboardFocus(page, sourceLink);
             state.broadcast("package-risk");

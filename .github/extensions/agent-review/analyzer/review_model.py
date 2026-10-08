@@ -13,7 +13,7 @@ def stable_id(kind: str, *parts: object) -> str:
 
 def _package_key(item: dict[str, Any]) -> tuple[str, str]:
     ecosystem = item.get("ecosystem", "pypi")
-    return ecosystem, item["name"].lower() if ecosystem == "nuget" else item["name"]
+    return ecosystem, item["name"].lower() if ecosystem in {"nuget", "cargo"} else item["name"]
 
 
 def _package_id(key: tuple[str, str]) -> str:
@@ -26,11 +26,13 @@ def _package_metadata(key: tuple[str, str]) -> dict[str, str]:
         return {"ecosystem": key[0], "language": "csharp", "identity": key[1]}
     if key[0] == "gomod":
         return {"ecosystem": key[0], "language": "go", "identity": key[1]}
+    if key[0] == "cargo":
+        return {"ecosystem": key[0], "language": "rust", "identity": key[1]}
     return {"ecosystem": key[0]} if key[0] != "pypi" else {}
 
 
 def _resolved_package_version(declarations: list[dict[str, Any]]) -> str | None:
-    if declarations and declarations[0].get("ecosystem") in ("nuget", "npm", "gomod"):
+    if declarations and declarations[0].get("ecosystem") in ("nuget", "npm", "gomod", "cargo"):
         if any(item.get("resolution_error") for item in declarations):
             return None
         versions = {item.get("resolved_version") for item in declarations}
@@ -44,7 +46,10 @@ def resolved_package_version(declarations: list[dict[str, Any]]) -> str | None:
 
 def _symbol_metadata(item: dict[str, Any]) -> dict[str, Any]:
     metadata = {key: item[key] for key in ("language", "ecosystem") if key in item}
-    if item.get("language") in {"csharp", "go"} and "identity" in item:
+    if (
+        item.get("language") in {"csharp", "go", "rust"}
+        or str(item.get("path", "")).lower().endswith((".cs", ".go", ".rs"))
+    ) and "identity" in item:
         metadata["identity"] = item["identity"]
     return metadata
 
@@ -59,6 +64,12 @@ def _is_csharp_symbol(node: dict[str, Any]) -> bool:
 def _is_go_symbol(node: dict[str, Any]) -> bool:
     return node.get("language") == "go" and node["type"] in {
         "type", "struct", "interface",
+    }
+
+
+def _is_rust_symbol(node: dict[str, Any]) -> bool:
+    return node.get("language") == "rust" and node["type"] in {
+        "module", "struct", "enum", "trait",
     }
 
 
@@ -155,7 +166,7 @@ class ReviewModel:
         changed_symbols = [
             node for node in nodes
             if (node["type"] in ("class", "function", "method") or _is_csharp_symbol(node)
-                or _is_go_symbol(node))
+                or _is_go_symbol(node) or _is_rust_symbol(node))
             and node["change"] != "unchanged"
         ]
         changed_modules = [
@@ -188,6 +199,7 @@ class ReviewModel:
                 **({"node_loc": self.repository["node_loc"]} if "node_loc" in self.repository else {}),
                 **({"csharp_loc": self.repository["csharp_loc"]} if "csharp_loc" in self.repository else {}),
                 **({"go_loc": self.repository["go_loc"]} if "go_loc" in self.repository else {}),
+                **({"rust_loc": self.repository["rust_loc"]} if "rust_loc" in self.repository else {}),
                 **(
                     {"review_languages": self.repository["review_languages"]}
                     if "review_languages" in self.repository
@@ -479,7 +491,7 @@ class ReviewModel:
         baseline = {_package_key(item) for item in self.packages["baseline"]}
         current = {_package_key(item) for item in self.packages["current"]}
         for key in changes:
-            if key[0] == "nuget":
+            if key[0] in {"nuget", "gomod", "cargo"}:
                 changes[key] = (
                     "version_changed" if key in baseline and key in current
                     else "added" if key in current else "removed"
@@ -489,7 +501,7 @@ class ReviewModel:
     @staticmethod
     def _declared_package_text(declarations: list[dict[str, Any]]) -> str:
         return ", ".join(
-            f"{item['name']}{' ' if item.get('ecosystem') in ('nuget', 'npm', 'gomod') and item.get('specifier') else ''}{item.get('specifier', '')}"
+            f"{item['name']}{' ' if item.get('ecosystem') in ('nuget', 'npm', 'gomod', 'cargo') and item.get('specifier') else ''}{item.get('specifier', '')}"
             for item in declarations
         )
 
@@ -562,7 +574,7 @@ class ReviewModel:
                 )
             if metrics["lines_changed"] >= 25 and (
                 node["type"] in ("module", "class", "function", "method")
-                or _is_csharp_symbol(node)
+                or _is_csharp_symbol(node) or _is_go_symbol(node) or _is_rust_symbol(node)
             ):
                 node["_size_evidence"] = self.add_evidence(
                     "line_delta", {"path": node["path"], "line": node["start_line"],
@@ -580,7 +592,8 @@ class ReviewModel:
             if key not in node:
                 return
             path = str(node.get("path") or "").replace("\\", "/").lower()
-            test_only = (path.startswith(("tests/", "test/")) or "/tests/" in f"/{path}"
+            test_only = (path.startswith(("tests/", "test/", "benches/"))
+                         or "/tests/" in f"/{path}" or "/benches/" in f"/{path}"
                          or path.endswith(("_test.go", "_test.py", ".test.js", ".test.ts",
                                            ".spec.js", ".spec.ts", "tests.cs")))
             adjusted_score = max(0, score - (15 if test_only else 0))
@@ -618,7 +631,7 @@ class ReviewModel:
             )
             append_finding(
                 node, "signature", "_signature_evidence",
-                "Public symbol contract changed" if _is_csharp_symbol(node)
+                "Public symbol contract changed" if _is_csharp_symbol(node) or _is_go_symbol(node) or _is_rust_symbol(node)
                 else "Public callable contract changed",
                 f"{node['name']} changed its signature with {callers} direct or transitive callers to verify.",
                 50 + min(32, callers * 3),

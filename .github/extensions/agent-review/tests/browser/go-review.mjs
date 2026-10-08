@@ -61,6 +61,8 @@ try {
         await plan.waitFor();
         assert.match(await plan.textContent(), /Classify/);
         await plan.focus();
+        await page.keyboard.press("Tab");
+        await page.keyboard.press("Shift+Tab");
         assert.equal(await plan.evaluate((element) => element.matches(":focus-visible")), true);
         await page.screenshot({ path: join(artifacts, `go-${theme}-wide.png`), fullPage: true });
         await page.setViewportSize({ width: 560, height: 900 });

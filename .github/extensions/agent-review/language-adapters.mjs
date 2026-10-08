@@ -2,10 +2,11 @@ import { PYTHON_REVIEW_ADAPTER } from "./python-review-adapter.mjs";
 import { NODE_REVIEW_ADAPTER } from "./node-review-adapter.mjs";
 import { DOTNET_REVIEW_ADAPTER } from "./dotnet-review-adapter.mjs";
 import { GO_REVIEW_ADAPTER } from "./go-review-adapter.mjs";
+import { RUST_REVIEW_ADAPTER } from "./rust-review-adapter.mjs";
 import { languageForPath } from "./web/languages.mjs";
 
 export const REVIEW_ADAPTERS = Object.freeze([
-    PYTHON_REVIEW_ADAPTER, NODE_REVIEW_ADAPTER, DOTNET_REVIEW_ADAPTER, GO_REVIEW_ADAPTER,
+    PYTHON_REVIEW_ADAPTER, NODE_REVIEW_ADAPTER, DOTNET_REVIEW_ADAPTER, GO_REVIEW_ADAPTER, RUST_REVIEW_ADAPTER,
 ]);
 
 export function reviewAdapter(id = "python") {

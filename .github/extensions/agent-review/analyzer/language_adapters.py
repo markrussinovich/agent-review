@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from review_model import ReviewModel
@@ -16,6 +16,7 @@ class AnalysisSnapshot:
     base_commit: str | None
     historical: bool
     use_cache: bool
+    head_commit: str | None = None
 
 
 class LanguageAdapter(Protocol):
@@ -63,6 +64,11 @@ def active_adapters(
             from go_adapter import GO_ADAPTER
 
             adapters = (*adapters, GO_ADAPTER)
+        if any(path.lower().endswith(".rs") or PurePosixPath(path).name in {"Cargo.toml", "Cargo.lock"}
+               for path in paths):
+            from rust_adapter import RUST_ADAPTER
+
+            adapters = (*adapters, RUST_ADAPTER)
     ids = [adapter.id for adapter in adapters]
     if len(ids) != len(set(ids)):
         raise ValueError("Language adapters must have unique IDs.")

@@ -1,7 +1,7 @@
 # Agent Review
 
 A GitHub Copilot Canvas extension for reviewing agent-made changes in Python,
-Node.js/TypeScript, C#/.NET, and Go repositories. Start with the change's intent and architecture,
+Node.js/TypeScript, C#/.NET, Go, and Rust repositories. Start with the change's intent and architecture,
 then follow its impact down to findings, dependency evidence, and source diffs.
 
 [![Agent Review: change brief, architecture graph, attention queue, package changes, source diff, originating prompt, and AI briefing](docs/agent-review.png)](docs/agent-review.png)
@@ -76,7 +76,7 @@ installed copy of the package instead of the reviewed files, the run says so
 rather than reporting paths as not executed. Paths whose
 exit shares a line with its condition cannot be confirmed by line tracing and
 say so. Existing coverage reports add whether each line ran in the suite.
-The Node and Go runners' eligibility and coverage constraints are detailed
+The Node, Go, and Rust runners' eligibility and coverage constraints are detailed
 below. Mixed-language test execution is not
 available; the shared router rejects combined runs rather than mixing evidence.
 
@@ -122,7 +122,7 @@ never as instructions to the reviewer.
 
 ### Review dependency decisions
 
-Added, changed, and removed Python, npm, NuGet, and Go module dependencies link to manifest
+Added, changed, and removed Python, npm, NuGet, Go module, and Cargo dependencies link to manifest
 declarations and consuming code. On-demand Python assessments explain adoption
 and expose PyPI metadata, OSV advisories, OpenSSF Scorecard, maintenance, and downloads.
 npm assessments currently expose registry metadata and OSV advisories only;
@@ -130,6 +130,9 @@ broader risk, maintenance, popularity, and Scorecard signals remain unknown.
 Workspace links and private npm packages skip public assessments.
 Go assessments use the exact saved module version with the public Go proxy and
 OSV's **Go** ecosystem. Local `replace` targets skip public assessment.
+Cargo assessments use the exact saved `Cargo.lock` version and query crates.io
+metadata plus OSV's `crates.io` ecosystem. Path, Git, custom-registry, ambiguous,
+and unresolved dependencies are not treated as crates.io releases.
 NuGet explanations receive bounded saved source from the declaring projects,
 including unchanged implementations. When no assembly usage edge is resolved,
 candidate associations are explicitly inferred; namespace spelling is not proof.
@@ -173,6 +176,8 @@ Analysis never automatically installs
 reviewed-project dependencies, runs their install scripts, or builds the
 project. Linked Node test execution additionally requires Node.js **22.15+**;
 linked Go test execution requires an installed Go toolchain.
+Linked Rust test execution additionally requires the reviewed project's Rust
+toolchain and Cargo; Rust is not required for static analysis.
 
 ### Open and use
 
@@ -268,7 +273,7 @@ line-trace confirmation behavior is unchanged.
 Snapshot isolation selects the reviewed source tree; it is not a sandbox for
 MSBuild targets or test side effects.
 
-### Go tooling and safety
+### Go reviews
 
 Go structural analysis is implemented by Agent Review's saved-source parser and
 requires no Go toolchain. It reads baseline/current `.go`, `go.mod`, `go.sum`,
@@ -339,18 +344,19 @@ Returning to a target reuses its results while the provider remains running.
 
 ## Limits and data
 
-- Structural analysis supports Python, Node.js/TypeScript, C#/.NET, and Go; individual
+- Structural analysis supports Python, Node.js/TypeScript, C#/.NET, Go, and Rust; individual
   rule-based checks can be language-specific. Other text files
   remain reviewable as diffs. No findings is **not** a correctness guarantee;
   **Priority** ranks attention, not security.
-- Code path maps are static and cover changed, non-test Python, Node, C#, and Go callables
+- Code path maps are static and cover changed, non-test callables in implemented languages
   after analysis finishes, so they never lengthen the scan. They show conditions, not
   runtime reachability; very large reviews are bounded and labeled as partial.
 - Python worktree coverage accepts matching `coverage.json`, `coverage.xml`, or
   legacy JSON `.coverage` reports; a SQLite `.coverage` database alone is unsupported.
   Node coverage requires exact-source proof for supported Istanbul/LCOV reports;
-  Go coverprofiles require the exact-hash sidecar described above
-  [below](#nodejs-and-typescript-reviews). Historical commit/PR reviews do not
+  Go coverprofiles require the exact-hash sidecar [below](#go-reviews);
+  Rust LCOV requires the exact revision
+  and per-source hashes [below](#rust-reviews). Historical commit/PR reviews do not
   reuse live-worktree coverage.
 - Analysis runs locally. AI explanations use Copilot; public package services
   receive package identifiers and public repository URLs, not source or credentials.
@@ -369,6 +375,65 @@ Returning to a target reuses its results while the provider remains running.
   deleting that database to clear stored facts.
 
 ## Development
+
+### Rust reviews
+
+The Rust adapter reads saved `.rs`, `Cargo.toml`, and `Cargo.lock` bytes. It
+models crates, file and inline modules, structs, enums, traits, free functions,
+impl/trait methods, `use` relationships, statically resolvable calls, and Cargo
+crate usage. Baseline/current syntax and bodies classify symbols and
+relationships and feed the shared changed-line, caller-impact, churn, and
+attention metrics. Mixed-language graphs share the same model while retaining
+collision-free Rust and Cargo identities.
+
+Analysis is deliberately toolchain-free and **never invokes Cargo, rustc, build
+scripts, procedural macros, tests, or repository binaries**. Macro expansion,
+conditional compilation, generated code, glob/re-export resolution, complex
+type-directed method dispatch, and dynamic trait dispatch are not compiler
+resolved. Corresponding relationships and code paths are conservative static
+evidence, not proof of compilation or runtime reachability. Invalid current
+Cargo manifests fail closed rather than fabricating dependency removals.
+
+Cargo declarations include group/target, rename, workspace inheritance, path,
+Git, registry, declaration line, saved lock source/checksum, and exact locked
+version where one saved lock entry can be selected conservatively. A bare
+manifest version such as `1.2.3` is a Cargo-compatible range, not an exact pin.
+Ambiguous duplicate lock versions remain unknown. Public assessment is
+available only for ordinary crates.io dependencies with an exact saved locked
+version; source and credentials are never sent.
+
+Saved Rust coverage accepts LCOV only when the snapshot also contains
+`rust-coverage.json` (or `.agent-review/rust-coverage.json`):
+
+```json
+{
+  "revision": "<exact reviewed commit SHA>",
+  "report": "lcov.info",
+  "source_hashes": {
+    "src/lib.rs": "<SHA-256 of exact LF-normalized saved source bytes>"
+  }
+}
+```
+
+Every reported source must match its saved SHA-256 and the metadata revision
+must equal the selected snapshot. Mismatched records are ignored and explained,
+never counted as uncovered. Changed executable-line coverage is computed only
+from matched records. LCOV remains aggregate suite evidence and does not name
+the test that executed a path.
+
+Rust decision extraction identifies changed returns, panic-style exits, `?`
+propagation, loop breaks/continues, nearby conditions, and numeric thresholds.
+It statically links `#[test]` functions through resolved saved-source calls.
+**Run linked tests** is an explicit opt-in action that displays and invokes
+`cargo test --manifest-path <Cargo.toml> --locked -- <name> --exact --nocapture`
+for each linked test. Configure `test_cargo` in `.agent-review.json` or
+`AGENT_REVIEW_TEST_CARGO` when Cargo is not on PATH. Worktree source hashes are
+rechecked before every test; commit/PR runs use the disposable exact-snapshot
+export. Runs are cancellable and report per-test outcomes. Cargo may download
+dependencies, compile and execute build scripts/procedural macros, build code,
+and execute repository tests; snapshot isolation is **not a sandbox**. Cargo
+outcomes do not provide per-path tracing, so inferred paths are not upgraded to
+Confirmed. Mixed-language combined execution remains unsupported.
 
 ### Node.js and TypeScript reviews
 
@@ -474,7 +539,8 @@ disposable repository is separate from this persistent demo.
 ### Language adapter boundary
 
 Snapshot loading, review lifecycle, source navigation, and UI remain shared.
-Implemented language adapters are **Python**, **Node.js/TypeScript**, **C#/.NET**, and **Go**.
+Implemented language adapters are **Python**, **Node.js/TypeScript**, **C#/.NET**,
+**Go**, and **Rust**.
 
 - `analyzer/language_adapters.py` defines the snapshot contract and selects
   adapters using both trees (including deleted sources and manifest-only changes).
@@ -486,8 +552,9 @@ Implemented language adapters are **Python**, **Node.js/TypeScript**, **C#/.NET*
   `python-review-adapter.mjs` owns Python callable/test linkage and the parser
   process specification; `node-review-adapter.mjs` routes the Node compiler,
   static linkage, and isolated `node:test` runner; `dotnet-review-adapter.mjs`
-  routes Roslyn and the opt-in xUnit runner; and `go-review-adapter.mjs` routes
-  saved-source Go decisions and exact-test execution. Per-language results merge
+  routes Roslyn and the opt-in xUnit runner; `go-review-adapter.mjs` routes
+  saved-source Go decisions and exact-test execution; and `rust-review-adapter.mjs` routes
+  saved-syntax path extraction and the opt-in exact Cargo runner. Per-language results merge
   into the shared code-path view; unknown adapters and duplicate callable IDs
   fail explicitly.
 - `web/languages.mjs` shares implemented source-language and test-path

@@ -1,5 +1,5 @@
 export const SOURCE_FILE_EXTENSION_PATTERN =
-    "csproj|cs|slnx?|props|targets|py|go|mod|sum|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html";
+    "csproj|cs|slnx?|props|targets|py|go|rs|mod|sum|lock|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html";
 
 export function parseSourceReference(value) {
     const expression = new RegExp(

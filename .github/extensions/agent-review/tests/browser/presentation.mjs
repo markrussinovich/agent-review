@@ -101,7 +101,7 @@ try {
             }, { variable: token, property });
             assert.ok(colors.every((color) => color.actual === color.expected), `${theme}: ${selector} uses its semantic color`);
         }
-        assert.match(await page.locator(".quality-warning").textContent(), /Coverage unavailable.*Generate coverage\.json or coverage\.xml/);
+        assert.match(await page.locator(".quality-warning").textContent(), /Coverage unavailable.*Provide Python coverage\.json\/coverage\.xml/);
         const tiles = await page.locator("#summary .metric").evaluateAll((cards) => {
             const probe = document.createElement("span");
             probe.style.color = "var(--cp-text-muted)";
