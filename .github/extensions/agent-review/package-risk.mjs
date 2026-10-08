@@ -334,6 +334,10 @@ function calculateRisk(indicators, sources) {
  * Only the supplied package coordinates and a validated public GitHub URL are sent.
  */
 export async function assessPackageRisk(name, version, options = {}) {
+  if (options.ecosystem === "gomod") {
+    const { assessGoModuleRisk } = await import("./go-package-risk.mjs");
+    return assessGoModuleRisk(name, version, options);
+  }
   if (options.ecosystem === "nuget") {
     const { assessNugetPackageRisk } = await import("./nuget-package-risk.mjs");
     return assessNugetPackageRisk(name, version, options);

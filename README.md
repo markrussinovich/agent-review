@@ -1,7 +1,7 @@
 # Agent Review
 
 A GitHub Copilot Canvas extension for reviewing agent-made changes in Python,
-Node.js/TypeScript, and C#/.NET repositories. Start with the change's intent and architecture,
+Node.js/TypeScript, C#/.NET, and Go repositories. Start with the change's intent and architecture,
 then follow its impact down to findings, dependency evidence, and source diffs.
 
 [![Agent Review: change brief, architecture graph, attention queue, package changes, source diff, originating prompt, and AI briefing](docs/agent-review.png)](docs/agent-review.png)
@@ -62,7 +62,7 @@ Every changed path carries its test evidence, and filters show **Untested**,
 the function (or reach it through a caller) and matches their assertions to
 outcomes, such as `pytest.raises(ValueError)` for a new raise, flagging checks
 that match several paths. These links are labeled **inferred**. **Run linked
-tests** runs supported linked pytest or isolated `node:test` cases with tracing
+tests** runs supported linked pytest, isolated `node:test`, or Go `testing` cases with tracing
 restricted to the changed files and marks each path **Confirmed** (executed by
 a named test) or **Not executed**. Worktree reviews run in place; commit and PR reviews run in a
 temporary export of that exact snapshot (made from Git objects through a
@@ -70,14 +70,14 @@ throwaway index, so the repository's index, refs, and files are untouched) and
 delete it afterward. It runs only when you click it, shows its exact command,
 uses the project's runtime (Python: `test_python` in `.agent-review.json`,
 `AGENT_REVIEW_TEST_PYTHON`, or `.venv`; Node: `test_node` or
-`AGENT_REVIEW_TEST_NODE`), writes no pytest cache or bytecode,
+`AGENT_REVIEW_TEST_NODE`; Go: `test_go` or `AGENT_REVIEW_TEST_GO`), writes no pytest cache or bytecode,
 and a worktree run goes stale when the worktree changes. If the tests import an
 installed copy of the package instead of the reviewed files, the run says so
 rather than reporting paths as not executed. Paths whose
 exit shares a line with its condition cannot be confirmed by line tracing and
 say so. Existing coverage reports add whether each line ran in the suite.
-The initial Node runner's eligibility and coverage constraints are detailed
-[below](#nodejs-and-typescript-reviews). Mixed Python/Node test execution is not
+The Node and Go runners' eligibility and coverage constraints are detailed
+below. Mixed-language test execution is not
 available; the shared router rejects combined runs rather than mixing evidence.
 
 ### Inspect the actual code
@@ -122,12 +122,14 @@ never as instructions to the reviewer.
 
 ### Review dependency decisions
 
-Added, changed, and removed Python, npm, and NuGet dependencies link to manifest
+Added, changed, and removed Python, npm, NuGet, and Go module dependencies link to manifest
 declarations and consuming code. On-demand Python assessments explain adoption
 and expose PyPI metadata, OSV advisories, OpenSSF Scorecard, maintenance, and downloads.
 npm assessments currently expose registry metadata and OSV advisories only;
 broader risk, maintenance, popularity, and Scorecard signals remain unknown.
 Workspace links and private npm packages skip public assessments.
+Go assessments use the exact saved module version with the public Go proxy and
+OSV's **Go** ecosystem. Local `replace` targets skip public assessment.
 NuGet explanations receive bounded saved source from the declaring projects,
 including unchanged implementations. When no assembly usage edge is resolved,
 candidate associations are explicitly inferred; namespace spelling is not proof.
@@ -166,9 +168,11 @@ No separate model API key or Python packages are needed for the analyzer.
    npm ci --ignore-scripts
    ```
 
-This installs extension tooling only. Analysis never automatically installs
+This installs extension tooling only. Go analysis uses no additional package.
+Analysis never automatically installs
 reviewed-project dependencies, runs their install scripts, or builds the
-project. Linked Node test execution additionally requires Node.js **22.15+**.
+project. Linked Node test execution additionally requires Node.js **22.15+**;
+linked Go test execution requires an installed Go toolchain.
 
 ### Open and use
 
@@ -264,6 +268,51 @@ line-trace confirmation behavior is unchanged.
 Snapshot isolation selects the reviewed source tree; it is not a sandbox for
 MSBuild targets or test side effects.
 
+### Go tooling and safety
+
+Go structural analysis is implemented by Agent Review's saved-source parser and
+requires no Go toolchain. It reads baseline/current `.go`, `go.mod`, `go.sum`,
+and saved coverage bytes only. It never invokes `go list`, downloads modules,
+builds packages, runs generators, evaluates build scripts, or executes reviewed
+code during analysis. Packages and files become architecture nodes; named types,
+functions, and methods become symbols. Imports and calls link only when a unique
+saved declaration or exact declared module prefix is available. Build tags,
+generated files, cgo, reflection, interface dispatch, promoted methods, generic
+type inference, and dynamic registration can make relationships incomplete.
+
+`go.mod` `require`, `replace`, and `exclude` directives are compared with exact
+semantic/pseudo-versions. Matching saved `go.sum` rows provide checksum
+evidence; a missing checksum is reported and never treated as verified content.
+Source imports provide module-usage evidence. Public assessment sends only the
+module path and exact version to `proxy.golang.org` and OSV; it does not send
+source, credentials, or local replacement paths. No advisory match is an
+unknown broader risk result, not proof that a module is safe.
+
+Saved Go coverprofiles (`coverage.out`, `cover.out`, or `coverage.txt`) are
+accepted only with an adjacent `coverage.sources.json` or
+`coverage.out.sources.json`. The sidecar maps repository-relative `.go` paths
+to their exact UTF-8 SHA-256 (either a hash string or `{ "sha256": "..." }`).
+This prevents stale reports from being applied to another revision. Changed-line
+coverage is derived only from source-matched executable ranges. Historical
+reviews use reports in the saved snapshot and never borrow live coverage.
+
+Code paths statically summarize changed production function/method returns,
+panics, breaks, continues, and nearby `if` conditions. Go tests link only from
+top-level `TestXxx(*testing.T)` functions with a direct changed-callable name
+reference; method values, helpers, table-driven subtests, generated tests, and
+indirect interface calls may remain unlinked. Links and assertion evidence are
+inferred, not runtime proof.
+
+**Run linked tests** is an explicit opt-in action. It shows the command, then
+invokes the configured Go toolchain with `GOTOOLCHAIN=local`, `-count=1`, exact
+`-run` filters, JSON outcomes, and one coverprofile per linked test. It may
+download modules and executes package initialization and arbitrary repository
+test code with the current user's permissions. It is cancellable and bounded to
+100 tests. Source hashes are verified before and after execution; commit/PR
+targets run from a disposable exact Git export. Per-test coverprofile lines can
+confirm paths when they map uniquely; missing/ambiguous paths remain inferred.
+Snapshot isolation is not a security sandbox for test side effects.
+
 ## Choose a snapshot
 
 Use **Change repository** beside the repository path to review a different
@@ -290,16 +339,17 @@ Returning to a target reuses its results while the provider remains running.
 
 ## Limits and data
 
-- Structural analysis supports Python and Node.js/TypeScript; individual
+- Structural analysis supports Python, Node.js/TypeScript, C#/.NET, and Go; individual
   rule-based checks can be language-specific. Other text files
   remain reviewable as diffs. No findings is **not** a correctness guarantee;
   **Priority** ranks attention, not security.
-- Code path maps are static and cover changed, non-test Python and Node callables
+- Code path maps are static and cover changed, non-test Python, Node, C#, and Go callables
   after analysis finishes, so they never lengthen the scan. They show conditions, not
   runtime reachability; very large reviews are bounded and labeled as partial.
 - Python worktree coverage accepts matching `coverage.json`, `coverage.xml`, or
   legacy JSON `.coverage` reports; a SQLite `.coverage` database alone is unsupported.
-  Node coverage requires exact-source proof for supported Istanbul/LCOV reports
+  Node coverage requires exact-source proof for supported Istanbul/LCOV reports;
+  Go coverprofiles require the exact-hash sidecar described above
   [below](#nodejs-and-typescript-reviews). Historical commit/PR reviews do not
   reuse live-worktree coverage.
 - Analysis runs locally. AI explanations use Copilot; public package services
@@ -424,7 +474,7 @@ disposable repository is separate from this persistent demo.
 ### Language adapter boundary
 
 Snapshot loading, review lifecycle, source navigation, and UI remain shared.
-Implemented language adapters are **Python**, **Node.js/TypeScript**, and **C#/.NET**.
+Implemented language adapters are **Python**, **Node.js/TypeScript**, **C#/.NET**, and **Go**.
 
 - `analyzer/language_adapters.py` defines the snapshot contract and selects
   adapters using both trees (including deleted sources and manifest-only changes).
@@ -436,7 +486,8 @@ Implemented language adapters are **Python**, **Node.js/TypeScript**, and **C#/.
   `python-review-adapter.mjs` owns Python callable/test linkage and the parser
   process specification; `node-review-adapter.mjs` routes the Node compiler,
   static linkage, and isolated `node:test` runner; `dotnet-review-adapter.mjs`
-  routes Roslyn and the opt-in xUnit runner. Per-language results merge
+  routes Roslyn and the opt-in xUnit runner; and `go-review-adapter.mjs` routes
+  saved-source Go decisions and exact-test execution. Per-language results merge
   into the shared code-path view; unknown adapters and duplicate callable IDs
   fail explicitly.
 - `web/languages.mjs` shares implemented source-language and test-path

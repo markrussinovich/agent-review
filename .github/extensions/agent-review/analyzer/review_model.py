@@ -24,11 +24,13 @@ def _package_id(key: tuple[str, str]) -> str:
 def _package_metadata(key: tuple[str, str]) -> dict[str, str]:
     if key[0] == "nuget":
         return {"ecosystem": key[0], "language": "csharp", "identity": key[1]}
+    if key[0] == "gomod":
+        return {"ecosystem": key[0], "language": "go", "identity": key[1]}
     return {"ecosystem": key[0]} if key[0] != "pypi" else {}
 
 
 def _resolved_package_version(declarations: list[dict[str, Any]]) -> str | None:
-    if declarations and declarations[0].get("ecosystem") in ("nuget", "npm"):
+    if declarations and declarations[0].get("ecosystem") in ("nuget", "npm", "gomod"):
         if any(item.get("resolution_error") for item in declarations):
             return None
         versions = {item.get("resolved_version") for item in declarations}
@@ -42,9 +44,7 @@ def resolved_package_version(declarations: list[dict[str, Any]]) -> str | None:
 
 def _symbol_metadata(item: dict[str, Any]) -> dict[str, Any]:
     metadata = {key: item[key] for key in ("language", "ecosystem") if key in item}
-    if (
-        item.get("language") == "csharp" or str(item.get("path", "")).lower().endswith(".cs")
-    ) and "identity" in item:
+    if item.get("language") in {"csharp", "go"} and "identity" in item:
         metadata["identity"] = item["identity"]
     return metadata
 
@@ -53,6 +53,12 @@ def _is_csharp_symbol(node: dict[str, Any]) -> bool:
     return node.get("language") == "csharp" and node["type"] in {
         "property", "interface", "namespace", "struct", "enum", "record",
         "constructor", "field", "event", "delegate", "operator", "accessor",
+    }
+
+
+def _is_go_symbol(node: dict[str, Any]) -> bool:
+    return node.get("language") == "go" and node["type"] in {
+        "type", "struct", "interface",
     }
 
 
@@ -148,7 +154,8 @@ class ReviewModel:
         package_dependencies = self._package_dependencies(package_changes)
         changed_symbols = [
             node for node in nodes
-            if (node["type"] in ("class", "function", "method") or _is_csharp_symbol(node))
+            if (node["type"] in ("class", "function", "method") or _is_csharp_symbol(node)
+                or _is_go_symbol(node))
             and node["change"] != "unchanged"
         ]
         changed_modules = [
@@ -180,6 +187,7 @@ class ReviewModel:
                 "python_loc": self.repository.get("python_loc", 0),
                 **({"node_loc": self.repository["node_loc"]} if "node_loc" in self.repository else {}),
                 **({"csharp_loc": self.repository["csharp_loc"]} if "csharp_loc" in self.repository else {}),
+                **({"go_loc": self.repository["go_loc"]} if "go_loc" in self.repository else {}),
                 **(
                     {"review_languages": self.repository["review_languages"]}
                     if "review_languages" in self.repository
@@ -481,7 +489,7 @@ class ReviewModel:
     @staticmethod
     def _declared_package_text(declarations: list[dict[str, Any]]) -> str:
         return ", ".join(
-            f"{item['name']}{' ' if item.get('ecosystem') in ('nuget', 'npm') and item.get('specifier') else ''}{item.get('specifier', '')}"
+            f"{item['name']}{' ' if item.get('ecosystem') in ('nuget', 'npm', 'gomod') and item.get('specifier') else ''}{item.get('specifier', '')}"
             for item in declarations
         )
 
@@ -571,7 +579,10 @@ class ReviewModel:
         ) -> None:
             if key not in node:
                 return
-            test_only = str(node.get("path") or "").startswith(("tests/", "test/"))
+            path = str(node.get("path") or "").replace("\\", "/").lower()
+            test_only = (path.startswith(("tests/", "test/")) or "/tests/" in f"/{path}"
+                         or path.endswith(("_test.go", "_test.py", ".test.js", ".test.ts",
+                                           ".spec.js", ".spec.ts", "tests.cs")))
             adjusted_score = max(0, score - (15 if test_only else 0))
             adjusted_factors = [*factors, *(["test code"] if test_only else [])]
             severity = "high" if adjusted_score >= 80 else "medium" if adjusted_score >= 50 else "low"

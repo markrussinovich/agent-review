@@ -14,13 +14,16 @@ test("C# constructors and operators stay visible as reviewable constructs", () =
 
 test("all implemented source languages validate citations without matching partial extensions", () => {
     for (const file of ["core.ts", "view.tsx", "badge.jsx", "resolver.mjs", "legacy.cjs", "types.mts", "node.cts",
-        "Widget.cs", "App.csproj", "Solution.sln", "Directory.Packages.props", "rules.targets", "styles.css"]) {
+        "Widget.cs", "App.csproj", "Solution.sln", "Directory.Packages.props", "rules.targets",
+        "worker.go", "worker_test.go", "go.mod", "go.sum", "styles.css"]) {
         const context = { files: [{ path: `src/${file}`, current_line_count: 4 }] };
         const content = `## Findings\n\nNo supported findings.\n\n## Verification\n\n- Check \`src/${file}:3\`.`;
         assert.equal(validateCustomAnalysis(content, context), content);
         assert.deepEqual(parseSourceReference(`src/${file}:3`), { path: `src/${file}`, lines: [3] });
-        assert.throws(() => validateCustomAnalysis(content.replace(":3", ":20"), context), /outside the saved current source/);
-        assert.throws(() => validateCustomAnalysis(content.replace(`src/${file}`, `other/${file}`), context), /outside its supplied evidence/);
+        assert.throws(() => validateCustomAnalysis(content.replace(":3", ":20"), context),
+            /outside the saved current source/, `${file} rejects out-of-range lines`);
+        assert.throws(() => validateCustomAnalysis(content.replace(`src/${file}`, `other/${file}`), context),
+            /outside its supplied evidence/, `${file} rejects paths outside supplied evidence`);
     }
 });
 

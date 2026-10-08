@@ -58,6 +58,11 @@ def active_adapters(
             from dotnet_adapter import DOTNET_ADAPTER
 
             adapters = (*adapters, DOTNET_ADAPTER)
+        if any(path.lower().endswith(".go") or Path(path).name in {"go.mod", "go.sum"}
+               for path in paths):
+            from go_adapter import GO_ADAPTER
+
+            adapters = (*adapters, GO_ADAPTER)
     ids = [adapter.id for adapter in adapters]
     if len(ids) != len(set(ids)):
         raise ValueError("Language adapters must have unique IDs.")

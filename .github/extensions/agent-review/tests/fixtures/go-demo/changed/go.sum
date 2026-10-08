@@ -1,0 +1,4 @@
+golang.org/x/sync v0.10.0 h1:sync
+golang.org/x/sync v0.10.0/go.mod h1:sync-mod
+golang.org/x/text v0.21.0 h1:changed
+golang.org/x/text v0.21.0/go.mod h1:changed-mod

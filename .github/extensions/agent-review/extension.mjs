@@ -30,7 +30,7 @@ function instanceFor(ctx) {
 const canvas = createCanvas({
     id: "agent-review",
     displayName: "Agent Review",
-    description: "Understand an agent's Python changes from architecture through modules and symbols to deterministic source evidence.",
+    description: "Understand Python, JavaScript/TypeScript, C#/.NET, and Go changes from architecture to deterministic source evidence.",
     inputSchema: {
         type: "object",
         properties: {

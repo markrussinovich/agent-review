@@ -1,3 +1,5 @@
+import { SOURCE_FILE_EXTENSION_PATTERN } from "./web/source-references.mjs";
+
 export const CUSTOM_ANALYSIS_HEADINGS = ["Findings", "Verification"];
 
 export function customAnalysisContext(model) {
@@ -96,8 +98,15 @@ export function validateCustomAnalysis(content, context) {
     };
     // Rule files may name paths outside the evidence; those may be mentioned, never cited with lines.
     const mentions = new Set(context.allowed_mentions || []);
-    for (const match of text.matchAll(/(?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:csproj|cs|slnx?|props|targets|py|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html)(?![A-Za-z0-9_])(?::~?\d+(?:-~?\d+)?(?:,~?\d+(?:-~?\d+)?)*)?/g)) {
-        const reference = /^(.+\.(?:csproj|cs|slnx?|props|targets|py|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html))(?::(.+))?$/.exec(match[0]);
+    const citations = new RegExp(
+        `(?:[A-Za-z0-9_.-]+[\\\\/])*[A-Za-z0-9_.-]+\\.(?:${SOURCE_FILE_EXTENSION_PATTERN})`
+        + "(?![A-Za-z0-9_])(?::~?\\d+(?:-~?\\d+)?(?:,~?\\d+(?:-~?\\d+)?)*)?", "g",
+    );
+    const referencePattern = new RegExp(
+        `^(.+\\.(?:${SOURCE_FILE_EXTENSION_PATTERN}))(?::(.+))?$`,
+    );
+    for (const match of text.matchAll(citations)) {
+        const reference = referencePattern.exec(match[0]);
         if (!reference) continue;
         const path = resolvePath(reference[1]);
         if (!paths.has(path) && mentions.has(path) && !reference[2]) continue;

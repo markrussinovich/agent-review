@@ -6,6 +6,12 @@ export function packageEvidenceLinks(name, version, repositoryUrl, ecosystem = "
             maintenance: registry, vulnerabilities: `https://osv.dev/list?q=${packageName}&ecosystem=NuGet`,
             downloads: registry, scorecard: null };
     }
+    if (ecosystem === "gomod") {
+        const registry = `https://pkg.go.dev/${packageName}`;
+        return { registry, release: version ? `${registry}@${encodeURIComponent(version)}` : registry,
+            maintenance: registry, vulnerabilities: `https://osv.dev/list?q=${packageName}&ecosystem=Go`,
+            downloads: "https://proxy.golang.org/", scorecard: null };
+    }
     const links = {
         registry: `https://pypi.org/project/${packageName}/`,
         release: version ? `https://pypi.org/project/${packageName}/${encodeURIComponent(version)}/`

@@ -7,7 +7,8 @@ import { promisify } from "node:util";
 const execute = promisify(execFile);
 const excludes = JSON.parse(await readFile(new URL("./analyzer/snapshot-excludes.json", import.meta.url), "utf8"));
 const inputFiles = [".agent-review.json", ".coverage", "coverage.json", "coverage.xml",
-    "lcov.info", "coverage-final.json", "coverage/lcov.info", "coverage/coverage-final.json", "coverage/sources.json"];
+    "lcov.info", "coverage-final.json", "coverage/lcov.info", "coverage/coverage-final.json", "coverage/sources.json",
+    "coverage.out", "cover.out", "coverage.txt", "coverage.sources.json", "coverage.out.sources.json"];
 const escape = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const matchers = excludes.map((pattern) => ({
     pattern,

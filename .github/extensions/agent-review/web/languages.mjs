@@ -3,6 +3,7 @@ export const LANGUAGE_SUPPORT = Object.freeze([
     Object.freeze({ id: "python", name: "Python", extensions: Object.freeze([".py"]) }),
     Object.freeze({ id: "node", name: "JavaScript / TypeScript", extensions: Object.freeze([".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"]) }),
     Object.freeze({ id: "csharp", name: "C# / .NET", extensions: Object.freeze([".cs"]) }),
+    Object.freeze({ id: "go", name: "Go", extensions: Object.freeze([".go"]) }),
 ]);
 
 export function languageForPath(path) {
@@ -13,12 +14,14 @@ export function languageForPath(path) {
 export function isTestPath(path) {
     return /(^|\/)(tests?|__tests__)\//i.test(path || "") || /(^|\/)test_[^/]+\.py$|_test\.py$/i.test(path || "")
         || /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(path || "")
-        || /(^|\/)[^/]*tests?[^/]*\/.*\.cs$|tests?\.cs$/i.test(path || "");
+        || /(^|\/)[^/]*tests?[^/]*\/.*\.cs$|tests?\.cs$/i.test(path || "")
+        || /_test\.go$/i.test(path || "");
 }
 
 export function isReviewSymbol(node) {
     const kind = node?.kind || node?.type;
     return ["class", "function", "method"].includes(kind)
         || (node?.language === "csharp" && ["namespace", "interface", "struct", "record", "enum",
-            "delegate", "constructor", "operator", "property", "accessor", "field", "event"].includes(kind));
+            "delegate", "constructor", "operator", "property", "accessor", "field", "event"].includes(kind))
+        || (node?.language === "go" && ["type", "struct", "interface"].includes(kind));
 }

@@ -8,7 +8,9 @@ import { pythonCandidates } from "../python-runtime.mjs";
 test("language support is shared and advertises implemented adapters only", () => {
     assert.equal(languageForPath("src/main.py").id, "python");
     assert.equal(languageForPath("App.cs").id, "csharp");
+    assert.equal(languageForPath("cmd/main.go").id, "go");
     assert.equal(sourceAdapter("App.cs"), reviewAdapter("csharp"));
+    assert.equal(sourceAdapter("cmd/main.go"), reviewAdapter("go"));
     for (const path of ["README.md", undefined]) {
         assert.equal(languageForPath(path), null);
         assert.equal(sourceAdapter(path), null);
@@ -22,6 +24,7 @@ test("language support is shared and advertises implemented adapters only", () =
     assert.equal(isTestPath("tests/test_main.py"), true);
     assert.equal(isTestPath("pkg/widget_test.py"), true);
     assert.equal(isTestPath("pkg/widget.py"), false);
+    assert.equal(isTestPath("pkg/widget_test.go"), true);
     assert.throws(() => reviewAdapter("typescript"), /No review adapter is installed/);
     assert.throws(() => testAdapterForMap({ adapter_ids: ["python", "csharp"] }), /combined execution is not implemented/);
 });
