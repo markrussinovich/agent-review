@@ -883,6 +883,83 @@ main { padding: 16px 20px 32px; }
 }
 .collection-copy strong { font-size: .8125rem; }
 .collection-copy small { margin-top: 3px; font-size: .75rem; }
+.workspace.walkthrough-mode .legend,
+.workspace.walkthrough-mode .graph-controls > label:first-child { display: none; }
+.review-plan { align-content: start; }
+.review-plan-intro {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--cp-border);
+  border-radius: var(--pr-radius);
+  background: var(--cp-surface-soft);
+}
+.review-plan-intro strong { font-size: .875rem; }
+.review-plan-intro p { margin-top: 4px; line-height: 1.45; }
+.review-next {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 6px 14px;
+  border: 1px solid var(--cp-primary);
+  border-radius: var(--pr-radius);
+  background: var(--cp-primary);
+  color: var(--cp-accent-fg);
+  cursor: pointer;
+}
+.review-next:hover { background: var(--cp-primary-hover); }
+.review-plan-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--cp-border);
+  border-radius: var(--pr-radius);
+  background: var(--cp-surface);
+  text-align: left;
+  cursor: pointer;
+}
+.review-plan-row:hover, .review-plan-row:focus-visible {
+  border-color: var(--cp-border-strong);
+  background: var(--cp-surface-soft);
+}
+.review-rank {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--cp-border);
+  border-radius: 50%;
+  color: var(--cp-text-muted);
+  font-size: .75rem;
+  font-weight: 600;
+}
+.review-plan-copy { min-width: 0; display: grid; gap: 5px; }
+.review-plan-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.review-plan-heading strong { min-width: 0; overflow-wrap: anywhere; font-size: .875rem; }
+.review-plan-path { color: var(--cp-text-muted); font: .75rem Consolas, "Courier New", Courier, monospace; overflow-wrap: anywhere; }
+.review-plan-reasons, .review-plan-proof { display: flex; flex-wrap: wrap; gap: 6px; }
+.review-plan-reasons > span, .review-plan-proof > span {
+  padding: 2px 7px;
+  border: 1px solid var(--cp-border);
+  border-radius: 12px;
+  color: var(--cp-text-muted);
+  font-size: .6875rem;
+}
+.review-plan-proof .proof-untested { border-color: var(--cp-warning); color: var(--cp-warning); }
+.review-plan-proof .proof-confirmed { border-color: var(--cp-success); color: var(--cp-success); }
+.review-plan-open { align-self: center; color: var(--cp-link); font-size: .75rem; white-space: nowrap; }
+@media (max-width: 600px) {
+  .review-plan-intro { align-items: stretch; flex-direction: column; }
+  .review-next { width: 100%; }
+  .review-plan-row { grid-template-columns: 24px minmax(0, 1fr); }
+  .review-plan-open { display: none; }
+  .review-plan-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
+}
 .detail-row { padding: 7px 0; font-size: .75rem; }
 .detail-copy { margin-top: 12px; font-size: .8125rem; line-height: 1.5; }
 .factor-chips span { font-size: .6875rem; }

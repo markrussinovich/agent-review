@@ -201,7 +201,7 @@ try {
         assert.equal(await page.getByRole("link", { name: "8.8/10", exact: true }).count(), 1);
         assert.equal(await page.getByRole("link", { name: "Code-Review", exact: true }).count(), 1);
         assert.match(await page.locator(".evidence-sources").textContent(), /HTTP 429/);
-        await page.locator("#breadcrumbs button").first().click();
+        await page.getByRole("button", { name: "Architecture", exact: true }).click();
         const health = state.model.nodes.find((node) => node.kind === "class" && node.name === "HealthCheck");
         const module = state.model.nodes.find((node) => node.id === health.module_id);
         const component = state.model.nodes.find((node) => node.id === health.component_id);

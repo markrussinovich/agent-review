@@ -123,7 +123,7 @@ try {
         await page.locator('.node[aria-label^="resolveReference,"]').click();
         await page.waitForFunction(() => /packages\/core\/src\/resolver\.js:\d+/.test(document.querySelector("#source-title")?.textContent || ""));
         await page.locator("#source-close").click();
-        await page.locator("#breadcrumbs button").first().click();
+        await page.getByRole("button", { name: "Architecture", exact: true }).click();
         await page.locator("#summary .metric").filter({ hasText: "Packages" }).click();
         for (const item of packages) {
             await page.locator("#packages .review-card").filter({ hasText: new RegExp(item.name) }).click();

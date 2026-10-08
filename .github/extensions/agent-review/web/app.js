@@ -7,6 +7,7 @@ import { unchangedDiffContext, diffSegments } from "/diff-context.mjs";
 import { isReviewSymbol, isTestPath, languageForPath } from "/languages.mjs";
 import { ConnectionFeedback } from "/connection-feedback.mjs";
 import { describeAnalysisWarning } from "/analysis-limitations.mjs";
+import { buildReviewPlan } from "/review-plan.mjs";
 import {
     callableName, callablesForSubject, changedCallables, decisionAction, decisionConditions, decisionSentence, decisionTotals,
     EVIDENCE_GROUPS, evidenceCounts, linkedTestOutcome, pathEvidence,
@@ -18,7 +19,7 @@ const state = {
     eventSource: null,
     reconnectTimer: null,
     stack: [],
-    mode: "graph",
+    mode: "walkthrough",
     areaGroup: null,
     selected: null,
     source: null,
@@ -538,12 +539,26 @@ function resetToGraph() {
     render();
 }
 
+function resetToWalkthrough() {
+    state.mode = "walkthrough";
+    state.stack = [];
+    clearSelection();
+    state.query = "";
+    elements.review_search.value = "";
+    render();
+}
+
 function renderBreadcrumbs() {
     elements.breadcrumbs.replaceChildren();
+    const plan = el("button", "", "Review plan");
+    plan.type = "button";
+    plan.addEventListener("click", resetToWalkthrough);
+    elements.breadcrumbs.append(plan);
+    if (state.mode === "walkthrough") return;
     const root = el("button", "", "Architecture");
     root.type = "button";
     root.addEventListener("click", resetToGraph);
-    elements.breadcrumbs.append(root);
+    elements.breadcrumbs.append(el("span", "", "›"), root);
     if (state.mode !== "graph") {
         elements.breadcrumbs.append(el("span", "", "›"), el("strong", "", collectionTitle(state.mode)));
         return;
@@ -1753,10 +1768,71 @@ function renderChangeRuler(rows) {
 function collectionTitle(mode) {
     if (mode === "areas") return state.areaGroup?.title || "Large change areas";
     return {
+        walkthrough: "Risk-first walkthrough",
         files: "Changed files", lines: "Lines changed by file", symbols: "Changed symbols",
         edges: "New relationships", packages: "Package changes", findings: "Ranked findings",
         decisions: "Code path changes",
     }[mode] || "Review details";
+}
+
+function openReviewPlanItem(item) {
+    if (item.kind === "package") {
+        openPackage(item.package);
+        return;
+    }
+    if (item.kind === "callable" && item.preferred) {
+        openDecision(item.callable, item.preferred.entry);
+        return;
+    }
+    selectItem(item.finding || item.node, false);
+}
+
+function renderReviewPlan(model, findings) {
+    const query = state.query.toLowerCase();
+    const plan = buildReviewPlan(model, state.payload?.decision_map, state.payload?.test_run, findings)
+        .filter((item) => !query || `${item.title} ${item.path || ""} ${item.reasons.join(" ")}`.toLowerCase().includes(query));
+    const view = el("div", "collection-list review-plan");
+    const intro = el("section", "review-plan-intro");
+    const introCopy = el("div", "");
+    introCopy.append(
+        el("strong", "", "Review highest-risk unverified changes first"),
+        el("p", "muted", "Priority combines rule-based impact, changed lines, caller reach, and the strongest available test evidence. It updates after linked tests run."),
+    );
+    intro.append(introCopy);
+    if (plan.length) {
+        const start = el("button", "review-next", "Review next");
+        start.type = "button";
+        start.addEventListener("click", () => openReviewPlanItem(plan[0]));
+        intro.append(start);
+    }
+    view.append(intro);
+    if (!plan.length) {
+        view.append(el("p", "collection-empty", "No risk-ranked changes match this filter."));
+        elements.graph.replaceChildren(view);
+        return;
+    }
+    for (const [index, item] of plan.entries()) {
+        const row = el("button", "review-plan-row");
+        row.type = "button";
+        row.dataset.reviewId = item.id;
+        const copy = el("span", "review-plan-copy");
+        const heading = el("span", "review-plan-heading");
+        heading.append(el("strong", "", item.title), el("b", "impact-score", `Priority ${item.score}/100`));
+        copy.append(heading);
+        if (item.path) copy.append(el("span", "review-plan-path", `${item.path}${item.line ? `:${item.line}` : ""}`));
+        const reasons = el("span", "review-plan-reasons");
+        for (const reason of item.reasons) reasons.append(el("span", "", reason));
+        copy.append(reasons);
+        const proof = el("span", "review-plan-proof");
+        if (item.evidence.untested) proof.append(el("span", "proof-untested", `${item.evidence.untested} untested`));
+        if (item.evidence.inferred) proof.append(el("span", "proof-inferred", `${item.evidence.inferred} inferred`));
+        if (item.evidence.confirmed) proof.append(el("span", "proof-confirmed", `${item.evidence.confirmed} confirmed`));
+        if (proof.childElementCount) copy.append(proof);
+        row.append(el("span", "review-rank", String(index + 1)), copy, el("span", "review-plan-open", "Review →"));
+        row.addEventListener("click", () => openReviewPlanItem(item));
+        view.append(row);
+    }
+    elements.graph.replaceChildren(view);
 }
 
 function collectionItems(model, mode) {
@@ -2897,10 +2973,17 @@ function render() {
     elements.packages.previousElementSibling?.classList.toggle("hidden", !hasPackageChanges);
 
     const parent = state.stack.at(-1);
-    document.querySelector(".workspace").classList.toggle("package-mode", state.mode === "packages");
+    const workspace = document.querySelector(".workspace");
+    workspace.classList.toggle("package-mode", state.mode === "packages");
+    workspace.classList.toggle("walkthrough-mode", state.mode === "walkthrough");
     elements.zoom_out.disabled = state.mode === "graph" && state.stack.length === 0;
     elements.zoom_out.title = state.mode !== "graph" ? "Back to architecture" : parent ? `Back from ${parent.name}` : "Already at architecture level";
-    if (state.mode === "graph") {
+    elements.zoom_out.textContent = state.mode === "walkthrough" ? "Architecture" : "← Back";
+    if (state.mode === "walkthrough") {
+        elements.level_label.textContent = "REVIEW PLAN";
+        elements.graph_title.textContent = "Risk-first walkthrough";
+        renderReviewPlan(model, groupedObservations);
+    } else if (state.mode === "graph") {
         elements.level_label.textContent = parent ? (parent.kind === "component" ? "MODULES" : "SYMBOLS") : "ARCHITECTURE";
         elements.graph_title.textContent = parent ? parent.name : "Structural change map";
         const query = state.query.toLowerCase();
@@ -3156,7 +3239,7 @@ function resetReviewNavigation() {
     state.briefIntent = null;
     state.briefIntentKey = null;
     state.stack = [];
-    state.mode = "graph";
+    state.mode = "walkthrough";
     state.areaGroup = null;
     state.appliedServerSelection = null;
     state.sourceHistory = { entries: [], index: -1, pending: -1 };
