@@ -177,6 +177,26 @@ main { width: 100%; max-width: none; padding: 20px 20px 36px; }
 .progress-actions #cancel-analysis { width: auto; padding: 4px 10px; font-size: 12px; white-space: nowrap; color: var(--cp-danger); }
 .progress-actions #cancel-analysis:hover:not(:disabled) { background: var(--cp-danger); border-color: var(--cp-danger); color: var(--cp-accent-fg); }
 .source-context-notice { margin: 0; padding: 8px 16px; }
+.source-risk {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--cp-border);
+  background: var(--cp-surface-soft);
+}
+.source-risk-heading { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.source-risk-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8125rem; }
+.source-risk-reasons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.source-risk-reasons span {
+  padding: 2px 7px;
+  border: 1px solid var(--cp-border);
+  border-radius: 12px;
+  color: var(--cp-text-muted);
+  font-size: .6875rem;
+  white-space: nowrap;
+}
 .worktree-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .worktree-notice.flash { margin: 0 0 16px; }
 .worktree-notice > span { min-width: 0; overflow-wrap: anywhere; }
@@ -1174,7 +1194,9 @@ main { padding: 16px 20px 32px; }
 @media (max-width: 900px) {
   .source-body, .source-body:not(:has(.source-side > aside:not(.hidden))) { display: flex; flex-direction: column; }
   .source-body > .code-view { flex: 1 1 0; }
-  .source-side { order: -1; flex: 0 1 auto; max-height: 42%; border-left: 0; border-bottom: 1px solid var(--cp-border); }
+  .source-side { order: 0; flex: 0 1 auto; max-height: 38%; border-top: 1px solid var(--cp-border); border-left: 0; }
+  .source-risk { align-items: flex-start; flex-direction: column; gap: 6px; padding: 7px 10px; }
+  .source-risk-reasons { justify-content: flex-start; }
 }
 
 .graph-panel > .panel-heading { flex-wrap: wrap; row-gap: 8px; }
@@ -1680,6 +1702,11 @@ html { scrollbar-gutter: stable; }
 .decisions-callable { margin: 8px 0 4px; font: 600 12px/1.4 Consolas, "Courier New", Courier, monospace; overflow-wrap: anywhere; }
 .decisions-same { margin: 0 0 4px; font-size: 12px; }
 .source-decisions > p.muted { margin: 0; font-size: 12px; }
+.source-verification { margin-bottom: 8px; padding: 8px; gap: 7px; }
+.source-verification-summary { color: var(--cp-text-muted); font-size: 12px; }
+.source-verification .verification-run { gap: 6px; }
+.source-verification .verification-status { font-size: 11px; line-height: 1.4; }
+.source-verification .verification-command { font-size: 11px; }
 
 /* Tiles with no changes recede but stay clickable */
 .metric.metric-empty { border-color: var(--cp-border); background: var(--cp-surface-soft); box-shadow: none; }

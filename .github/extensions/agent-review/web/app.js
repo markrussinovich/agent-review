@@ -43,7 +43,7 @@ const elements = Object.fromEntries([
     "status", "refresh", "cancel-analysis", "analysis-cancelled", "source-context-notice", "connection-notice", "reconnect", "worktree-notice", "worktree-notice-text", "worktree-reanalyze", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "rail-resize",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail-toggle", "detail", "detail-close", "source-panel", "source-title",
-    "source-provenance", "source-decisions", "source-annotation", "source-close", "source", "source-ruler", "source-back", "source-forward",
+    "source-provenance", "source-decisions", "source-annotation", "source-risk", "source-close", "source", "source-ruler", "source-back", "source-forward",
     "session-history-panel", "session-history-title", "session-history-meta", "session-history-close", "session-transcript",
     "custom-analyses", "custom-results", "custom-manage", "prompt-manager", "prompt-manager-close",
     "change-repository", "repository-picker", "repository-picker-close", "repository-picker-error",
@@ -1706,6 +1706,7 @@ function renderSource({ preserveScroll = false, focusGap = null } = {}) {
         node.id === (state.selected?.node_id || state.selected?.id))?.path;
     if (annotation && selectedPath === state.source.path) renderAnnotation(state.selected, annotation);
     else elements.source_annotation.classList.add("hidden");
+    renderSourceRisk();
     renderSourceDecisions();
     renderProvenance();
     document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === state.sourceTab));
@@ -2182,32 +2183,44 @@ function testPlanFor(generation) {
             if (state.testPlan?.generation !== generation) return;
             state.testPlan = { generation, plan };
             if (state.mode === "decisions") render();
+            if (!elements.source_panel.classList.contains("hidden")) {
+                state.sourceDecisionsKey = null;
+                renderSourceDecisions();
+            }
         }).catch((error) => { state.testPlan = { generation, plan: { available: false, reason: error.message } }; });
     }
     return null;
 }
 
-function renderVerificationBar(map) {
+function renderVerificationBar(map, { compact = false, callables = null } = {}) {
     const run = state.payload?.test_run;
-    const counts = evidenceCounts(map, run);
-    const bar = el("section", "verification-bar");
-    const filters = el("div", "verification-filters");
-    filters.setAttribute("role", "group");
-    filters.setAttribute("aria-label", "Filter code paths by test evidence");
+    const counts = evidenceCounts(callables ? { callables } : map, run);
+    const bar = el("section", `verification-bar${compact ? " source-verification" : ""}`);
     const total = counts.confirmed + counts.inferred + counts.untested;
-    for (const [key, label, count] of [["all", "All", total], ["untested", "Untested", counts.untested],
-        ["inferred", "Inferred", counts.inferred], ["confirmed", "Confirmed", counts.confirmed]]) {
-        const button = el("button", `evidence-filter evidence-filter-${key}`);
-        button.type = "button";
-        button.append(el("span", "", label), el("b", "", String(count)));
-        button.setAttribute("aria-pressed", String((state.evidenceFilter || "all") === key));
-        button.addEventListener("click", () => {
-            state.evidenceFilter = key;
-            render();
-        });
-        filters.append(button);
+    if (compact) {
+        bar.append(el("p", "source-verification-summary", [
+            counts.untested ? `${counts.untested} untested` : null,
+            counts.inferred ? `${counts.inferred} inferred` : null,
+            counts.confirmed ? `${counts.confirmed} confirmed` : null,
+        ].filter(Boolean).join(" · ") || `${total} paths`));
+    } else {
+        const filters = el("div", "verification-filters");
+        filters.setAttribute("role", "group");
+        filters.setAttribute("aria-label", "Filter code paths by test evidence");
+        for (const [key, label, count] of [["all", "All", total], ["untested", "Untested", counts.untested],
+            ["inferred", "Inferred", counts.inferred], ["confirmed", "Confirmed", counts.confirmed]]) {
+            const button = el("button", `evidence-filter evidence-filter-${key}`);
+            button.type = "button";
+            button.append(el("span", "", label), el("b", "", String(count)));
+            button.setAttribute("aria-pressed", String((state.evidenceFilter || "all") === key));
+            button.addEventListener("click", () => {
+                state.evidenceFilter = key;
+                render();
+            });
+            filters.append(button);
+        }
+        bar.append(filters);
     }
-    bar.append(filters);
     const runner = el("div", "verification-run");
     const payload = state.payload;
     const plan = testPlanFor([payload?.review_generation, Boolean(payload?.worktree_changed), Boolean(payload?.loading),
@@ -2294,6 +2307,43 @@ function renderLinkedTests(map) {
     return section;
 }
 
+function renderSourceRisk() {
+    const panel = elements.source_risk;
+    const model = state.payload?.model;
+    const selected = state.selected;
+    if (!model || !selected || !state.source) {
+        panel.classList.add("hidden");
+        return;
+    }
+    const findings = [
+        ...groupFindings(model.attention || []),
+        ...(state.payload?.generated_observations || []),
+    ];
+    const plan = buildReviewPlan(model, state.payload?.decision_map, state.payload?.test_run, findings);
+    const selectedId = selected.package_id || selected.id;
+    const subjectId = selected.node_id || selected.id;
+    const item = plan.find((candidate) =>
+        candidate.package?.id === selectedId
+        || candidate.node?.id === subjectId
+        || candidate.finding?.id === selectedId);
+    if (!item || (item.path && item.path !== state.source.path && item.kind !== "package")) {
+        panel.classList.add("hidden");
+        return;
+    }
+    panel.replaceChildren();
+    panel.classList.remove("hidden");
+    const heading = el("div", "source-risk-heading");
+    heading.append(
+        el("strong", "", item.finding?.title || item.title),
+        el("b", "impact-score", `Priority ${item.score}/100`),
+    );
+    const reasons = el("div", "source-risk-reasons");
+    for (const reason of item.reasons.filter((reason) => reason !== item.finding?.title)) {
+        reasons.append(el("span", "", reason));
+    }
+    panel.append(heading, reasons);
+}
+
 function renderSourceDecisions() {
     const panel = elements.source_decisions;
     const map = state.payload?.decision_map;
@@ -2325,6 +2375,7 @@ function renderSourceDecisions() {
         panel.append(aiPlaceholder("code-paths-pane", "Extracting code paths…", 2));
         return;
     }
+    if (map.verification) panel.append(renderVerificationBar(map, { compact: true, callables }));
     for (const item of callables) {
         if (callables.length > 1) panel.append(el("p", "decisions-callable", callableName(item)));
         if (!item.entries?.length) {

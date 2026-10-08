@@ -106,8 +106,11 @@ try {
         page.on("pageerror", (error) => errors.push(error.message));
         await page.goto(`${server.url}?scoutTheme=${theme}`);
         await page.locator("#summary .metric").first().waitFor();
+        await page.locator(".review-plan-row").first().waitFor();
+        assert.match(await page.locator(".review-plan-row").first().textContent(), /resolveReference/);
         assert.match(await page.locator(".quality-warning").textContent(), /source-matched LCOV\/Istanbul JSON/);
         assert.doesNotMatch(await page.locator(".quality-warning").textContent(), /Generate coverage\.json or coverage\.xml/);
+        await page.getByRole("button", { name: "Architecture", exact: true }).click();
         assert.ok(await page.locator("#graph .node").count() > 0, "actual structural graph is rendered");
         await page.screenshot({ path: join(artifacts, `node-${theme}-graph.png`), fullPage: true });
         await page.setViewportSize({ width: 560, height: 1000 });
@@ -122,6 +125,9 @@ try {
         await page.locator(`.node[aria-label^="${module.name},"]`).click();
         await page.locator('.node[aria-label^="resolveReference,"]').click();
         await page.waitForFunction(() => /packages\/core\/src\/resolver\.js:\d+/.test(document.querySelector("#source-title")?.textContent || ""));
+        assert.match(await page.locator("#source-risk").textContent(), /Cyclomatic complexity increased.*Priority \d+\/100/);
+        await page.locator("#source-decisions .source-verification").waitFor();
+        assert.match(await page.locator("#source-decisions .source-verification").textContent(), /Run linked tests/);
         await page.locator("#source-close").click();
         await page.getByRole("button", { name: "Architecture", exact: true }).click();
         await page.locator("#summary .metric").filter({ hasText: "Packages" }).click();
