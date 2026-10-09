@@ -154,6 +154,9 @@ Requires a Git repository, Python **3.11+**, Node.js **20+** on PATH, and a
 **github.com only** and require the `gh` CLI and `gh auth login`; private
 repositories also need HTTPS Git credentials (for example, `gh auth setup-git`).
 No separate model API key or Python packages are needed for the analyzer.
+On Windows, the extension uses `py -3` to select an installed Python 3 runtime;
+Python 3.11 specifically is not required when a newer supported version is installed.
+Set `AGENT_REVIEW_PYTHON` to a Python 3.11+ executable path to override discovery.
 
 ### Install
 
