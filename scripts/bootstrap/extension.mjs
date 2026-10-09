@@ -61,7 +61,8 @@ const canvas = createCanvas({
             instance.serverPromise = startSetupServer(() => ({
                 ...progress, message: instance.error ? "Preparation failed. Resolve the error below and retry." : progress.message,
                 error: instance.error, url: instance.url,
-                repository: ctx.input?.repoPath || session.workspacePath || process.cwd(),
+                repository: ctx.input?.repoPath || process.env.COPILOT_WORKSPACE_PATH
+                    || process.env.COPILOT_ROOT_PATH || process.cwd(),
                 source: release.source_commit,
             }), () => launch(instance, ctx)).then((server) => {
                 instance.server = server;

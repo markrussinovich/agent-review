@@ -38,8 +38,8 @@ export function validateRelease(release) {
 export async function runPython(args, options = {}) {
     for (const [command, prefix] of pythonCandidates()) {
         try {
-            return await execute(command, [...prefix, "-B", ...args],
-                { encoding: "utf8", timeout: 120_000, maxBuffer: 1024 * 1024, ...options });
+            return await execute(command, [...prefix, "-I", "-B", ...args],
+                { encoding: "utf8", timeout: 120_000, maxBuffer: 1024 * 1024, cwd: homedir(), ...options });
         } catch (error) {
             if (error.code !== "ENOENT") throw new Error(`Python preparation failed: ${error.stderr || error.message}`, { cause: error });
         }

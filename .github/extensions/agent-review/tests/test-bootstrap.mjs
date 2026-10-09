@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { access, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -143,6 +143,13 @@ test("release validation rejects unpinned URLs and excessive sizes", () => {
         { ...descriptor, url: descriptor.url.replace(commit, "latest") },
         { ...descriptor, sha256: "bad" }, { ...descriptor, bytes: 100_000_000 },
     ]) assert.throws(() => validateRelease(invalid));
+});
+
+test("Python preparation cannot import shadow standard-library modules from the reviewed cwd", async (t) => {
+    const root = await scratch(t);
+    await writeFile(join(root, "zipfile.py"), 'raise RuntimeError("Reviewed project code executed")\n');
+    const { stdout } = await runPython(["-c", 'import zipfile; print(zipfile.ZipFile.__name__)'], { cwd: root });
+    assert.equal(stdout.trim(), "ZipFile");
 });
 
 test("setup serves visible state, error and retry controls without cross-origin mutation", async (t) => {

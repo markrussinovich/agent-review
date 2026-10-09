@@ -195,7 +195,10 @@ The expected checksum is shipped **in the imported loader**, not downloaded
 alongside the ZIP at runtime. No downloaded module is loaded before checksum
 verification. Extraction rejects traversal, symlinks, duplicate/ambiguous
 paths and oversized archives, and only a fully prepared bundle is promoted to
-the cache. This provides integrity relative to the trusted loader; it is not
+the cache. The Python extraction process uses isolated mode and a trusted
+working directory so files in the reviewed repository cannot shadow Python's
+standard library and execute during setup.
+This provides integrity relative to the trusted loader; it is not
 an independent signature against compromise of the repository or publisher.
 
 #### Install from source
