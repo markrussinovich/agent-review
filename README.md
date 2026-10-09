@@ -178,8 +178,12 @@ No `npm ci`, .NET SDK, or manual helper build is needed.
 Python 3.11+, Node.js 20+, and the .NET 10 runtime (for C# reviews) must still be
 installed. First-run preparation also needs HTTPS access to GitHub release
 downloads. The import URL becomes available after the workflow's first
-successful default-branch run. Re-import the loader and reload extensions to
-update; an existing loader stays pinned to its original release.
+successful default-branch run. To update, replace the installed loader with
+the current `dist` loader and reload extensions. The importer refuses an
+existing destination, so remove/uninstall the old loader first when required;
+the runtime cache is stored separately and can be retained. Do not delete
+the Copilot session or its worktree. An existing loader stays pinned to its
+original release.
 
 **Why a release ZIP instead of binaries in `dist`?** The Copilot app's
 repository-folder importer rejects individual files larger than **1,000,000
