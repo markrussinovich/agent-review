@@ -35,6 +35,11 @@ try {
             await page.waitForFunction(() => document.querySelector("#repository").textContent.startsWith("Repository: "));
             assert((await page.locator("#repository").textContent()).includes(repository));
             assert.equal(await page.getAttribute("html", "data-theme"), theme);
+            const override = theme === "light" ? "dark" : "light";
+            await page.evaluate((value) => { document.documentElement.dataset.colorMode = value; }, override);
+            await page.waitForFunction((value) => document.documentElement.dataset.theme === value, override);
+            await page.evaluate((value) => { document.documentElement.dataset.colorMode = value; }, theme);
+            await page.waitForFunction((value) => document.documentElement.dataset.theme === value, theme);
             assert.equal(await page.locator("progress").getAttribute("value"), "25");
             state = { ...state, phase: "extract", message: "Checksum verified. Preparing local extension files..." };
             await page.waitForFunction(() => document.querySelector("#status").textContent.startsWith("Checksum verified."));
