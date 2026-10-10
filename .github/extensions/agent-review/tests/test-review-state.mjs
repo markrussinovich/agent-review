@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ReviewState } from "../review-state.mjs";
+import { buildAnnotationPrompt } from "../ai-prompts.mjs";
 
 test("historical session search times out instead of remaining in loading state", async () => {
     const state = new ReviewState("C:\\repo", {
@@ -77,6 +78,29 @@ test("overview includes bounded saved implementation and test evidence, never li
     assert.match(context.code_context.find((file) => file.path === "tests/test_checker.py").current, /rejects_letters/);
     assert.equal(context.evidence_limits.truncated, true);
     assert.ok(context.code_context.reduce((count, file) => count + file.diff.length + file.current.length, 0) <= 40000);
+});
+
+test("annotation context bounds analyzer warnings and prioritizes the selected path", () => {
+    const state = new ReviewState("C:\\repo");
+    const path = "web-ui/src/components/Sidebar/LLMConfigModal.jsx";
+    state.model = {
+        metadata: {}, summary: {}, changes: [], coverage: { available: false }, evidence: {},
+        edges: [], package_changes: [], attention: [],
+        nodes: [{ id: "function", kind: "function", name: "handleChatGPTConnect", path }],
+        warnings: [
+            ...Array.from({ length: 18_000 }, (_, index) => `vendor-${index}.js: unresolved call ${"x".repeat(200)}`),
+            `${path}:42: unresolved call relevantToSelection()`,
+        ],
+    };
+
+    const context = state.contextFor("function");
+
+    assert.match(context.analysis_quality.warnings[0], /LLMConfigModal/);
+    assert.ok(context.analysis_quality.warnings.length <= 40);
+    assert.ok(context.analysis_quality.omitted_warnings > 17_000);
+    assert.equal(context.analysis_quality.warnings_truncated, true);
+    assert.ok(JSON.stringify(context).length < 15_000);
+    assert.ok(buildAnnotationPrompt(context).length < 20_000);
 });
 
 test("empty worktree, commit and PR reviews skip automatic custom checks and summaries", async () => {

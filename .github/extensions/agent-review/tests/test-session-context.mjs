@@ -103,6 +103,22 @@ test("uses filename mentions as possible attribution without claiming authorship
     assert.deepEqual(findSessionAttribution(context, "src/workflow_service/audit.py"), []);
 });
 
+test("does not attribute a generic filename found only in agent activity", () => {
+    const context = { turns: [{
+        id: "old-task",
+        session_id: "old-task",
+        prompt_event_id: "old-task",
+        started_at: "2026-10-03T11:00:00Z",
+        prompt: "Look into false positives in citation verification.",
+        agent_activity: [{
+            operation: "read",
+            referenced_files: [],
+            summary: "Inspect main.py and verification helpers.",
+        }],
+    }] };
+    assert.deepEqual(findSessionAttribution(context, "main.py"), []);
+});
+
 test("excludes Agent Review internal model requests from attribution", () => {
     const context = buildSessionContext([
         {

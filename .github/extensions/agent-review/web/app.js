@@ -1542,9 +1542,8 @@ function parseDiff(text) {
             while (lines[index]?.startsWith("-") && !lines[index].startsWith("---")) removed.push(lines[index++].slice(1));
             const added = [];
             while (lines[index]?.startsWith("+") && !lines[index].startsWith("+++")) added.push(lines[index++].slice(1));
-            const replacement = added.length > 0;
-            for (const content of removed) rows.push(codeRow(replacement ? "modified" : "delete", oldLine++, "", "−", content));
-            for (const content of added) rows.push(codeRow("modified", "", newLine++, "+", content));
+            for (const content of removed) rows.push(codeRow("delete", oldLine++, "", "−", content));
+            for (const content of added) rows.push(codeRow("add", "", newLine++, "+", content));
             continue;
         } else if (line.startsWith("+")) {
             rows.push(codeRow("add", "", newLine++, "+", line.slice(1)));

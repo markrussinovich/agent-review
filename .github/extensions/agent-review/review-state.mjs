@@ -29,6 +29,32 @@ const extensionRoot = dirname(fileURLToPath(import.meta.url));
 const analyzerPath = join(extensionRoot, "analyzer", "analyze.py");
 export { isTestPath };
 
+function boundedAnalysisWarnings(warnings, path = null, { maxItems = 40, maxCharacters = 12_000 } = {}) {
+    const values = (warnings || []).map(String);
+    const normalizedPath = String(path || "").replaceAll("\\", "/").toLowerCase();
+    const ranked = normalizedPath
+        ? values.map((warning, index) => ({ warning, index, relevant: warning.replaceAll("\\", "/").toLowerCase().includes(normalizedPath) }))
+            .sort((a, b) => Number(b.relevant) - Number(a.relevant) || a.index - b.index)
+            .map((item) => item.warning)
+        : values;
+    const selected = [];
+    let remaining = maxCharacters;
+    let truncated = false;
+    for (const warning of ranked) {
+        if (selected.length >= maxItems || remaining <= 0) break;
+        const text = warning.length > 800 ? `${warning.slice(0, 799)}…` : warning;
+        const clipped = text.slice(0, remaining);
+        selected.push(clipped);
+        remaining -= clipped.length;
+        truncated ||= clipped.length < warning.length;
+    }
+    return {
+        warnings: selected,
+        omitted_warnings: Math.max(0, values.length - selected.length),
+        warnings_truncated: truncated || selected.length < values.length,
+    };
+}
+
 function withTimeout(promise, timeoutMs, message) {
     let timer;
     const timeout = new Promise((_, reject) => {
@@ -1117,7 +1143,7 @@ export class ReviewState {
             subject,
             analysis_quality: {
                 coverage_available: Boolean(this.model.coverage?.available),
-                warnings: this.model.warnings || [],
+                ...boundedAnalysisWarnings(this.model.warnings, subject?.path),
             },
             evidence: Object.fromEntries([...evidenceIds].filter((key) => this.model.evidence?.[key]).map((key) => [key, this.model.evidence[key]])),
             related_edges: relatedEdges.map((candidate) => ({
@@ -1332,7 +1358,7 @@ export class ReviewState {
             decision_map: decisionPromptContext(this.decisionMap, undefined, { run: this.promptTestRun() }),
             analysis_quality: {
                 coverage_available: Boolean(model.coverage?.available),
-                warnings: model.warnings || [],
+                ...boundedAnalysisWarnings(model.warnings, null, { maxItems: 60, maxCharacters: 18_000 }),
                 session_history_error: this.sessionContext?.history_error || this.sessionContext?.error || null,
             },
         };

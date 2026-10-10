@@ -115,6 +115,8 @@ try {
         assert.equal(await page.locator('#source .code-row[data-new-line="200"]').count(), 0, "the region collapses again");
         assert.equal(await page.locator('#source [data-gap="156-286"]').evaluate((row) => row === document.activeElement), true,
             "focus stays on the toggle for keyboard users");
+        assert.match(await page.locator('#source .code-row[data-new-line="151"]').getAttribute("class"), /diff-add/);
+        assert.match(await page.locator('#source .code-row[data-old-line="151"]:not([data-new-line])').getAttribute("class"), /diff-delete/);
 
         await page.locator('.tab[data-tab="current"]').click();
         const ruler = page.locator("#source-ruler");
@@ -134,8 +136,6 @@ try {
             const box = row.getBoundingClientRect();
             return box.top >= view.top && box.bottom <= view.bottom;
         }), "clicking a mark brings that change into view");
-        assert.match(await page.locator('#source .code-row[data-new-line="151"]').getAttribute("class"), /diff-modified/);
-
         await page.click("#source-close");
         assert.equal(await page.locator("#source-panel").isVisible(), false);
         assert.equal(await page.locator(".workspace").evaluate((node) => node.classList.contains("detail-collapsed")), true,

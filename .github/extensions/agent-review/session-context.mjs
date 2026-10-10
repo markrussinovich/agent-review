@@ -226,11 +226,7 @@ export function findSessionAttribution(sessionContext, path, { before = null } =
         const exact = matchingActivity.length > 0;
         const writes = matchingActivity.filter((item) => item.operation === "write").length;
         const reads = matchingActivity.filter((item) => item.operation === "read").length;
-        const searchable = [
-            turn.prompt,
-            ...activity.map((item) => item.summary),
-        ].join(" ").toLowerCase();
-        const mentioned = Boolean(basename && searchable.includes(basename));
+        const mentioned = Boolean(basename && String(turn.prompt || "").toLowerCase().includes(basename));
         if (!exact && !mentioned) continue;
         const authoringMention = mentioned && hasAuthoringIntent(turn.prompt);
         const confidenceScore = Math.max(0.1, Math.min(

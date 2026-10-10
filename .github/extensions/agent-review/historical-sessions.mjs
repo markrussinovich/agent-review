@@ -1,11 +1,16 @@
 import { readdir } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { basename, join, normalize, resolve, sep } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 
 import { CopilotClient, RuntimeConnection } from "@github/copilot-sdk";
 
 import { buildSessionContext, isInternalAgentReviewPrompt } from "./session-context.mjs";
+import {
+    normalizedPath,
+    repositoryRemotes,
+    sessionMatchesRepositoryOrRemote,
+} from "./repository-session-match.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -17,23 +22,12 @@ function withTimeout(promise, timeoutMs, message) {
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-function normalizedPath(value) {
-    return normalize(resolve(String(value || ""))).toLowerCase();
-}
-
-export function sessionMatchesRepository(metadata, repositoryRoots) {
-    const candidate = metadata?.context?.gitRoot || metadata?.context?.workingDirectory;
-    if (!candidate) return false;
-    const path = normalizedPath(candidate);
-    return repositoryRoots.some((root) => path === root || path.startsWith(`${root}${sep}`));
-}
-
-function isUsefulSession(metadata, currentSessionId, repositoryRoots) {
+function isUsefulSession(metadata, currentSessionId) {
     if (!metadata?.sessionId || metadata.sessionId === currentSessionId) return false;
     const directory = String(metadata.context?.workingDirectory || "").replaceAll("\\", "/").toLowerCase();
     if (directory.endsWith("/canvas-catalog-probe")) return false;
     if (isInternalAgentReviewPrompt(metadata.summary)) return false;
-    return sessionMatchesRepository(metadata, repositoryRoots);
+    return true;
 }
 
 export async function managedCopilotPath() {
@@ -80,10 +74,20 @@ export async function loadHistoricalSessionContexts(repoRoot, currentSessionId, 
         return await withTimeout((async () => {
             await client.start();
             const repositoryRoots = await repositoryWorktreeRoots(repoRoot);
-            const sessions = (await client.listSessions())
-                .filter((metadata) => isUsefulSession(metadata, currentSessionId, repositoryRoots))
+            const repositoryRemoteIds = await repositoryRemotes(repoRoot, execFileAsync);
+            const candidates = (await client.listSessions())
+                .filter((metadata) => isUsefulSession(metadata, currentSessionId))
                 .sort((a, b) => new Date(b.modifiedTime).getTime() - new Date(a.modifiedTime).getTime())
-                .slice(0, limit);
+                .slice(0, Math.max(50, limit * 10));
+            const sessions = [];
+            for (const metadata of candidates) {
+                if (await sessionMatchesRepositoryOrRemote(
+                    metadata, repositoryRoots, repositoryRemoteIds, execFileAsync,
+                )) {
+                    sessions.push(metadata);
+                    if (sessions.length >= limit) break;
+                }
+            }
             for (const metadata of sessions) {
                 let historical;
                 try {
