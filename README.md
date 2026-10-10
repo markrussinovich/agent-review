@@ -181,6 +181,12 @@ toolchain and Cargo; Rust is not required for static analysis.
 
 ### Open and use
 
+The canvas follows the Copilot app's ambient light/dark mode and semantic
+surface, text, border, and focus colors, including changes while it is open.
+When opened outside the app, it follows the OS preference instead. Explicit
+`?scoutTheme=light` or `?scoutTheme=dark` URLs retain the GitHub Primer preview
+palette for development and screenshot checks.
+
 1. Start a Copilot session in the repository to review. If the session was
    already open when you installed Agent Review, reload extensions first.
 2. Ask Copilot:
