@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -127,6 +129,23 @@ class NodeAdapterTests(unittest.TestCase):
                                               ".node-runner-fixture-123/package.json",
                                               ".coverage-import-fixture-123/source.ts"}))
             process.assert_not_called()
+
+    def test_compiler_invocation_reports_elapsed_heartbeats_while_work_continues(self):
+        adapter = NodeAdapter()
+        adapter.heartbeat_seconds = 0.01
+        updates = []
+
+        def delayed(*_args, **_kwargs):
+            time.sleep(0.035)
+            return subprocess.CompletedProcess([], 0, "{}", "")
+
+        with patch("node_adapter.shutil.which", return_value="node"), patch(
+            "node_adapter.subprocess.run", side_effect=delayed
+        ):
+            self.assertEqual(adapter._invoke("node-compiler.mjs", {}, updates.append), {})
+
+        self.assertGreaterEqual(len(updates), 1)
+        self.assertEqual(updates, sorted(updates))
 
     def test_snapshot_graph_merges_without_rewriting_foreign_facts_and_serializes_model(self):
         current = {

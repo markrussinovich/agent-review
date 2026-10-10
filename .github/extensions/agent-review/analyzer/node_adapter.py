@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -41,6 +43,7 @@ class NodeAdapter:
     id = "node"
     graph_phase = "node_graph"
     graph_message = "Resolving JavaScript and TypeScript symbols with the TypeScript compiler"
+    heartbeat_seconds = 5
 
     def applies(self, paths: set[str]) -> bool:
         for path in paths:
@@ -57,15 +60,28 @@ class NodeAdapter:
         current = parse_packages(snapshot.current, warnings)
         return {"baseline": baseline, "current": current, "changes": package_diff(baseline, current)}
 
-    def _invoke(self, script: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _invoke(
+        self, script: str, payload: dict[str, Any],
+        on_wait: Callable[[float], None] | None = None,
+    ) -> dict[str, Any]:
         executable = shutil.which("node")
         if not executable:
             raise RuntimeError("Node.js is unavailable; Node analysis is unknown.")
-        result = subprocess.run(
-            [executable, str(Path(__file__).parent.parent / script)],
-            input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8",
-            timeout=180, check=False,
-        )
+        arguments = [executable, str(Path(__file__).parent.parent / script)]
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-review-node") as executor:
+            future = executor.submit(
+                subprocess.run, arguments,
+                input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8",
+                timeout=180, check=False,
+            )
+            started = time.monotonic()
+            while True:
+                try:
+                    result = future.result(timeout=self.heartbeat_seconds)
+                    break
+                except FutureTimeout:
+                    if on_wait:
+                        on_wait(time.monotonic() - started)
         if result.returncode:
             raise RuntimeError(f"{script} failed: {result.stderr.strip() or result.stdout.strip()}")
         report = json.loads(result.stdout)
@@ -89,10 +105,18 @@ class NodeAdapter:
             return
         progress(self.graph_message, 42)
         try:
+            source_count = len({
+                path for path in set(snapshot.baseline) | set(snapshot.current)
+                if (pure := _reviewed_path(path)) and pure.suffix.lower() in EXTENSIONS
+            })
             facts = self._invoke("node-compiler.mjs", {
                 "baseline": _texts(snapshot.baseline), "current": _texts(snapshot.current),
                 "use_cache": snapshot.use_cache,
-            })
+            }, on_wait=lambda elapsed: progress(
+                f"TypeScript compiler is still resolving {source_count:,} saved source "
+                f"file{'s' if source_count != 1 else ''} · {round(elapsed):,}s elapsed",
+                66,
+            ))
             for key in ("symbols", "edges", "evidence", "warnings"):
                 getattr(model, key).extend(facts.get(key, []))
             for key, values in facts.get("aggregates", {}).items():
