@@ -1,0 +1,121 @@
+name: Build and publish extension
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/extensions/agent-review/**"
+      - ".github/workflows/publish-extension.yml"
+      - "scripts/**"
+      - "LICENSE"
+  pull_request:
+    paths:
+      - ".github/extensions/agent-review/**"
+      - ".github/workflows/publish-extension.yml"
+      - "scripts/**"
+      - "LICENSE"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extension-distribution-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Check packaging and runtime routing
+        run: node --test .github/extensions/agent-review/tests/test-distribution.mjs .github/extensions/agent-review/tests/test-bootstrap.mjs .github/extensions/agent-review/tests/test-python-runtime.mjs
+      - name: Build prepared extension
+        run: node scripts/build-distribution.mjs "${{ runner.temp }}/agent-review-dist"
+      - name: Verify bundled analyzers
+        run: node scripts/verify-distribution.mjs "${{ runner.temp }}/agent-review-dist"
+      - name: Package release ZIP and small repo-import loader
+        run: node scripts/build-release-distribution.mjs "${{ runner.temp }}/agent-review-dist" "${{ runner.temp }}/agent-review-release"
+      - name: Verify first-run extraction and offline reuse
+        run: node scripts/verify-release-distribution.mjs "${{ runner.temp }}/agent-review-release"
+      - name: Save distribution
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-review-dist
+          path: ${{ runner.temp }}/agent-review-release
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: agent-review-dist
+          path: ${{ runner.temp }}/agent-review-release
+      - name: Publish pinned release and generated loader branch
+        shell: bash
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/agent-review-release
+          DIST_ROOT: ${{ runner.temp }}/agent-review-published
+          SOURCE_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="agent-review-${SOURCE_SHA}"
+          if gh release view "$tag" --repo "$REPOSITORY" >/dev/null 2>&1; then
+            gh release download "$tag" --repo "$REPOSITORY" \
+              --pattern agent-review.zip --pattern release-manifest.json \
+              --dir "$RELEASE_ROOT" --clobber
+          else
+            gh release create "$tag" --repo "$REPOSITORY" --target "$SOURCE_SHA" \
+              --title "Agent Review ${SOURCE_SHA:0:12}" --prerelease \
+              --notes "Prepared extension bundle. The dist loader pins this source commit and verifies the ZIP's SHA-256 before extraction. Requires Python 3.11+, Node.js 20+, and .NET 10 runtime for C#." \
+              "$RELEASE_ROOT/agent-review.zip" "$RELEASE_ROOT/release-manifest.json"
+          fi
+          node scripts/build-release-distribution.mjs --bootstrap-from \
+            "$RELEASE_ROOT/release-manifest.json" "$DIST_ROOT"
+          auth_key="http.${SERVER_URL}/.extraheader"
+          auth="$(git config --local --get "$auth_key")"
+          cd "$DIST_ROOT"
+          git init --initial-branch=dist
+          git remote add origin "${SERVER_URL}/${REPOSITORY}.git"
+          git config "$auth_key" "$auth"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          existing="$(git ls-remote origin refs/heads/dist)"
+          if [ -n "$existing" ]; then
+            git fetch --depth=1 origin refs/heads/dist
+            git update-ref refs/heads/dist FETCH_HEAD
+          fi
+          git add --all --force
+          if ! git diff --cached --quiet; then
+            git commit -m "Build Agent Review from ${SOURCE_SHA}"
+            git push origin HEAD:refs/heads/dist
+          fi
