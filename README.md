@@ -225,6 +225,12 @@ that location. Content, compiler/extractor and parse configuration invalidate
 facts; semantic compilation, relationships and test links are rebuilt for
 each snapshot. `--no-cache` disables the scan's persistent .NET facts cache.
 
+Each saved C# snapshot supports up to **32 Mi source characters**. The helper's
+separate **128 Mi-character JSON request limit** accommodates both snapshots and
+JSON escaping/metadata overhead; it does not increase the analysis budgets.
+Oversized or invalid requests fail with an error rather than silently dropping
+files. File, project-context, symbol and edge caps report incomplete analysis.
+
 Scanning reads **both saved trees** and never invokes reviewed MSBuild targets,
 restores packages, builds projects, or executes reviewed code. Project XML is
 interpreted conservatively rather than evaluated by MSBuild. Unsupported

@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -47,7 +48,8 @@ namespace AgentReview;
 // verification.tests uses VSTest FQNs for id/full_name, relative csproj for project, and a direct/
 // reachable link. Test contexts are merged across TFMs; test sources/projects are not production
 // decision callables. Property accessors are grouped under the property's documentation ID.
-// Bounds: 32 Mi input characters; 2000 files, 128 project/TFM contexts, 64 Mi context characters,
+// Bounds: 128 Mi request JSON characters; 32 Mi source characters per snapshot;
+// 2000 files, 128 project/TFM contexts, 64 Mi context characters,
 // 20000 symbols and 100000 edges per snapshot; 1000 callables, 256 decisions each, 10000 diff entries; 200 tests,
 // 5 links per entry, 128 nested syntax decision scopes. Exceeding input bounds is an error;
 // analysis caps set limited and warn.
@@ -72,6 +74,8 @@ namespace AgentReview;
 // compilations/relationships are always rebuilt. Bad/unavailable entries fall back to fresh facts.
 internal static class Program
 {
+    internal const int MaxRequestChars = 128 * 1024 * 1024;
+
     internal static readonly JsonSerializerOptions Json = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -90,25 +94,30 @@ internal static class Program
         {
             using var requestFile = args.Length == 2 ? new StreamReader(args[1], detectEncodingFromByteOrderMarks: true) : null;
             var reader = (TextReader?)requestFile ?? Console.In;
-            // Limit the protocol before allocating trees, not merely after parsing JSON.
-            var input = new char[Analyzer.MaxInputChars + 1];
-            var length = 0;
-            while (length < input.Length)
-            {
-                var read = reader.Read(input, length, input.Length - length);
-                if (read == 0) break;
-                length += read;
-            }
-            if (length > Analyzer.MaxInputChars) throw new InvalidDataException("Input exceeds 32 Mi characters.");
-            var request = JsonSerializer.Deserialize<Request>(input.AsSpan(0, length), Json)
+            var request = JsonSerializer.Deserialize<Request>(ReadInput(reader, MaxRequestChars), Json)
                 ?? throw new InvalidDataException("Expected a snapshot request.");
             Console.WriteLine(JsonSerializer.Serialize(Analyzer.Analyze(request), Json));
             return 0;
         }
-        catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException or ArgumentException)
+        catch (Exception error) when (error is JsonException or IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException)
         {
             Console.Error.WriteLine($"agent-review dotnet: {error.Message}");
             return 2;
+        }
+    }
+
+    internal static string ReadInput(TextReader reader, int maxCharacters)
+    {
+        // Bound JSON before deserialization, without allocating the full limit for small requests.
+        var input = new StringBuilder();
+        var buffer = new char[8192];
+        while (true)
+        {
+            var read = reader.Read(buffer, 0, Math.Min(buffer.Length, maxCharacters - input.Length + 1));
+            if (read == 0) return input.ToString();
+            if (read > maxCharacters - input.Length)
+                throw new InvalidDataException($"Request JSON exceeds {maxCharacters / (1024 * 1024)} Mi characters; reduce snapshot scope.");
+            input.Append(buffer, 0, read);
         }
     }
 }

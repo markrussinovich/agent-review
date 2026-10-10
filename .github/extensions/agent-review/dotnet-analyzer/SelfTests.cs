@@ -73,6 +73,17 @@ internal static class SelfTests
     {
         try
         {
+            Check(Program.ReadInput(new StringReader("{}"), 2) == "{}", "request exactly at character limit accepted");
+            Check(Program.ReadInput(new StringReader("{}"), 3) == "{}", "request below character limit accepted");
+            try
+            {
+                Program.ReadInput(new StringReader("{} "), 2);
+                throw new InvalidOperationException("request above character limit accepted");
+            }
+            catch (InvalidDataException) { }
+            var chunkedInput = new string(' ', 8192) + "{}";
+            Check(Program.ReadInput(new StringReader(chunkedInput), chunkedInput.Length) == chunkedInput,
+                "request read across buffer boundary");
             var before = new Dictionary<string, string>
             {
                 ["app/App.csproj"] = Project, ["app/Calculator.cs"] = Source,
