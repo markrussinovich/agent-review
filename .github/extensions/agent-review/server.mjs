@@ -150,6 +150,15 @@ export function startReviewServer(state, options = {}) {
                 }));
                 return;
             }
+            if (req.method === "POST" && pathname === "/api/review-targets/refresh") {
+                const input = await readJson(req);
+                sendJson(res, await listReviewTargets(state.repoRoot, {
+                    mode: input.mode,
+                    page: 0,
+                    refresh: input.mode === "commit",
+                }));
+                return;
+            }
             if (req.method === "GET" && pathname === "/api/custom-prompts") {
                 sendJson(res, { prompts: await state.promptStore().list() });
                 return;

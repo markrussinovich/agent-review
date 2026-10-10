@@ -44,7 +44,7 @@ const state = {
     customOpenKeys: new Set(),
 };
 const elements = Object.fromEntries([
-    "review-target-form", "review-mode", "review-ref", "review-target-label", "repository-identity", "review-more", "review-options-status", "review-picker-notice", "clean-review", "change-brief",
+    "review-target-form", "review-mode", "review-ref", "review-target-label", "repository-identity", "review-list-refresh", "review-more", "review-options-status", "review-picker-notice", "clean-review", "change-brief",
     "status", "refresh", "cancel-analysis", "analysis-cancelled", "source-context-notice", "connection-notice", "reconnect", "worktree-notice", "worktree-notice-text", "worktree-reanalyze", "error", "analysis-progress", "progress-phase", "progress-message", "progress-percent",
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "rail-resize",
     "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail-toggle", "detail", "detail-close", "source-panel", "source-title",
@@ -3388,6 +3388,7 @@ function updateReviewApply() {
     elements.review_mode.disabled = busy;
     elements.review_ref.disabled = busy || Boolean(state.reviewOptionsLoading)
         || elements.review_mode.value === "worktree" || ![...elements.review_ref.options].some((option) => option.value);
+    elements.review_list_refresh.disabled = busy || Boolean(state.reviewOptionsLoading);
     elements.review_more.disabled = busy || Boolean(state.reviewOptionsLoading);
 }
 
@@ -3448,7 +3449,7 @@ function renderReviewPickerNotice() {
     }
 }
 
-async function loadReviewOptions({ append = false, selectedRef = null } = {}) {
+async function loadReviewOptions({ append = false, selectedRef = null, refresh = false } = {}) {
     const epoch = (state.reviewOptionsEpoch || 0) + 1;
     state.reviewOptionsEpoch = epoch;
     const mode = elements.review_mode.value;
@@ -3456,6 +3457,7 @@ async function loadReviewOptions({ append = false, selectedRef = null } = {}) {
     elements.review_ref.classList.remove("hidden");
     elements.review_ref.required = mode !== "worktree";
     elements.review_more.classList.add("hidden");
+    elements.review_list_refresh.classList.toggle("hidden", mode === "worktree");
     elements.review_options_status.textContent = "";
     state.reviewOptionsLoading = mode !== "worktree";
     if (!append) {
@@ -3479,7 +3481,12 @@ async function loadReviewOptions({ append = false, selectedRef = null } = {}) {
     const page = append ? state.reviewOptionsPage + 1 : 0;
     elements.review_options_status.textContent = `Loading ${mode === "commit" ? "commits" : "pull requests"}…`;
     try {
-        const result = await api(`/api/review-targets?mode=${mode}&page=${page}`);
+        const result = refresh
+            ? await api("/api/review-targets/refresh", {
+                method: "POST",
+                body: JSON.stringify({ mode }),
+            })
+            : await api(`/api/review-targets?mode=${mode}&page=${page}`);
         if (epoch !== state.reviewOptionsEpoch) return;
         const existing = new Set([...elements.review_ref.options].map((option) => option.value));
         for (const item of result.items) {
@@ -3506,7 +3513,8 @@ async function loadReviewOptions({ append = false, selectedRef = null } = {}) {
         elements.review_more.textContent = "Load more";
         elements.review_more.classList.toggle("hidden", !result.has_more);
         elements.review_options_status.textContent = hasOptions
-            ? mode === "pr" ? result.repository || "" : ""
+            ? refresh ? `${mode === "commit" ? "Commit" : "Pull request"} list refreshed.`
+                : mode === "pr" ? result.repository || "" : ""
             : mode === "commit" ? "No commits found." : "No pull requests found for this repository.";
     } catch (error) {
         if (epoch !== state.reviewOptionsEpoch) return;
@@ -3540,6 +3548,10 @@ elements.review_ref.addEventListener("change", async () => {
     await openSelectedReview();
 });
 elements.review_more.addEventListener("click", () => loadReviewOptions({ append: state.reviewOptionsRetryAppend ?? true }));
+elements.review_list_refresh.addEventListener("click", () => loadReviewOptions({
+    selectedRef: elements.review_ref.value || null,
+    refresh: true,
+}));
 elements.review_target_form.addEventListener("submit", async (event) => {
     event.preventDefault();
     await openSelectedReview();

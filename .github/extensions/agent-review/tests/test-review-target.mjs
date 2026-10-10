@@ -89,6 +89,8 @@ test("commit list paginates recent history and preserves display metadata", asyn
         const result = await listReviewTargets("C:\\repo", { mode: "commit", page: 2 }, async (command, args) => {
             assert.equal(command, "git");
             assert.ok(args.includes("--skip=60"));
+            assert.ok(args.includes("--branches"));
+            assert.ok(args.includes("--remotes"));
             return { stdout: Array.from({ length: 31 }, (_, index) =>
                 [index.toString(16).padStart(40, "0"), `Feature ${index}`, "Author", "2026-10-04T12:00:00Z", ""].join("\0")).join("") };
         });
@@ -98,6 +100,22 @@ test("commit list paginates recent history and preserves display metadata", asyn
         assert.equal(result.page, 2);
         await assert.rejects(listReviewTargets("C:\\repo", { mode: "commit", page: -1 }), /Invalid review list page/);
     });
+
+test("commit list refresh fetches remotes before listing all branch histories", async () => {
+    const calls = [];
+    const sha = "a".repeat(40);
+    const result = await listReviewTargets("C:\\repo", { mode: "commit", refresh: true }, async (command, args) => {
+        calls.push([command, args]);
+        if (args.at(-1) === "remote") return { stdout: "origin\nupstream\n" };
+        if (args.includes("fetch")) return { stdout: "" };
+        return { stdout: [sha, "New remote commit", "Author", "2026-10-10T08:00:00Z", ""].join("\0") };
+    });
+
+    assert.deepEqual(calls[1][1], ["-C", "C:\\repo", "fetch", "--prune", "--no-tags", "--multiple", "origin", "upstream"]);
+    assert.ok(calls[2][1].includes("--branches"));
+    assert.ok(calls[2][1].includes("--remotes"));
+    assert.equal(result.items[0].ref, sha);
+});
 
     test("PR list is repository scoped and includes open, closed and merged PRs", async () => {
         const calls = [];

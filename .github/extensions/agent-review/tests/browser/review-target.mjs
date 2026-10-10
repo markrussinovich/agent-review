@@ -60,8 +60,20 @@ try {
         assert.equal(await page.locator("#review-ref option").count(), 31);
         assert.match(await page.locator("#review-ref option").first().textContent(), /Choose a commit/);
         assert.match(await page.locator("#review-ref option").nth(1).textContent(), /feature.*Test/);
+        assert.equal(await page.locator("#review-list-refresh").isVisible(), true);
+        const background = (await git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "Background worktree commit")).stdout.trim();
+        await git("branch", `background-${theme}`, background);
+        const refreshResponse = page.waitForResponse((res) =>
+            res.url().endsWith("/api/review-targets/refresh") && res.request().method() === "POST");
+        await page.click("#review-list-refresh");
+        assert.equal((await refreshResponse).status(), 200);
+        await page.waitForFunction((ref) => [...document.querySelector("#review-ref").options]
+            .some((option) => option.value === ref), background);
+        assert.equal(await page.locator("#review-ref").inputValue(), "");
+        assert.match(await page.locator("#review-options-status").textContent(), /Commit list refreshed/);
+        await git("branch", "-D", `background-${theme}`);
         await page.click("#review-more");
-        await page.waitForFunction(() => document.querySelector("#review-ref").options.length === 35);
+        await page.waitForFunction(() => document.querySelector("#review-ref").options.length >= 35);
         assert.equal(await page.locator("#review-ref").inputValue(), "");
         assert.equal(selections, 0, "pagination preserves the placeholder without starting analysis");
         const response = page.waitForResponse((res) => res.url().endsWith("/api/review-target"));
@@ -87,7 +99,7 @@ try {
         await page.waitForFunction(() => document.querySelector("#review-options-status").textContent.includes("GitHub authentication required"));
         assert.equal(await page.locator("#review-ref").isDisabled(), true);
         if (process.env.AGENT_REVIEW_LIVE_PR) {
-            await page.click("#review-more");
+            await page.click("#review-list-refresh");
             await page.waitForFunction(() => !document.querySelector("#review-ref").disabled, null, { timeout: 60_000 });
             const values = await page.locator("#review-ref option").evaluateAll((options) => options.map((option) => option.value).filter(Boolean));
             assert.ok(values.length);
@@ -104,7 +116,10 @@ try {
             await page.route("**/api/review-targets?mode=pr*", (route) => route.fulfill({
                 contentType: "application/json", body: '{"items":[],"has_more":false,"page":0,"repository":"example/repo"}',
             }));
-            await page.click("#review-more");
+            await page.route("**/api/review-targets/refresh", (route) => route.fulfill({
+                contentType: "application/json", body: '{"items":[],"has_more":false,"page":0,"repository":"example/repo"}',
+            }), { times: 1 });
+            await page.click("#review-list-refresh");
             await page.waitForFunction(() => document.querySelector("#review-options-status").textContent.includes("No pull requests found"));
             assert.equal(await page.locator("#review-ref").isDisabled(), true);
         }

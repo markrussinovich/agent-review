@@ -25,7 +25,7 @@ async function pullRequestCommits(git, base, head) {
     });
 }
 
-export async function listReviewTargets(repoRoot, { mode, page = 0 }, run = execute) {
+export async function listReviewTargets(repoRoot, { mode, page = 0, refresh = false }, run = execute) {
     if (!Number.isInteger(page) || page < 0 || page > 10_000) throw new Error("Invalid review list page.");
     const invoke = async (command, args) => {
         const result = await run(command, args, { cwd: repoRoot, encoding: "utf8", timeout: 60_000 });
@@ -33,8 +33,14 @@ export async function listReviewTargets(repoRoot, { mode, page = 0 }, run = exec
     };
     const pageSize = 30;
     if (mode === "commit") {
+        if (refresh) {
+            const remotes = (await invoke("git", ["-C", repoRoot, "remote"])).split(/\r?\n/).filter(Boolean);
+            if (remotes.length) {
+                await invoke("git", ["-C", repoRoot, "fetch", "--prune", "--no-tags", "--multiple", ...remotes]);
+            }
+        }
         const output = await invoke("git", ["-C", repoRoot, "log", `-${pageSize + 1}`, `--skip=${page * pageSize}`,
-            "--format=%H%x00%s%x00%an%x00%cI", "-z", "HEAD"]);
+            "--format=%H%x00%s%x00%an%x00%cI", "-z", "--branches", "--remotes", "HEAD"]);
         const fields = output.split("\0");
         if (fields.at(-1) === "") fields.pop();
         const items = [];
