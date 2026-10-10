@@ -34,7 +34,7 @@ internal sealed class ProjectConfig
                 using var reader = XmlReader.Create(new StringReader(files[path]), new XmlReaderSettings
                 {
                     DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null,
-                    MaxCharactersInDocument = Analyzer.MaxInputChars
+                    MaxCharactersInDocument = Analyzer.MaxSnapshotChars
                 });
                 document = XDocument.Load(reader, LoadOptions.SetLineInfo);
             }

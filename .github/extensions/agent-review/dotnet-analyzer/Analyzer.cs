@@ -35,7 +35,7 @@ internal sealed class Snapshot
 
 internal static class Analyzer
 {
-    internal const int MaxInputChars = 32 * 1024 * 1024;
+    internal const int MaxSnapshotChars = 32 * 1024 * 1024;
     private const int MaxFiles = 2000;
     private const int MaxSymbols = 20000;
     private const int MaxEdges = 100000;
@@ -103,7 +103,7 @@ internal static class Analyzer
             if (normalized.Length == 0 || !result.TryAdd(normalized, content))
                 throw new InvalidDataException($"Duplicate or empty normalized snapshot path: {path}");
             count += content.Length;
-            if (count > MaxInputChars) throw new InvalidDataException("Snapshot source exceeds 32 Mi characters.");
+            if (count > MaxSnapshotChars) throw new InvalidDataException("Snapshot source exceeds 32 Mi characters; reduce snapshot scope.");
         }
         return result;
     }
