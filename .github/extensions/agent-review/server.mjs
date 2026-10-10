@@ -8,6 +8,7 @@ const webRoot = join(dirname(fileURLToPath(import.meta.url)), "web");
 const staticFiles = new Map([
     ["/", "index.html"],
     ["/index.html", "index.html"],
+    ["/theme.js", "theme.js"],
     ["/app.js", "app.js"],
     ["/graph.js", "graph.js"],
     ["/findings.mjs", "findings.mjs"],
@@ -84,7 +85,7 @@ export function startReviewServer(state, options = {}) {
                 res.writeHead(200, {
                     "Content-Type": contentTypes[extname(filename)],
                     "Cache-Control": "no-store",
-                    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; style-src 'self'; script-src 'self' 'sha256-HNjOU2rt1GsFc5zDEQXklLEbjDyKexAo5wKONo5tkTc='; img-src 'self' data:",
+                    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:",
                     "X-Content-Type-Options": "nosniff",
                 });
                 res.end(body);

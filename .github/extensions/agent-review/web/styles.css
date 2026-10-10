@@ -1,4 +1,4 @@
-/* Semantic colors from GitHub Primer primitives 11.10.0, light/dark themes. */
+/* GitHub Primer fallbacks; embedded canvases prefer the host's semantic theme. */
 :root {
   color-scheme: light;
   --cp-bg: #ffffff;
@@ -94,6 +94,43 @@ html[data-theme="dark"] {
   --cp-panel-strong: var(--cp-surface);
   --cp-sheen: rgba(255, 255, 255, 0.04);
   --cp-highlight: #388bfd1a;
+}
+html:is([data-agent-review-theme="host"], [data-color-mode="light"], [data-color-mode="dark"]):not([data-agent-review-theme="override"]),
+html:is([data-agent-review-theme="host"], [data-color-mode="light"], [data-color-mode="dark"]):not([data-agent-review-theme="override"]) body {
+  --cp-bg: var(--background-color-default, #ffffff);
+  --cp-bg-elevated: color-mix(in srgb, var(--background-color-default, #ffffff) 96%, var(--text-color-default, #1f2328));
+  --cp-surface: var(--background-color-default, #ffffff);
+  --cp-surface-soft: var(--cp-bg-elevated);
+  --cp-border: var(--border-color-default, #d1d9e0);
+  --cp-border-strong: var(--border-color-default, #818b98);
+  --cp-text: var(--text-color-default, #1f2328);
+  --cp-text-muted: var(--text-color-muted, #59636e);
+  --cp-text-soft: var(--text-color-muted, #59636e);
+  --cp-accent: var(--color-focus-outline, #0969da);
+  --cp-link: var(--true-color-blue, var(--color-focus-outline, #0969da));
+  --cp-accent-soft: var(--true-color-blue-muted, #ddf4ff);
+  --cp-panel: var(--cp-surface);
+  --cp-panel-strong: var(--cp-surface);
+  background: var(--cp-bg);
+  color: var(--cp-text);
+}
+html:is([data-agent-review-theme="host"], [data-color-mode="light"], [data-color-mode="dark"]):not([data-agent-review-theme="override"])[data-theme="dark"],
+html:is([data-agent-review-theme="host"], [data-color-mode="light"], [data-color-mode="dark"]):not([data-agent-review-theme="override"])[data-theme="dark"] body {
+  --cp-bg: var(--background-color-default, #0d1117);
+  --cp-bg-elevated: color-mix(in srgb, var(--background-color-default, #0d1117) 96%, var(--text-color-default, #f0f6fc));
+  --cp-surface: var(--background-color-default, #0d1117);
+  --cp-surface-soft: var(--cp-bg-elevated);
+  --cp-border: var(--border-color-default, #3d444d);
+  --cp-border-strong: var(--border-color-default, #656c76);
+  --cp-text: var(--text-color-default, #f0f6fc);
+  --cp-text-muted: var(--text-color-muted, #9198a1);
+  --cp-text-soft: var(--text-color-muted, #9198a1);
+  --cp-accent: var(--color-focus-outline, #4493f8);
+  --cp-link: var(--true-color-blue, var(--color-focus-outline, #4493f8));
+  --cp-accent-soft: var(--true-color-blue-muted, #388bfd1a);
+}
+html[data-agent-review-theme="host"] :focus-visible {
+  outline-color: var(--color-focus-outline, var(--cp-link));
 }
 * { box-sizing: border-box; }
 html {
