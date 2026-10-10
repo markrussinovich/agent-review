@@ -30,7 +30,9 @@ drill-down.
 
 Drill from components to modules, classes, functions, and relationships. Added,
 modified, and removed items have distinct styling; graph edges expose callers
-and dependencies. A ranked attention queue highlights rule-based concerns,
+and dependencies. Resizing relayouts the existing graph without rebuilding the
+review panels, preserving keyboard focus, dragged tiles, and user-controlled
+pan/zoom. A ranked attention queue highlights rule-based concerns,
 with evidence, exact source locations, and persistent **Close / Reopen** controls.
 Snapshot-scoped review dispositions and source-line notes record reviewed,
 follow-up, accepted-risk, and false-positive decisions. Progress survives

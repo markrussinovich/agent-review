@@ -1,4 +1,4 @@
-import { renderGraph } from "/graph.js";
+import { renderGraph, resizeGraph } from "/graph.js";
 import { findingsForNode, findingKey, isFindingClosed, orderFindings } from "/findings.mjs";
 import { resolveSymbolReference } from "/symbol-links.mjs";
 import { packageEvidenceLinks } from "/package-presentation.mjs";
@@ -932,7 +932,7 @@ function setDetailVisible(visible) {
     document.querySelector(".workspace").classList.toggle("detail-collapsed", !visible);
     elements.detail_toggle.textContent = visible ? "Hide details" : "Show details";
     elements.detail_toggle.setAttribute("aria-pressed", String(visible));
-    scheduleResizeRender();
+    detectHostResize();
 }
 
 async function loadSource(query, epoch, preferredTab = null, nav = "reset", extras = {}) {
@@ -3300,32 +3300,13 @@ window.addEventListener("keydown", (event) => {
         elements.zoom_out.click();
     }
 });
-let resizeTimer;
-function scheduleResizeRender() {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => {
-        requestAnimationFrame(() => requestAnimationFrame(() => {
-            if (state.payload?.model) render();
-        }));
-    }, 100);
-}
-function layoutSignature() {
-    const graphRect = elements.graph.getBoundingClientRect();
-    return [
-        document.documentElement.clientWidth,
-        document.documentElement.clientHeight,
-        window.visualViewport?.width ?? window.innerWidth,
-        window.visualViewport?.height ?? window.innerHeight,
-        Math.round(graphRect.width),
-        Math.round(graphRect.height),
-    ].join(":");
-}
-let lastLayoutSignature = layoutSignature();
+let resizeFrame = null;
 function detectHostResize() {
-    const signature = layoutSignature();
-    if (signature === lastLayoutSignature) return;
-    lastLayoutSignature = signature;
-    scheduleResizeRender();
+    if (document.hidden || resizeFrame !== null) return;
+    resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = null;
+        if (!document.hidden) resizeGraph(elements.graph);
+    });
 }
 window.addEventListener("resize", detectHostResize);
 window.addEventListener("focus", detectHostResize);
@@ -3334,9 +3315,8 @@ document.addEventListener("visibilitychange", () => {
 });
 window.visualViewport?.addEventListener("resize", detectHostResize);
 const resizeObserver = new ResizeObserver(detectHostResize);
-resizeObserver.observe(document.documentElement);
-resizeObserver.observe(document.body);
 resizeObserver.observe(elements.graph);
+// Retain the fallback for hosts that miss resize notifications.
 setInterval(detectHostResize, 500);
 
 let railResizeStart = null;
@@ -3346,7 +3326,7 @@ function setRailWidth(width) {
     const value = Math.max(190, Math.min(maximum, width));
     document.documentElement.style.setProperty("--review-rail-width", `${value}px`);
     localStorage.setItem("agent-review:rail-width", String(value));
-    scheduleResizeRender();
+    detectHostResize();
 }
 const savedRailWidth = Number(localStorage.getItem("agent-review:rail-width"));
 if (Number.isFinite(savedRailWidth) && savedRailWidth > 0) setRailWidth(savedRailWidth);

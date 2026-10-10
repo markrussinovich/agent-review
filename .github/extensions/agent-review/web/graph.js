@@ -1,5 +1,6 @@
 const SVG_NS = "http://www.w3.org/2000/svg";
 const savedPositions = new Map();
+const graphResizers = new WeakMap();
 
 function svg(name, attributes = {}) {
     const element = document.createElementNS(SVG_NS, name);
@@ -22,6 +23,11 @@ function wrapLabel(value, max = 24) {
 
 const NODE_CELL_WIDTH = 216;
 const NODE_CELL_HEIGHT = 184;
+
+function graphHeight(nodeCount, width) {
+    const columns = Math.max(1, Math.floor(width / NODE_CELL_WIDTH));
+    return Math.max(440, Math.ceil(nodeCount / columns) * NODE_CELL_HEIGHT);
+}
 
 function layout(nodes, width, height) {
     const columns = Math.min(nodes.length, Math.max(1, Math.floor(width / NODE_CELL_WIDTH)));
@@ -66,6 +72,10 @@ function control(label, title, handler) {
     return button;
 }
 
+export function resizeGraph(container) {
+    graphResizers.get(container.querySelector(":scope > svg.graph-canvas"))?.();
+}
+
 export function renderGraph(container, nodes, edges, onSelect) {
     container.replaceChildren();
     if (!nodes.length) {
@@ -75,9 +85,8 @@ export function renderGraph(container, nodes, edges, onSelect) {
         container.append(empty);
         return;
     }
-    const width = Math.max(container.clientWidth || 320, 320);
-    const columns = Math.max(1, Math.floor(width / NODE_CELL_WIDTH));
-    const height = Math.max(440, Math.ceil(nodes.length / columns) * NODE_CELL_HEIGHT);
+    let width = Math.max(container.clientWidth || 320, 320);
+    let height = graphHeight(nodes.length, width);
     const root = svg("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", class: "graph-canvas" });
     const defs = svg("defs");
     const marker = svg("marker", {
@@ -90,6 +99,7 @@ export function renderGraph(container, nodes, edges, onSelect) {
     const viewport = svg("g", { class: "graph-viewport" });
     root.append(viewport);
     const positions = layout(nodes, width, height);
+    const nodeGroups = new Map();
     const nodeIds = new Set(nodes.map((node) => node.id));
     const edgeRecords = [];
     const highlightEdges = (nodeId) => {
@@ -104,6 +114,7 @@ export function renderGraph(container, nodes, edges, onSelect) {
     if (nodes.length > 24) root.classList.add("graph-dense");
     const transform = { x: 0, y: 0, scale: 1 };
     let activeDrag = null;
+    let autoFit = true;
 
     const updateTransform = () => {
         viewport.setAttribute("transform", `translate(${transform.x} ${transform.y}) scale(${transform.scale})`);
@@ -127,6 +138,7 @@ export function renderGraph(container, nodes, edges, onSelect) {
         return point.matrixTransform(root.getScreenCTM().inverse());
     };
     const zoomAt = (factor, point = { x: width / 2, y: height / 2 }) => {
+        autoFit = false;
         const next = Math.max(.25, Math.min(3, transform.scale * factor));
         transform.x = point.x - (point.x - transform.x) * (next / transform.scale);
         transform.y = point.y - (point.y - transform.y) * (next / transform.scale);
@@ -134,6 +146,7 @@ export function renderGraph(container, nodes, edges, onSelect) {
         updateTransform();
     };
     const fit = () => {
+        autoFit = true;
         const values = [...positions.values()];
         const minX = Math.min(...values.map((item) => item.x)) - 112;
         const maxX = Math.max(...values.map((item) => item.x)) + 112;
@@ -228,6 +241,7 @@ export function renderGraph(container, nodes, edges, onSelect) {
         group.addEventListener("blur", () => highlightEdges(null));
         group.addEventListener("keydown", (event) => event.key === "Enter" && onSelect(node));
         viewport.append(group);
+        nodeGroups.set(node.id, group);
     }
 
     let panStart = null;
@@ -242,7 +256,10 @@ export function renderGraph(container, nodes, edges, onSelect) {
             const current = pointForEvent(event);
             const dx = (current.x - activeDrag.last.x) / transform.scale;
             const dy = (current.y - activeDrag.last.y) / transform.scale;
-            if (Math.abs(dx) + Math.abs(dy) > 1) activeDrag.group.dataset.dragMoved = "true";
+            if (Math.abs(dx) + Math.abs(dy) > 1) {
+                activeDrag.group.dataset.dragMoved = "true";
+                autoFit = false;
+            }
             activeDrag.point.x += dx;
             activeDrag.point.y += dy;
             activeDrag.last = current;
@@ -254,6 +271,7 @@ export function renderGraph(container, nodes, edges, onSelect) {
             return;
         }
         if (!panStart || !root.hasPointerCapture(event.pointerId)) return;
+        autoFit = false;
         const current = pointForEvent(event);
         transform.x += current.x - panStart.x;
         transform.y += current.y - panStart.y;
@@ -268,12 +286,21 @@ export function renderGraph(container, nodes, edges, onSelect) {
             completedDrag.group.dataset.dragMoved = "false";
             activeDrag = null;
             root.releasePointerCapture(event.pointerId);
+            resizeGraph(container);
             if (!moved) onSelect(completedDrag.node);
             return;
         }
         panStart = null;
         root.releasePointerCapture(event.pointerId);
         root.classList.remove("panning");
+        resizeGraph(container);
+    });
+    root.addEventListener("pointercancel", () => {
+        activeDrag?.group.classList.remove("dragging");
+        activeDrag = null;
+        panStart = null;
+        root.classList.remove("panning");
+        resizeGraph(container);
     });
     root.addEventListener("wheel", (event) => {
         event.preventDefault();
@@ -292,4 +319,19 @@ export function renderGraph(container, nodes, edges, onSelect) {
     controls.append(hint);
     container.append(root, controls);
     fit();
+    graphResizers.set(root, () => {
+        const measuredWidth = container.clientWidth;
+        if (!measuredWidth || activeDrag || panStart) return;
+        const nextWidth = Math.max(measuredWidth, 320);
+        if (nextWidth === width) return;
+        width = nextWidth;
+        height = graphHeight(nodes.length, width);
+        root.setAttribute("viewBox", `0 0 ${width} ${height}`);
+        for (const [id, point] of layout(nodes, width, height)) {
+            Object.assign(positions.get(id), point);
+            nodeGroups.get(id).setAttribute("transform", `translate(${point.x} ${point.y})`);
+        }
+        edgeRecords.forEach(updateEdge);
+        if (autoFit) fit();
+    });
 }
