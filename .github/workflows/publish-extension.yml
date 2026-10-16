@@ -5,12 +5,14 @@ on:
     branches: [main]
     paths:
       - ".github/extensions/agent-review/**"
+      - ".github/plugin/**"
       - ".github/workflows/publish-extension.yml"
       - "scripts/**"
       - "LICENSE"
   pull_request:
     paths:
       - ".github/extensions/agent-review/**"
+      - ".github/plugin/**"
       - ".github/workflows/publish-extension.yml"
       - "scripts/**"
       - "LICENSE"
@@ -25,6 +27,8 @@ concurrency:
 
 jobs:
   cli-discovery:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -32,12 +36,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "20"
+          node-version-file: .node-version
       - name: Check app-managed Copilot discovery
         run: >-
           node --test
@@ -47,6 +51,8 @@ jobs:
           .github/extensions/agent-review/tests/test-review-state.mjs
 
   build:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -54,13 +60,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "20"
-      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+          node-version-file: .node-version
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: "10.0.x"
       - name: Check packaging and runtime routing
@@ -71,13 +77,13 @@ jobs:
         run: node scripts/build-distribution.mjs "${{ runner.temp }}/agent-review-dist"
       - name: Verify bundled analyzers
         run: node scripts/verify-distribution.mjs "${{ runner.temp }}/agent-review-dist"
-      - name: Package release ZIP and small repo-import loader
+      - name: Package release ZIP and native plugin with folder-import loader
         run: node scripts/build-release-distribution.mjs "${{ runner.temp }}/agent-review-dist" "${{ runner.temp }}/agent-review-release"
-      - name: Verify first-run extraction and offline reuse
+      - name: Verify plugin discovery, first-run extraction, and offline reuse
         run: node scripts/verify-release-distribution.mjs "${{ runner.temp }}/agent-review-release"
       - name: Save distribution
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agent-review-dist
           path: ${{ runner.temp }}/agent-review-release
@@ -93,15 +99,15 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "20"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+          node-version-file: .node-version
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: agent-review-dist
           path: ${{ runner.temp }}/agent-review-release
-      - name: Publish pinned release and generated loader branch
+      - name: Publish pinned release and generated plugin branch
         shell: bash
         env:
           RELEASE_ROOT: ${{ runner.temp }}/agent-review-release
