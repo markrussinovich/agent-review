@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { ensureBundle, extractBundle, runPython, validateRelease } from "../../../../scripts/bootstrap/runtime.mjs";
 import { startSetupServer } from "../../../../scripts/bootstrap/setup-server.mjs";
-import { buildBootstrap } from "../../../../scripts/build-release-distribution.mjs";
+import { SEMVER, buildBootstrap, pluginVersion } from "../../../../scripts/build-release-distribution.mjs";
 import { canvasDefinition } from "../canvas-definition.mjs";
 
 const source = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -17,6 +17,8 @@ function release(bytes) {
         url: `https://github.com/octo/review/releases/download/agent-review-${commit}/agent-review.zip`,
         bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
 }
+const sourceMarketplace = async () => JSON.parse(await readFile(new URL("../../../plugin/marketplace.json", import.meta.url), "utf8"));
+const pluginTemplate = async () => JSON.parse(await readFile(new URL("../../../../scripts/bootstrap/plugin.json", import.meta.url), "utf8"));
 async function scratch(t) {
     const directory = await mkdtemp(join(tmpdir(), "agent-review-bootstrap-test-"));
     t.after(() => rm(directory, { recursive: true, force: true }));
@@ -56,6 +58,82 @@ test("loader fits import limits and pins the release checksum and commit", async
     const { canvasDefinition: loaderCanvas } = await import(pathToFileURL(join(extension, "canvas-definition.mjs")).href);
     assert.deepEqual(loaderCanvas, canvasDefinition);
     assert.deepEqual(loaderCanvas.inputSchema.type, ["object", "null"]);
+});
+
+test("source marketplace installs the prepared dist plugin with the template's metadata", async () => {
+    const marketplace = await sourceMarketplace();
+    const plugin = await pluginTemplate();
+    assert.equal(marketplace.name, "agent-review-plugins");
+    assert.equal(marketplace.plugins.length, 1);
+    const [entry] = marketplace.plugins;
+    assert.match(entry.source.repo, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
+    assert.deepEqual(entry.source, { source: "github", repo: entry.source.repo, ref: "dist" });
+    for (const field of ["name", "description", "author", "license", "keywords"]) {
+        assert.deepEqual(entry[field], plugin[field], field);
+    }
+    assert.equal(entry.repository, `https://github.com/${entry.source.repo}`);
+    assert.equal(entry.homepage, entry.repository);
+    assert.equal(entry.version, undefined, "Only the generated dist catalog knows the current release version.");
+});
+
+test("native plugin discovers the same loader as folder imports and retains licenses", async (t) => {
+    const root = await scratch(t);
+    const output = join(root, "plugin");
+    const descriptor = release(Buffer.from("zip"));
+    const extension = await buildBootstrap(descriptor, output);
+    const plugin = JSON.parse(await readFile(join(output, "plugin.json"), "utf8"));
+    assert.equal(plugin.name, "agent-review");
+    assert.equal(plugin.version, `${(await pluginTemplate()).version}+${commit.slice(0, 7)}`);
+    assert.equal(plugin.license, "MIT");
+    assert.equal(plugin.repository, "https://github.com/octo/review");
+    assert.equal(plugin.homepage, plugin.repository);
+    assert.deepEqual(plugin.extensions, [".github/extensions"]);
+    assert.equal(join(output, plugin.extensions[0], plugin.name), extension);
+    assert.equal(JSON.parse(await readFile(join(extension, "copilot-extension.json"), "utf8")).name, plugin.name);
+    assert.deepEqual(JSON.parse(await readFile(join(extension, "release-manifest.json"), "utf8")), descriptor);
+    assert.equal(await readFile(join(output, "LICENSE"), "utf8"), await readFile(join(extension, "LICENSE"), "utf8"));
+    assert.match(await readFile(join(extension, "extension.mjs"), "utf8"), /from "\.\/runtime\.mjs"/);
+    await assert.rejects(access(join(extension, "node_modules")), { code: "ENOENT" });
+    const marketplace = JSON.parse(await readFile(join(output, ".github", "plugin", "marketplace.json"), "utf8"));
+    const catalog = await sourceMarketplace();
+    assert.equal(marketplace.name, catalog.name);
+    assert.deepEqual(marketplace.owner, catalog.owner, "The generated catalog keeps the curated owner.");
+    assert.deepEqual(marketplace.plugins, [{
+        name: plugin.name, description: plugin.description, version: plugin.version, author: plugin.author,
+        homepage: "https://github.com/octo/review", repository: "https://github.com/octo/review",
+        license: plugin.license, keywords: plugin.keywords, source: "./",
+    }]);
+});
+
+test("each release stamps its short source commit into a SemVer plugin version without changing existing loaders", async (t) => {
+    const root = await scratch(t);
+    const { version } = await pluginTemplate();
+    const first = release(Buffer.from("first"));
+    const nextCommit = "b".repeat(40);
+    const next = { ...release(Buffer.from("next")), source_commit: nextCommit,
+        url: first.url.replace(commit, nextCommit) };
+    for (const [name, descriptor] of [["first", first], ["next", next]]) {
+        const output = join(root, name);
+        const extension = await buildBootstrap(descriptor, output);
+        const plugin = JSON.parse(await readFile(join(output, "plugin.json"), "utf8"));
+        assert.equal(plugin.version, `${version}+${descriptor.source_commit.slice(0, 7)}`);
+        assert.equal(SEMVER.exec(plugin.version)?.[5], descriptor.source_commit.slice(0, 7));
+        assert.deepEqual(JSON.parse(await readFile(join(extension, "release-manifest.json"), "utf8")), descriptor);
+    }
+    assert.deepEqual(JSON.parse(await readFile(join(root, "first", ".github", "extensions", "agent-review",
+        "release-manifest.json"), "utf8")), first);
+    await assert.rejects(buildBootstrap(next, join(root, "first")), { code: "EEXIST" });
+});
+
+test("plugin versions are valid SemVer and invalid template versions are rejected", () => {
+    for (const valid of ["1.0.0-alpha+001", "1.0.0+20130313144700", "1.0.0-beta+exp.sha.5114f85"]) {
+        assert.match(valid, SEMVER, valid);
+    }
+    assert.equal(pluginVersion("0.1.0", "f3da8f022109864630564ba3987ba210342006ae"), "0.1.0+f3da8f0");
+    assert.equal(pluginVersion("2.1.0-beta.1", commit), "2.1.0-beta.1+aaaaaaa");
+    for (const template of ["", "1.0", "v1.0.0", "01.0.0", "1.0.0+local", "1.0.0 "]) {
+        assert.throws(() => pluginVersion(template, commit), /not valid SemVer/, JSON.stringify(template));
+    }
 });
 
 test("first use verifies and extracts once; subsequent use works without network access", async (t) => {

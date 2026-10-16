@@ -1,0 +1,33 @@
+{
+  "name": "agent-review-plugins",
+  "owner": {
+    "name": "markrussinovich"
+  },
+  "metadata": {
+    "description": "Agent Review for GitHub Copilot Canvas.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "agent-review",
+      "description": "Review agent-made changes with architecture, code paths, findings, and test evidence in a Copilot Canvas.",
+      "author": {
+        "name": "Mark Russinovich",
+        "url": "https://github.com/markrussinovich"
+      },
+      "homepage": "https://github.com/markrussinovich/agent-review",
+      "repository": "https://github.com/markrussinovich/agent-review",
+      "license": "MIT",
+      "keywords": [
+        "code-review",
+        "canvas",
+        "test-evidence"
+      ],
+      "source": {
+        "source": "github",
+        "repo": "markrussinovich/agent-review",
+        "ref": "dist"
+      }
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "name": "agent-review",
+  "description": "Review agent-made changes with architecture, code paths, findings, and test evidence in a Copilot Canvas.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Mark Russinovich",
+    "url": "https://github.com/markrussinovich"
+  },
+  "license": "MIT",
+  "keywords": [
+    "code-review",
+    "canvas",
+    "test-evidence"
+  ],
+  "extensions": [
+    ".github/extensions"
+  ]
+}

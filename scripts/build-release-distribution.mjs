@@ -8,9 +8,23 @@ import { MAX_ARCHIVE_BYTES, runPython, validateRelease } from "./bootstrap/runti
 const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const source = join(repositoryRoot, ".github", "extensions", "agent-review");
 const bootstrap = join(repositoryRoot, "scripts", "bootstrap");
+const catalogFields = ["name", "description", "version", "author", "homepage", "repository", "license", "keywords"];
+// Suggested SemVer 2.0.0 regular expression from https://semver.org; group 5 is the build metadata.
+export const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
+
+// The build metadata is the 7-character short SHA that GitHub shows for the dist commit's source commit.
+export function pluginVersion(templateVersion, sourceCommit) {
+    const version = `${templateVersion}+${sourceCommit.slice(0, 7)}`;
+    if (!SEMVER.test(version)) {
+        throw new Error(`Plugin version "${version}" is not valid SemVer. Set MAJOR.MINOR.PATCH in scripts/bootstrap/plugin.json.`);
+    }
+    return version;
+}
 
 export async function buildBootstrap(release, outputRoot) {
     validateRelease(release);
+    const plugin = JSON.parse(await readFile(join(bootstrap, "plugin.json"), "utf8"));
+    plugin.version = pluginVersion(plugin.version, release.source_commit);
     await mkdir(outputRoot);
     const extension = join(outputRoot, extensionPath);
     await mkdir(extension, { recursive: true });
@@ -31,6 +45,17 @@ export async function buildBootstrap(release, outputRoot) {
     }
     if (bytes > 5_000_000) throw new Error("Bootstrap exceeds the importer's total-size budget.");
     await cp(join(repositoryRoot, "LICENSE"), join(outputRoot, "LICENSE"));
+    const repository = new URL(release.url).pathname.split("/").slice(1, 3).join("/");
+    plugin.repository = `https://github.com/${repository}`;
+    plugin.homepage = plugin.repository;
+    await writeFile(join(outputRoot, "plugin.json"), `${JSON.stringify(plugin, null, 2)}\n`);
+    const marketplace = JSON.parse(await readFile(join(repositoryRoot, ".github", "plugin", "marketplace.json"), "utf8"));
+    marketplace.plugins = [{
+        ...Object.fromEntries(catalogFields.map((field) => [field, plugin[field]])), source: "./",
+    }];
+    const marketplaceRoot = join(outputRoot, ".github", "plugin");
+    await mkdir(marketplaceRoot, { recursive: true });
+    await writeFile(join(marketplaceRoot, "marketplace.json"), `${JSON.stringify(marketplace, null, 2)}\n`);
     return extension;
 }
 
