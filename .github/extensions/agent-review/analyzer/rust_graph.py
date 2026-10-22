@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from bisect import bisect_left
 from collections import defaultdict
 from pathlib import PurePosixPath
 from typing import Any, Iterator
@@ -107,8 +108,10 @@ def _headers(masked: str) -> Iterator[tuple[str, str, int, int, int]]:
         yield match.group("kind"), head, match.start(), match.start("kind"), terminal
 
 
-def _line(source: str, offset: int) -> int:
-    return source.count("\n", 0, offset) + 1
+def _line_counter(source: str):
+    """Return offset -> 1-based line, without rescanning the file for every lookup."""
+    newlines = [match.start() for match in re.finditer("\n", source)]
+    return lambda offset: bisect_left(newlines, offset) + 1
 
 
 def _brace_pairs(masked: str) -> dict[int, int]:
@@ -174,6 +177,8 @@ def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> d
                         for item in dependencies}
     module_aliases: dict[str, str] = {}
     parsed: list[dict[str, Any]] = []
+    # First struct/enum/trait identity per (module, name), in insertion order, for owner lookup.
+    owners: dict[tuple[str, str], str] = {}
 
     for path, raw in sorted(files.items()):
         if not path.lower().endswith(".rs"):
@@ -181,6 +186,7 @@ def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> d
         source = raw.decode("utf-8-sig", errors="replace")
         masked = _mask(source)
         pairs = _brace_pairs(masked)
+        line = _line_counter(source)
         crate, manifest = _crate_for(path, crates)
         module = _module_name(path, crate)
         module_id = stable_id("module", "rust", module, path)
@@ -224,7 +230,7 @@ def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> d
             record = {
                 "id": identifier, "identity": identity, "kind": symbol_kind, "name": name,
                 "qualname": qualname, "module": module, "path": path,
-                "range": {"start_line": _line(source, item_start), "end_line": _line(source, end_offset)},
+                "range": {"start_line": line(item_start), "end_line": line(end_offset)},
                 "signature": signature, "digest": hashlib.sha256(snippet.encode()).hexdigest(),
                 "complexity": 1 + len(re.findall(r"\b(?:if|match|while|for|loop)\b|&&|\|\|", snippet)),
                 "language": "rust", "ecosystem": "cargo", "crate": crate,
@@ -233,11 +239,10 @@ def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> d
             }
             if parent and parent["kind"] in {"impl", "trait"}:
                 owner = parent["name"]
-                owner_identity = next((value["identity"] for value in symbols.values()
-                                       if value["module"] == module and value["name"] == owner
-                                       and value["kind"] in {"struct", "enum", "trait"}), None)
-                record["parent_identity"] = owner_identity
+                record["parent_identity"] = owners.get((module, owner))
             symbols[identity] = record
+            if symbol_kind in {"struct", "enum", "trait"}:
+                owners.setdefault((module, name), identity)
             modules[module]["symbol_ids"].append(identifier)
             item = {"kind": kind, "name": name, "head": head, "start": item_start, "open": open_brace,
                     "end": end_offset, "parent": parent, "identity": identity, "id": identifier}
@@ -252,7 +257,7 @@ def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> d
                                   "symbol_id": identifier, "manifest": manifest, "crate": crate,
                                   "source_hash": hashlib.sha256(source.encode()).hexdigest()})
         parsed.append({"path": path, "source": source, "masked": masked, "module": module,
-                       "module_id": module_id, "items": items, "crate": crate})
+                       "module_id": module_id, "items": items, "crate": crate, "line": line})
 
     for file in parsed:
         local_modules = {
@@ -280,13 +285,13 @@ def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> d
                 target = local_modules.get(root) or module_aliases.get(root)
             if target:
                 raw_edges.append({"kind": kind, "source": file["module_id"], "target": target,
-                                  "path": file["path"], "line": _line(file["source"], use.start()),
+                                  "path": file["path"], "line": file["line"](use.start()),
                                   "detail": value})
         for item in file["items"]:
             if item["kind"] == "mod" and item["open"] is None and item["name"] in local_modules:
                 raw_edges.append({"kind": "imports", "source": file["module_id"],
                                   "target": local_modules[item["name"]], "path": file["path"],
-                                  "line": _line(file["source"], item["start"]),
+                                  "line": file["line"](item["start"]),
                                   "detail": f"mod {item['name']}"})
 
     by_name: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -308,7 +313,7 @@ def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> d
                 if len(candidates) == 1 and candidates[0]["id"] != item["id"]:
                     raw_edges.append({
                         "kind": "calls", "source": item["id"], "target": candidates[0]["id"],
-                        "path": file["path"], "line": _line(file["source"], item["open"] + 1 + call.start()),
+                        "path": file["path"], "line": file["line"](item["open"] + 1 + call.start()),
                         "detail": call.group("path"),
                     })
     return {"symbols": symbols, "modules": modules, "edges": raw_edges, "tests": tests}
