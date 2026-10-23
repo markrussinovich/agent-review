@@ -9,17 +9,17 @@ import hashlib
 import re
 from collections import defaultdict
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Iterator
 
 from review_model import ReviewModel, stable_id
 
 
-ITEM = re.compile(
+ITEM_START = re.compile(
     r"(?m)^[ \t]*(?:#\s*\[[^\n]*\]\s*)*(?:pub(?:\s*\([^)]*\))?\s+)?"
     r"(?:(?:const|async|unsafe)\s+|extern(?:\s+\"[^\"]+\")?\s+)*"
     r"(?P<kind>struct|enum|trait|fn|mod|impl)\s+"
-    r"(?P<head>[^{;\n]+)(?P<terminal>[{;])"
 )
+NAME = re.compile(r"(?:r#)?[A-Za-z_]\w*")
 USE = re.compile(r"(?m)^[ \t]*(?:pub(?:\s*\([^)]*\))?\s+)?use\s+([^;]+);")
 CALL = re.compile(r"(?<![\w])(?P<path>(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*)\s*(?P<macro>!)?\s*\(")
 KEYWORDS = {"if", "while", "for", "loop", "match", "return", "Some", "Ok", "Err",
@@ -73,6 +73,38 @@ def _mask(source: str) -> str:
         else:
             index += 1
     return "".join(chars)
+
+
+def _headers(masked: str) -> Iterator[tuple[str, str, int, int, int]]:
+    """(kind, head, start, kind start, terminal) for items, including signatures rustfmt wraps.
+
+    A header ends at the first `{` or `;` outside parentheses and brackets, so
+    wrapped parameters, `where` clauses and array types such as `[u8; 4]` stay
+    in the signature.
+    """
+    position = 0
+    while match := ITEM_START.search(masked, position):
+        depth, terminal = 0, None
+        for index in range(match.end(), len(masked)):
+            char = masked[index]
+            if char in "([":
+                depth += 1
+            elif char in ")]":
+                depth -= 1
+                if depth < 0:
+                    break
+            elif depth == 0 and char in "{;}":
+                terminal = None if char == "}" else index
+                break
+        head = " ".join(masked[match.end():terminal].split()) if terminal is not None else ""
+        if not head:
+            position = match.start() + 1
+            continue
+        position = terminal + 1
+        # macro_rules! templates such as `fn $name()` name items with metavariables.
+        if match.group("kind") != "impl" and not NAME.match(head):
+            continue
+        yield match.group("kind"), head, match.start(), match.start("kind"), terminal
 
 
 def _line(source: str, offset: int) -> int:
@@ -129,7 +161,7 @@ def _name(kind: str, head: str) -> str:
         value = re.sub(r"<[^>]*>", "", head).strip()
         value = value.split(" where ", 1)[0].strip()
         return value.split(" for ")[-1].strip().split("::")[-1]
-    return re.match(r"(?:r#)?[A-Za-z_]\w*", head.strip()).group(0)
+    return NAME.match(head.strip()).group(0)
 
 
 def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> dict[str, Any]:
@@ -159,17 +191,17 @@ def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> d
         }
         module_aliases[module.split("::")[-1]] = module_id
         items: list[dict[str, Any]] = []
-        for match in ITEM.finditer(masked):
-            kind, head = match.group("kind"), match.group("head").strip()
-            open_brace = match.end("terminal") - 1 if match.group("terminal") == "{" else None
-            end_offset = pairs.get(open_brace, match.end()) if open_brace is not None else match.end()
+        for kind, head, item_start, kind_start, terminal in _headers(masked):
+            header_end = terminal + 1
+            open_brace = terminal if masked[terminal] == "{" else None
+            end_offset = pairs.get(open_brace, header_end) if open_brace is not None else header_end
             parent = None
             for candidate in items:
-                if candidate["open"] is not None and candidate["open"] < match.start() < candidate["end"]:
+                if candidate["open"] is not None and candidate["open"] < item_start < candidate["end"]:
                     if parent is None or candidate["open"] > parent["open"]:
                         parent = candidate
             if kind == "impl":
-                item = {"kind": kind, "name": _name(kind, head), "head": head, "start": match.start(),
+                item = {"kind": kind, "name": _name(kind, head), "head": head, "start": item_start,
                         "open": open_brace, "end": end_offset, "parent": parent}
                 items.append(item)
                 continue
@@ -185,19 +217,19 @@ def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> d
             qualname = "::".join([*reversed(ancestors), name])
             identity = f"rust:{crate}:{module}:{symbol_kind}:{qualname}"
             identifier = stable_id("symbol", identity)
-            signature_end = open_brace if open_brace is not None else match.end()
-            signature = " ".join(source[match.start():signature_end].split())
-            snippet = source[match.start():end_offset + (1 if open_brace is not None else 0)]
-            attributes = source[max(0, source.rfind("\n", 0, match.start() - 1)):match.start()]
+            signature_end = open_brace if open_brace is not None else header_end
+            signature = " ".join(source[item_start:signature_end].split())
+            snippet = source[item_start:end_offset + (1 if open_brace is not None else 0)]
+            attributes = source[max(0, source.rfind("\n", 0, item_start - 1)):item_start]
             record = {
                 "id": identifier, "identity": identity, "kind": symbol_kind, "name": name,
                 "qualname": qualname, "module": module, "path": path,
-                "range": {"start_line": _line(source, match.start()), "end_line": _line(source, end_offset)},
+                "range": {"start_line": _line(source, item_start), "end_line": _line(source, end_offset)},
                 "signature": signature, "digest": hashlib.sha256(snippet.encode()).hexdigest(),
                 "complexity": 1 + len(re.findall(r"\b(?:if|match|while|for|loop)\b|&&|\|\|", snippet)),
                 "language": "rust", "ecosystem": "cargo", "crate": crate,
                 "parent_identity": parent.get("identity") if parent else None,
-                "_start": match.start(), "_open": open_brace, "_end": end_offset, "_source": source,
+                "_start": item_start, "_open": open_brace, "_end": end_offset, "_source": source,
             }
             if parent and parent["kind"] in {"impl", "trait"}:
                 owner = parent["name"]
@@ -207,11 +239,11 @@ def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> d
                 record["parent_identity"] = owner_identity
             symbols[identity] = record
             modules[module]["symbol_ids"].append(identifier)
-            item = {"kind": kind, "name": name, "head": head, "start": match.start(), "open": open_brace,
+            item = {"kind": kind, "name": name, "head": head, "start": item_start, "open": open_brace,
                     "end": end_offset, "parent": parent, "identity": identity, "id": identifier}
             items.append(item)
             if symbol_kind in {"function", "method"}:
-                attribute_source = source[max(0, match.start() - 300):match.start("kind")]
+                attribute_source = source[max(0, item_start - 300):kind_start]
                 is_test = bool(re.search(r"#\s*\[\s*(?:tokio::)?test(?:\s*\([^]]*\))?\s*\]",
                                          attribute_source))
                 record["test"] = is_test
