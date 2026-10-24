@@ -4,5 +4,5 @@
   "type": "module",
   "workspaces": ["packages/*"],
   "scripts": { "test": "node --test packages/core/test/*.test.mjs" },
-  "dependencies": { "lodash": "^4.17.20" }
+  "dependencies": { "lodash": "^4.18.1" }
 }
