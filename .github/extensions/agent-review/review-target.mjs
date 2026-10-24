@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { createAdoClient, listAdoTargets, parseAdoUrl, resolveAdoTarget } from "./ado-provider.mjs";
 
 const execute = promisify(execFile);
 const MAX_MESSAGE = 8000;
@@ -25,7 +26,19 @@ async function pullRequestCommits(git, base, head) {
     });
 }
 
-export async function listReviewTargets(repoRoot, { mode, page = 0, refresh = false }, run = execute) {
+// The existing clone's origin decides whether its PRs come from Azure DevOps.
+async function adoOrigin(repoRoot, run) {
+    let url;
+    try {
+        url = (await run("git", ["-C", repoRoot, "remote", "get-url", "origin"], {
+            encoding: "utf8", timeout: 10_000, windowsHide: true })).stdout.trim();
+    } catch {
+        return null;
+    }
+    return parseAdoUrl(url, { repository: true });
+}
+
+export async function listReviewTargets(repoRoot, { mode, page = 0, refresh = false }, run = execute, options = {}) {
     if (!Number.isInteger(page) || page < 0 || page > 10_000) throw new Error("Invalid review list page.");
     const invoke = async (command, args) => {
         const result = await run(command, args, { cwd: repoRoot, encoding: "utf8", timeout: 60_000 });
@@ -52,6 +65,8 @@ export async function listReviewTargets(repoRoot, { mode, page = 0, refresh = fa
         return { items: items.slice(0, pageSize), has_more: items.length > pageSize, page };
     }
     if (mode === "pr") {
+        const origin = await adoOrigin(repoRoot, run);
+        if (origin) return listAdoTargets(origin, page, options.adoClient || createAdoClient());
         let repository;
         try {
             repository = JSON.parse(await invoke("gh", ["repo", "view", "--json", "nameWithOwner"])).nameWithOwner;
@@ -78,9 +93,10 @@ export async function listReviewTargets(repoRoot, { mode, page = 0, refresh = fa
     throw new Error("Choose Commit or Pull request to list review targets.");
 }
 
-export async function resolveReviewTarget(repoRoot, target, run = execute) {
+export async function resolveReviewTarget(repoRoot, target, run = execute, options = {}) {
     const invoke = async (command, args) => {
-        const result = await run(command, args, { cwd: repoRoot, encoding: "utf8", timeout: 60_000 });
+        const result = await run(command, args, { cwd: repoRoot, encoding: "utf8", timeout: 60_000,
+            windowsHide: true, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" } });
         return result.stdout.trim();
     };
     const git = (...args) => invoke("git", ["-C", repoRoot, ...args]);
@@ -96,8 +112,13 @@ export async function resolveReviewTarget(repoRoot, target, run = execute) {
     }
     if (target.mode === "pr") {
         const value = String(target.ref || "").trim();
+        const ado = parseAdoUrl(value);
+        if (ado) {
+            return resolveAdoTarget(repoRoot, ado, git, {
+                client: options.adoClient || createAdoClient(), remote: await adoOrigin(repoRoot, run) });
+        }
         if (!/^[1-9]\d*$/.test(value) && !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d*\/?$/.test(value)) {
-            throw new Error("Enter a GitHub PR number or https://github.com/owner/repo/pull/number URL.");
+            throw new Error("Enter a GitHub PR number/URL or an Azure DevOps Services PR URL.");
         }
         const pr = JSON.parse(await invoke("gh", ["pr", "view", value, "--json", "number,title,url,baseRefOid,headRefOid,body,author"]));
         if (!/^[a-f0-9]{40}$/i.test(pr.baseRefOid) || !/^[a-f0-9]{40}$/i.test(pr.headRefOid)) {

@@ -7619,8 +7619,8 @@ async function loadReviewOptions({ append = false, selectedRef = null, refresh =
         for (const item of result.items) {
             if (existing.has(item.ref)) continue;
             const date = item.date ? new Date(item.date).toLocaleDateString() : "";
-            const prefix = mode === "commit" ? item.short_sha : `#${item.number} · ${item.status}`;
-            const option = el("option", "", `${prefix} — ${item.title} · ${item.author || "Unknown author"} · ${date}`);
+            const prefix = mode === "commit" ? item.short_sha : `#${item.number} · ${item.status}${item.draft ? " · draft" : ""}`;
+            const option = el("option", "", `${prefix} — ${item.title} · ${item.author || "Unknown author"} · ${item.date_kind ? `${item.date_kind} ` : ""}${date}`);
             option.value = item.ref;
             elements.review_ref.append(option);
         }

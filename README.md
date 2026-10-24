@@ -151,6 +151,11 @@ rejected. A network failure may leave the remote outcome unknown: check the PR
 before preparing another submission. Local and commit reviews remain fully
 usable without creating a PR.
 
+Azure DevOps PR review is **read-only**. Handoff preview explicitly disables
+publishing; Markdown and review-state JSON exports remain available locally.
+Drafted line comments stay local and are included in the exported summary.
+It never posts comments, changes reviewer votes, or changes PR status.
+
 A change brief shows file mix, source/test churn, coverage availability, and the
 originating request. Copilot uses bounded, saved implementation and test excerpts
 to explain behavior changes, suggest a review order, and distinguish demonstrated
@@ -444,9 +449,17 @@ require approval. Checks use isolated, tool-free Copilot sessions and cannot edi
 ## Install and open
 
 Requires a Git repository, Python **3.11+**, Node.js **20+** on PATH, and a
-**GitHub Copilot app with Canvas extension support**. PR reviews support
-**github.com only** and require the `gh` CLI and `gh auth login`; private
+**GitHub Copilot app with Canvas extension support**. GitHub PR reviews support
+**github.com** and require the `gh` CLI and `gh auth login`; private
 repositories also need HTTPS Git credentials (for example, `gh auth setup-git`).
+Read-only Azure DevOps PR reviews support **Azure DevOps Services**
+(`dev.azure.com` and legacy `organization.visualstudio.com` URLs), not
+on-premises Azure DevOps Server. Install Azure CLI and run `az login` in the
+organization's tenant. No Azure DevOps CLI extension or PAT is required.
+Configure Git credentials separately (for example Git Credential Manager);
+API sign-in does not authorize Git fetching. Existing clones may use standard
+ADO HTTPS or SSH remotes. Credential prompts are noninteractive, so complete
+Git sign-in/setup before opening a PR.
 No separate model API key or Python packages are needed for the analyzer.
 On Windows, the extension uses `py -3` to select an installed Python 3 runtime;
 Python 3.11 specifically is not required when a newer supported version is installed.
@@ -828,6 +841,30 @@ Opening Agent Review does not analyze any snapshot. Choose Worktree, Commit, or
 Pull request first. Selecting Worktree starts its analysis immediately; switching
 to Commit or Pull request loads a list, and selecting an item starts that review.
 PR objects are fetched without checking out files or changing your worktree.
+
+The PR list uses the existing local repository's `origin` remote: an Azure DevOps
+Services origin lists its ADO PRs; any other origin keeps the GitHub flow. The
+list is repository-scoped, not an organization-wide inbox. ADO includes active,
+completed, abandoned, and draft PRs; dates are labeled **created** or **closed**,
+not presented as last activity.
+
+To review an ADO PR, open its existing local clone with **Change repository**,
+then choose **Pull request** and a PR.
+Active ADO reviews pin the live target branch commit and compare the latest
+source iteration against its merge base, not the synthetic merge result. Target
+advancement does not require a new source iteration or a refreshed merge
+evaluation. Completed and abandoned PRs retain their evaluated target snapshot.
+Fork source objects are fetched from their own repository. Missing objects,
+incomplete iterations, ambiguous merge bases, and source branches that no longer
+match their iteration produce explicit errors rather than substituting worktree
+content. Files, index, and the checked-out branch stay
+unchanged. This flow does not clone repositories or switch the Copilot workspace.
+
+Use **Finish → Preview / export handoff** to export the reviewed ADO snapshot
+and saved decisions locally. Publishing is unavailable for ADO targets; no
+comments or votes are posted. If access fails, check Azure CLI installation,
+`az login`/tenant selection, organization membership, and repository read
+permissions. If fetching fails, check Git credentials separately.
 
 Worktree selection honors Git ignore rules, including nested/global/local rules
 and negations. Tracked files remain eligible even when ignored; standard generated
