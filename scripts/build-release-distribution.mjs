@@ -31,7 +31,8 @@ export async function buildBootstrap(release, outputRoot) {
     for (const name of ["extension.mjs", "runtime.mjs", "setup-server.mjs"]) {
         await cp(join(bootstrap, name), join(extension, name));
     }
-    for (const name of ["canvas-definition.mjs", "python-runtime.mjs", "copilot-extension.json"]) {
+    for (const name of ["canvas-definition.mjs", "python-runtime.mjs", "managed-runtimes.mjs",
+        "runtime-manifest.json", "copilot-extension.json"]) {
         await cp(join(source, name), join(extension, name));
     }
     await cp(join(source, "web", "styles.css"), join(extension, "styles.css"));

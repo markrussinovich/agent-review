@@ -23,7 +23,7 @@ export async function verifyDistribution(extension) {
     assert(node.symbols.some((symbol) => symbol.name === "run"), "Bundled TypeScript did not analyze the snapshot.");
 
     const helper = join(extension, "dotnet-analyzer", "bin", "Release", "net10.0", "AgentReview.Dotnet.dll");
-    const { stdout } = await execute("dotnet", [helper, "--self-test"], options);
+    const { stdout } = await execute(process.env.AGENT_REVIEW_DOTNET || "dotnet", [helper, "--self-test"], options);
     assert.match(stdout, /PASS:/);
 
     const { pythonCandidates } = await import(pathToFileURL(join(extension, "python-runtime.mjs")));

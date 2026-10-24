@@ -41,6 +41,15 @@ try {
             await page.evaluate((value) => { document.documentElement.dataset.colorMode = value; }, theme);
             await page.waitForFunction((value) => document.documentElement.dataset.theme === value, theme);
             assert.equal(await page.locator("progress").getAttribute("value"), "25");
+            assert.match(await page.locator("body").innerText(), /Node\.js 24\+, Python 3\.14\+, and \.NET 10/);
+            assert.doesNotMatch(await page.locator("body").innerText(), /Requires Python|Install Node.js/);
+            state = { ...state, phase: "runtime", message: "Checking Node.js 24 LTS..." };
+            await page.waitForFunction(() => document.querySelector("#status").textContent === "Checking Node.js 24 LTS...");
+            assert.equal(await page.locator("progress").getAttribute("value"), null);
+            state = { ...state, phase: "download", message: "Downloading isolated Python 3.14 (3.14.8)...",
+                received: 45, total: 100 };
+            await page.waitForFunction(() => document.querySelector("progress").value === 45);
+            assert.equal(await page.locator("progress").getAttribute("aria-label"), "Preparation download");
             state = { ...state, phase: "extract", message: "Checksum verified. Preparing local extension files..." };
             await page.waitForFunction(() => document.querySelector("#status").textContent.startsWith("Checksum verified."));
             assert.equal(await page.locator("progress").getAttribute("value"), null);

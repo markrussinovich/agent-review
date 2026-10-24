@@ -35,9 +35,11 @@ const repository = new URL(release.url).pathname.split("/").slice(1, 3).join("/"
 assert.equal(plugin.repository, `https://github.com/${repository}`);
 assert.equal(plugin.homepage, plugin.repository);
 const { ensureBundle } = await import(pathToFileURL(join(bootstrap, "runtime.mjs")));
+const { prepareRuntimes } = await import(pathToFileURL(join(bootstrap, "managed-runtimes.mjs")));
 const zip = await readFile(join(releaseRoot, "agent-review.zip"));
 const cacheRoot = await mkdtemp(join(tmpdir(), "agent-review-release-check-"));
 try {
+    await prepareRuntimes({ cacheRoot: join(cacheRoot, "tools") });
     let downloads = 0;
     const fetchRelease = async () => { downloads++; return new Response(zip); };
     const directory = await ensureBundle(release, { cacheRoot, fetchRelease });

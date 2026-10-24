@@ -1,10 +1,9 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
+import { installArchive } from "./managed-runtimes.mjs";
 import { pythonCandidates } from "./python-runtime.mjs";
 
 const execute = promisify(execFile);
@@ -44,7 +43,7 @@ export async function runPython(args, options = {}) {
             if (error.code !== "ENOENT") throw new Error(`Python preparation failed: ${error.stderr || error.message}`, { cause: error });
         }
     }
-    throw new Error("First-run preparation requires Python 3.11+. Install Python or set AGENT_REVIEW_PYTHON, then retry.");
+    throw new Error("The prepared Python runtime is unavailable. Reopen Agent Review to prepare Python 3.14, or correct AGENT_REVIEW_PYTHON, then retry.");
 }
 
 const extractScript = `
@@ -80,23 +79,8 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
                 shutil.copyfileobj(source, destination)
 `;
 
-export async function extractBundle(archive, directory) {
-    await runPython(["-c", extractScript, archive, directory]);
-}
-
-async function prepared(directory, release) {
-    let marker;
-    try {
-        marker = JSON.parse(await readFile(join(directory, ".complete.json"), "utf8"));
-    } catch (error) {
-        if (error.code === "ENOENT") return false;
-        throw error;
-    }
-    if (marker.sha256 !== release.sha256 || marker.source_commit !== release.source_commit) {
-        throw new Error(`The cached Agent Review bundle is invalid: ${directory}. Remove that cache directory and retry.`);
-    }
-    for (const path of requiredFiles) await access(join(directory, ...path.split("/")));
-    return true;
+export async function extractBundle(archive, directory, options = {}) {
+    await runPython(["-c", extractScript, archive, directory], options);
 }
 
 export async function ensureBundle(release, {
@@ -104,64 +88,13 @@ export async function ensureBundle(release, {
     fetchRelease = fetch, onProgress = () => {}, signal,
 } = {}) {
     validateRelease(release);
-    const directory = join(cacheRoot, release.sha256);
-    if (await prepared(directory, release)) {
-        onProgress({ phase: "ready", message: "Using the verified local bundle." });
-        return directory;
-    }
-    await mkdir(cacheRoot, { recursive: true });
-    const scratch = await mkdtemp(join(cacheRoot, "prepare-"));
-    const downloadController = new AbortController();
-    const timer = setTimeout(() => downloadController.abort(new Error("Bundle download timed out. Retry preparation.")), 120_000);
-    const abort = () => downloadController.abort(signal.reason);
-    if (signal?.aborted) abort();
-    else signal?.addEventListener("abort", abort, { once: true });
-    try {
-        onProgress({ phase: "download", message: "Downloading the pinned Agent Review bundle...", received: 0, total: release.bytes });
-        const response = await fetchRelease(release.url, { signal: downloadController.signal });
-        if (!response.ok) throw new Error(`Bundle download failed: HTTP ${response.status}. Check network access to GitHub and retry.`);
-        if (!response.body) throw new Error("The GitHub release download returned no bundle.");
-        const chunks = [];
-        const hash = createHash("sha256");
-        let received = 0;
-        for await (const chunk of response.body) {
-            received += chunk.length;
-            if (received > release.bytes) throw new Error("Bundle download exceeds the pinned size.");
-            hash.update(chunk);
-            chunks.push(chunk);
-            onProgress({ phase: "download", message: "Downloading the pinned Agent Review bundle...", received, total: release.bytes });
-        }
-        if (received !== release.bytes || hash.digest("hex") !== release.sha256) {
-            throw new Error("Bundle size or SHA-256 verification failed. No downloaded code was loaded. Retry or reinstall the loader.");
-        }
-        const archive = join(scratch, "agent-review.zip");
-        await writeFile(archive, Buffer.concat(chunks));
-        const expanded = join(scratch, "expanded");
-        await mkdir(expanded);
-        onProgress({ phase: "extract", message: "Checksum verified. Preparing local extension files..." });
-        await extractBundle(archive, expanded);
-        for (const path of requiredFiles) await access(join(expanded, ...path.split("/")));
-        await writeFile(join(expanded, ".complete.json"), JSON.stringify({
-            sha256: release.sha256, source_commit: release.source_commit,
-        }));
-        const deadline = Date.now() + 2_000;
-        while (true) {
-            try {
-                await rename(expanded, directory);
-                break;
-            } catch (error) {
-                if (["EEXIST", "ENOTEMPTY", "EPERM"].includes(error.code) && await prepared(directory, release)) break;
-                // Windows indexers can briefly hold newly extracted assemblies open.
-                if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(error.code)
-                    || Date.now() >= deadline) throw error;
-                await delay(50);
-            }
-        }
-        onProgress({ phase: "ready", message: "Agent Review is prepared. Opening the review..." });
-        return directory;
-    } finally {
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", abort);
-        await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-    }
+    const directory = await installArchive({
+        url: release.url, hash: release.sha256, bytes: release.bytes, label: "Agent Review bundle",
+        directory: join(cacheRoot, release.sha256), marker: { sha256: release.sha256, source_commit: release.source_commit },
+        extract: (archive, target, abort) => extractBundle(archive, target, { signal: abort }),
+        verify: async (root) => { for (const path of requiredFiles) await access(join(root, ...path.split("/"))); },
+        fetchArchive: fetchRelease, onProgress, signal,
+    });
+    onProgress({ phase: "ready", message: "Agent Review is prepared. Opening the review..." });
+    return directory;
 }

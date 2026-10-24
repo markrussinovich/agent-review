@@ -443,14 +443,17 @@ require approval. Checks use isolated, tool-free Copilot sessions and cannot edi
 
 ## Install and open
 
-Requires a Git repository, Python **3.11+**, Node.js **20+** on PATH, and a
+Requires a Git repository and a
 **GitHub Copilot app with Canvas extension support**. PR reviews support
 **github.com only** and require the `gh` CLI and `gh auth login`; private
 repositories also need HTTPS Git credentials (for example, `gh auth setup-git`).
 No separate model API key or Python packages are needed for the analyzer.
-On Windows, the extension uses `py -3` to select an installed Python 3 runtime;
-Python 3.11 specifically is not required when a newer supported version is installed.
-Set `AGENT_REVIEW_PYTHON` to a Python 3.11+ executable path to override discovery.
+Node.js, Python, and .NET do not need to be installed. Agent Review reuses
+Node.js 24+, Python 3.14+, and .NET 10 when present; otherwise it downloads
+pinned, checksum-verified portable copies into its own cache, without
+administrator rights or PATH changes. (Python has no LTS track; 3.14 is the
+current supported release.) Set `AGENT_REVIEW_NODE`, `AGENT_REVIEW_PYTHON`, or
+`AGENT_REVIEW_DOTNET` to use a specific executable.
 
 ### Copilot discovery and troubleshooting
 
@@ -574,10 +577,14 @@ the prepared extension into the user's Copilot tooling cache. The ZIP includes
 locked TypeScript tooling and the compiled Roslyn helper, its dependencies,
 runtime configuration, and licenses. Subsequent opens use the verified local
 bundle without another download. Failures are visible and can be retried.
-No `npm ci`, .NET SDK, or manual helper build is needed.
-Python 3.11+, Node.js 20+, and the .NET 10 runtime (for C# reviews) must still be
-installed. First-run preparation also needs HTTPS access to GitHub release
-downloads. The import URL becomes available after the workflow's first
+No `npm ci`, .NET SDK, runtime installation, or manual helper build is needed.
+Missing runtimes come from nodejs.org, Astral's `python-build-standalone`
+releases, and Microsoft's .NET downloads, are verified against checksums
+shipped in the loader, and are stored under `runtime/tools` in the same cache.
+Automatic setup covers Windows, macOS, and glibc Linux on x64 and ARM64; use
+the executable overrides elsewhere. First-run preparation needs HTTPS access
+to GitHub release downloads and those hosts; afterwards it works offline.
+The import URL becomes available after the workflow's first
 successful default-branch run. The runtime cache is stored separately from
 the loader and survives updates and uninstallation; see
 [Uninstall](#uninstall) to reclaim its space. Do not delete the Copilot
@@ -666,7 +673,7 @@ review state are never automatically retried.
 
 ### C# / .NET tooling and safety
 
-C# reviews additionally require a **.NET 10 runtime** and the prepared Roslyn
+C# reviews additionally use the **.NET 10 runtime** (prepared automatically) and the prepared Roslyn
 helper. The release bundle includes the helper; the following preparation is
 only needed for source installations. With **.NET SDK 10** installed, prepare
 the extension's own trusted tool once (not a project under review):
@@ -683,7 +690,7 @@ Prepare it in a trusted development checkout or a separate owned tooling
 directory, never inside an untrusted repository being reviewed.
 `AGENT_REVIEW_DOTNET` selects the analysis runtime. Missing tooling fails with an
 actionable message; it does not silently fall back to pretend semantics.
-Python-only reviews do not start a compiler or .NET process.
+Python-only reviews do not start the Roslyn helper.
 
 Syntax content facts use a bounded .NET-specific cache (256 entries, 16 MiB
 total, 1 MiB per entry) under `AGENT_REVIEW_CACHE_DIR/dotnet-facts`, or the
@@ -896,7 +903,7 @@ update `owner`, `homepage`, `repository`, and `source.repo` in the
 marketplace file, and the commands under [Install](#install), to match your
 repository.
 
-To reproduce the bundle locally with Node.js 20+ and .NET SDK 10, choose a
+To reproduce the bundle locally with Node.js 24+, Python 3, and .NET SDK 10, choose a
 new output directory outside the source checkout:
 
 ```powershell
@@ -921,7 +928,7 @@ copilot plugin install agent-review@agent-review-plugins
 The plugin loads directly from that folder; start a new session after
 rebuilding it.
 
-The verifier also requires Python 3.11+. Preparation installs only locked
+Preparation installs only locked
 extension dependencies with lifecycle scripts disabled, builds the helper in
 an isolated temporary tooling directory, and excludes tests, fixtures, caches,
 and platform-specific executables. The bundle retains dependency licenses and
@@ -934,7 +941,8 @@ the installed loader is opened. Prepared releases are cached under
 `~/.copilot/agent-review/runtime/...`), not inside the reviewed repository,
 even for project-scoped imports. A prepared bundle can be reused offline;
 the loader does not silently switch to `latest` or fall back to a different
-release. Source installations retain their direct startup behavior.
+release. Source installations prepare the same runtimes before registering
+the canvas.
 The preparation screen reuses the extension's GitHub/Primer theme tokens and
 provides download/extraction status, explicit errors, and a keyboard-accessible
 retry action. Its browser checks can be run with the development browser
@@ -943,6 +951,12 @@ tooling already used by this repository:
 ```powershell
 node .github\extensions\agent-review\tests\browser\bootstrap.mjs
 ```
+
+Runtime pins and checksums live in
+`.github/extensions/agent-review/runtime-manifest.json`; refresh them from each
+vendor's published checksums. `node scripts/verify-managed-runtimes.mjs`
+downloads them with PATH discovery disabled; CI runs it on Windows, macOS,
+and Linux.
 
 ### Rust reviews
 

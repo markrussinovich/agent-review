@@ -52,6 +52,10 @@ jobs:
           .github/extensions/agent-review/tests/test-review-state.mjs
           .github/extensions/agent-review/tests/test-review-progress.mjs
           .github/extensions/agent-review/tests/test-review-handoff.mjs
+      - name: Check isolated runtime preparation
+        run: node --test .github/extensions/agent-review/tests/test-managed-runtimes.mjs .github/extensions/agent-review/tests/test-node-runtime.mjs
+      - name: Verify runtime downloads without installed prerequisites
+        run: node scripts/verify-managed-runtimes.mjs
 
   build:
     permissions:
@@ -135,7 +139,7 @@ jobs:
           else
             gh release create "$tag" --repo "$REPOSITORY" --target "$SOURCE_SHA" \
               --title "Agent Review ${SOURCE_SHA:0:12}" --prerelease \
-              --notes "Prepared extension bundle. The dist loader pins this source commit and verifies the ZIP's SHA-256 before extraction. Requires Python 3.11+, Node.js 20+, and .NET 10 runtime for C#." \
+              --notes "Prepared extension bundle. The dist loader verifies the ZIP's pinned SHA-256 before extraction and prepares private Node.js 24+, Python 3.14+, and .NET 10 runtimes when they are not installed." \
               "$RELEASE_ROOT/agent-review.zip" "$RELEASE_ROOT/release-manifest.json"
           fi
           node scripts/build-release-distribution.mjs --bootstrap-from \

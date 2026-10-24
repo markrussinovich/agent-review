@@ -31,7 +31,7 @@ export function watchSessionOwnership(workspacePath, onDeleted) {
     guard.stderr.on("data", (chunk) => console.error("[agent-review ownership]", chunk.toString().trim()));
     guard.on("error", (error) => {
         startupError = error.code === "ENOENT"
-            ? new Error("Unable to start the ownership guard. Install Node.js 20+ and ensure node is available on PATH.", { cause: error })
+            ? new Error(`Unable to start the ownership guard with ${nodeExecutable()}. Reopen Agent Review to prepare Node.js, or correct AGENT_REVIEW_NODE.`, { cause: error })
             : error;
         console.error("[agent-review ownership]", startupError);
     });

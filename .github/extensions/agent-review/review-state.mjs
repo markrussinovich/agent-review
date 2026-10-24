@@ -243,7 +243,7 @@ export async function runAnalyzer(repoRoot, baseRef, onProgress, currentRef = nu
             failures.push(`${executable}: ${error.message}`);
         }
     }
-    throw new Error(`Unable to run the Python 3.11+ analyzer:\n${failures.join("\n")}`);
+    throw new Error(`Unable to run the prepared Python analyzer. Reopen Agent Review to prepare Python 3.14, or correct AGENT_REVIEW_PYTHON:\n${failures.join("\n")}`);
 }
 
 // Compatibility entry point for callers that request the Python map directly.

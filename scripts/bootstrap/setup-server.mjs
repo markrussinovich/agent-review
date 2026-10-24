@@ -9,12 +9,13 @@ const html = `<!doctype html>
 <title>Preparing Agent Review</title><link rel="stylesheet" href="/styles.css"><link rel="stylesheet" href="/setup.css">
 <script type="module" src="/setup.js"></script></head>
 <body><main class="setup"><h1>Preparing Agent Review</h1>
-<p id="repository"></p><p>First use downloads the prepared extension from a pinned GitHub release.
-Its checksum is verified before extraction. No reviewed project is built or restored.</p>
+<p id="repository"></p><p>First use downloads the prepared extension and any missing runtimes into Agent Review's private cache.
+Every download is pinned and checksum-verified. No reviewed project is built or restored.</p>
 <p id="status" role="status" aria-live="polite">Preparing...</p>
-<progress aria-label="Bundle download"></progress><pre id="error" role="alert" hidden></pre>
+<progress aria-label="Preparation download"></progress><pre id="error" role="alert" hidden></pre>
 <button id="retry" hidden>Retry preparation</button>
-<p class="muted">Requires Python 3.11+, Node.js 20+, and the .NET 10 runtime for C# reviews.</p>
+<p class="muted">Uses installed Node.js 24+, Python 3.14+, and .NET 10 when available; otherwise prepares private copies
+without administrator rights or PATH changes.</p>
 <p class="muted" id="release"></p></main></body></html>`;
 const css = `body { overflow: auto; height: auto; min-height: 100vh; display: block; }
 .setup { width: auto; max-width: 640px; margin: 48px auto; padding: 24px; border: 1px solid var(--cp-border);
