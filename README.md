@@ -367,6 +367,11 @@ verifiable, citing rule and code lines. Select a rule file to open it with every
 cited section highlighted. Rule files are treated as evidence,
 never as instructions to the reviewer.
 
+Plain filename mentions supply supporting context only when they resolve to
+saved files, so directory diagrams and runtime configuration examples do not
+invent missing documents. Explicit local Markdown links are still checked for
+missing snapshot evidence.
+
 ### Large changes and internal review passes
 
 Repository rules and approved custom checks use bounded internal analysis passes

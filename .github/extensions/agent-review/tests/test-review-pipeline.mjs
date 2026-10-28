@@ -123,6 +123,27 @@ test("explicit rule links resolve relative to the instruction file even when a r
     assert.ok(supporting.some((unit) => unit.evidence[0].lines.some((line) => line.line > 900)));
 });
 
+test("filename examples do not invent missing documents, but explicit rule links still report gaps", () => {
+    const reviewed = model();
+    reviewed.source_files["src/app.rs"] = { current: "pub fn app() {}\n" };
+    reviewed.source_files["docs/style.md"] = { current: "Use the shared style.\n" };
+    reviewed.source_files["docs/removed.md"] = { current: null, baseline: "Old guidance.\n" };
+    const sources = [{
+        path: "docs/AGENTS.md", line_offset: 0, applies_to: [reviewed.changes[0].path],
+        text: [
+            "```text", "src/", "  app.rs", "  main.rs", "```",
+            "Runtime settings: `$HOME/.config/app/config.toml`, `settings.json`.",
+            "Read `style.md`, `src/app.rs`, and `removed.md`.",
+            "Follow [required guidance](missing.md#checks).",
+            "See [remote guidance](https://example.invalid/guide.md) and [outside](../../outside.md).",
+        ].join("\n"),
+    }];
+    const plan = planReview(reviewed, sources);
+    assert.deepEqual(plan.gaps.map((gap) => gap.path).sort(), ["docs/missing.md", "docs/removed.md"]);
+    assert.deepEqual(plan.units.filter((unit) => unit.kind === "referenced rule context")
+        .map((unit) => unit.path).sort(), ["docs/style.md", "src/app.rs"]);
+});
+
 test("citations must reference an actually supplied line, including the correct snapshot side", () => {
     const plan = planReview(model());
     const item = plan.units[0].evidence[0];

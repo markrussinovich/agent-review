@@ -123,6 +123,8 @@ export function repositoryRuleReferences(sources, savedFiles) {
             const path = relative || !savedFiles[reference]
                 ? posix.normalize(posix.join(posix.dirname(source.path), reference)) : reference;
             if (path === ".." || path.startsWith("../") || posix.isAbsolute(path) || path.includes("\\")) return;
+            // Plain filenames may be directory-tree leaves or runtime examples, not required documents.
+            if (!relative && !savedFiles[path]) return;
             references.set(`${source.path}:${path}`, { from: source.path, path });
         };
         for (const link of links) add(link[1], true);
