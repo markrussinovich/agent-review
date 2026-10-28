@@ -54,8 +54,9 @@ def _mask(source: str) -> str:
             index = end
         elif chars[index] in {'"', "'"}:
             quote = chars[index]
-            # A Rust lifetime is not a character literal.
-            if quote == "'" and index + 1 < len(chars) and re.match(r"[A-Za-z_]", chars[index + 1]):
+            # A closing quote distinguishes 'a'/'_' from lifetimes and loop labels.
+            if (quote == "'" and index + 1 < len(chars) and chars[index + 1].isidentifier()
+                    and not source.startswith("'", index + 2)):
                 index += 1
                 continue
             end = index + 1
