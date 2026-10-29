@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url";
 import { DocumentRoleStore, effectiveDocuments, instructionContext } from "../markdown-context.mjs";
 import { annotationHeadings, buildAnnotationPrompt, buildAnnotationVerificationPrompt, INSTRUCTION_HEADINGS, ANNOTATION_PROMPT_VERSION } from "../ai-prompts.mjs";
 import { ReviewState } from "../review-state.mjs";
-import { reviewIdentity, runReview, buildReviewPrompt } from "../review-pipeline.mjs";
+import { planReview, reviewIdentity, runReview, buildReviewPrompt, reviewResponseSchema, REVIEW_LIMITS } from "../review-pipeline.mjs";
+import { repositoryRuleSources } from "../review-contracts.mjs";
 import { discussionContext, discussionPrompt } from "../item-discussion.mjs";
 import { startReviewServer } from "../server.mjs";
 import { sectionsFor } from "../review-sections-context.mjs";
@@ -59,6 +60,66 @@ test("Radius context carries before/after source and the actual prescribed consu
     assert.doesNotMatch(prompt, /## What this code is|## How the rest of the code uses it/);
     assert.match(buildAnnotationVerificationPrompt({ instruction_context: context }, "untrusted draft"), /complete corrected explanation/);
     assert.equal(context.observed_behavior.available, false);
+});
+
+test("parsed filename mentions do not become required documents, while explicit and removed references retain gaps", () => {
+    const guidance = [
+        "Runtime settings: `settings.json` and `config/settings.json`.",
+        "Read `style.md`, `removed.md`, and `config/removed.json`.",
+        "Follow [required guidance](missing.md#checks).",
+        "Follow `required.md`.",
+        "See [remote guidance](https://example.invalid/guide.md) and [outside](../../outside.md).",
+    ].join("\n");
+    const before = {
+        "docs/AGENTS.md": guidance,
+        "docs/style.md": "Use the shared style.\n",
+        "docs/removed.md": "Old guidance.\n",
+        "docs/config/removed.json": "{}\n",
+        "docs/app.py": "print(1)\n",
+    };
+    const after = { ...before, "docs/app.py": "print(2)\n" };
+    delete after["docs/removed.md"];
+    delete after["docs/config/removed.json"];
+    const model = modelFor(before, after);
+    const references = model.instruction_documents.current.relationships;
+    assert.ok(references.some((edge) => edge.path === "docs/settings.json" && edge.status === "unverified"));
+    assert.ok(references.some((edge) => edge.path === "docs/config/settings.json" && edge.status === "missing"));
+    const plan = planReview(model, repositoryRuleSources(model, { bounded: false }));
+    assert.deepEqual(plan.gaps.map((gap) => gap.path).sort(), [
+        "docs/config/removed.json", "docs/missing.md", "docs/removed.md", "docs/required.md",
+    ]);
+    assert.deepEqual(plan.units.filter((unit) => unit.kind === "referenced rule context")
+        .map((unit) => unit.path), ["docs/style.md"]);
+});
+
+test("governing rules stay in every Markdown change batch alongside bounded document context", async () => {
+    const guidance = "Delays are milliseconds.\n".repeat(400);
+    const before = { "AGENTS.md": guidance }, after = { ...before };
+    for (let index = 0; index < 12; index++) {
+        const path = `docs/change-${index}.md`;
+        before[path] = "Old instructions.\n";
+        after[path] = Array.from({ length: 50 }, (_, line) => `Step ${line}: ${"Check the saved evidence. ".repeat(4)}`).join("\n");
+    }
+    const model = modelFor(before, after);
+    const sources = repositoryRuleSources(model, { bounded: false });
+    const ruleIds = planReview(model, sources).rules.map((item) => item.id);
+    assert.ok(ruleIds.length > 1);
+    const governed = [];
+    const result = await runReview({ model, instruction: "Check correctness.", sources,
+        generate: async (context) => {
+            assert.ok(Buffer.byteLength(buildReviewPrompt(context)) + Buffer.byteLength(JSON.stringify(reviewResponseSchema(context)))
+                <= REVIEW_LIMITS.requestCharacters);
+            if (context.units.some((unit) => unit.kind === "change")) governed.push(context);
+            return { completed: context.units.map((unit) => unit.id), observations: [], findings: [], unresolved: [], requests: [] };
+        } });
+    assert.equal(result.status, "complete");
+    assert.ok(governed.length > 1);
+    for (const context of governed) {
+        const supplied = new Set(context.evidence.map((item) => item.id));
+        assert.ok(ruleIds.every((id) => supplied.has(id)));
+        assert.equal(context.omitted_rule_excerpts, 0);
+        assert.ok(context.instruction_documents.some((document) => document.path.startsWith("docs/")));
+    }
 });
 
 test("changed late instruction paragraphs take priority over an oversized introduction", () => {

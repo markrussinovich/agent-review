@@ -119,7 +119,8 @@ export function repositoryRuleReferences(sources, savedFiles, markdownFacts = nu
     if (markdownFacts) {
         const paths = new Set(sources.map((source) => source.path));
         return (markdownFacts.relationships || []).filter((edge) => paths.has(edge.from) && edge.path
-            && !["external", "unsafe"].includes(edge.status)).map((edge) => ({
+            && !["external", "unsafe"].includes(edge.status)
+            && (edge.kind !== "mentions" || Object.hasOwn(savedFiles, edge.path))).map((edge) => ({
             from: edge.from, path: edge.path, line: edge.line, kind: edge.kind, status: edge.status,
         }));
     }
@@ -132,6 +133,8 @@ export function repositoryRuleReferences(sources, savedFiles, markdownFacts = nu
             const path = relative || !savedFiles[reference]
                 ? posix.normalize(posix.join(posix.dirname(source.path), reference)) : reference;
             if (path === ".." || path.startsWith("../") || posix.isAbsolute(path) || path.includes("\\")) return;
+            // Plain filenames may be directory-tree leaves or runtime examples, not required documents.
+            if (!relative && !savedFiles[path]) return;
             references.set(`${source.path}:${path}`, { from: source.path, path });
         };
         for (const link of links) add(link[1], true);
