@@ -419,6 +419,11 @@ verifiable, citing rule and code lines. Select a rule file to open it with every
 cited section highlighted. Rule files are treated as evidence,
 never as instructions to the reviewer.
 
+Plain filename mentions supply supporting context only when they resolve to
+saved files, so directory diagrams and runtime configuration examples do not
+invent missing documents. Explicit local Markdown links are still checked for
+missing snapshot evidence.
+
 ### Large changes and internal review passes
 
 Repository rules and approved custom checks use bounded internal analysis passes
@@ -1049,7 +1054,9 @@ It statically links `#[test]` functions through resolved saved-source calls.
 for each linked test. Configure `test_cargo` in `.agent-review.json` or
 `AGENT_REVIEW_TEST_CARGO` when Cargo is not on PATH. Worktree source hashes are
 rechecked before every test; commit/PR runs use the disposable exact-snapshot
-export. Runs are cancellable and report per-test outcomes. Cargo may download
+export. Rust test fingerprints ignore a leading UTF-8 BOM and normalize CRLF
+to LF, matching Rust source loading; all other source content must match.
+Runs are cancellable and report per-test outcomes. Cargo may download
 dependencies, compile and execute build scripts/procedural macros, build code,
 and execute repository tests; snapshot isolation is **not a sandbox**. Cargo
 outcomes do not provide per-path tracing, so inferred paths are not upgraded to

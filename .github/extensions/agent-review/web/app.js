@@ -6993,7 +6993,7 @@ function renderView() {
     elements.analysis_cancelled.classList.toggle("hidden", !payload?.cancelled);
     updateReviewApply();
     // Background re-renders must not erase a client-side warning; it stays until the user opens other source or the review changes.
-    const clientError = state.clientError?.generation === payload?.review_generation ? state.clientError.message : null;
+    const clientError = state.clientError && state.clientError.generation === payload?.review_generation ? state.clientError.message : null;
     elements.error.classList.toggle("hidden", !payload?.error && !clientError);
     elements.error.textContent = payload?.error || clientError || "";
     elements.analysis_progress.classList.toggle("hidden", !payload?.loading || state.connectionLost);
@@ -7709,6 +7709,8 @@ function renderReviewPickerNotice() {
 }
 
 async function loadReviewOptions({ append = false, selectedRef = null, refresh = false } = {}) {
+    // Rendering before the first state arrives resets the picker to blank; with no review type there is nothing to list.
+    if (!elements.review_mode.value) return;
     const epoch = (state.reviewOptionsEpoch || 0) + 1;
     state.reviewOptionsEpoch = epoch;
     const mode = elements.review_mode.value;

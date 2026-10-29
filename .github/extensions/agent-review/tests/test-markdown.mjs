@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url";
 import { DocumentRoleStore, effectiveDocuments, instructionContext } from "../markdown-context.mjs";
 import { annotationHeadings, buildAnnotationPrompt, buildAnnotationVerificationPrompt, INSTRUCTION_HEADINGS, ANNOTATION_PROMPT_VERSION } from "../ai-prompts.mjs";
 import { ReviewState } from "../review-state.mjs";
-import { reviewIdentity, runReview, buildReviewPrompt } from "../review-pipeline.mjs";
+import { reviewIdentity, runReview, buildReviewPrompt, planReview, REVIEW_LIMITS } from "../review-pipeline.mjs";
+import { repositoryRuleSources } from "../review-contracts.mjs";
 import { discussionContext, discussionPrompt } from "../item-discussion.mjs";
 import { startReviewServer } from "../server.mjs";
 import { sectionsFor } from "../review-sections-context.mjs";
@@ -30,6 +31,48 @@ function modelFor(before, after) {
         }])), instruction_documents: { version: 1, ...facts } };
 }
 const radiusModel = () => modelFor({ [entry]: radius.entry, [contract]: radius.before }, { [entry]: radius.entry, [contract]: radius.after });
+
+test("parsed Markdown facts preserve the rule planner's distinction between filename examples and missing links", () => {
+    const root = "# Review rules\nRuntime settings: `settings.json`, `config.toml`, and `config/runtime.json`.\n"
+        + "Read `style.md` and `removed.md`.\nFollow [required guidance](missing.md#checks).";
+    const before = { "AGENTS.md": root, "style.md": "Use the shared style.", "removed.md": "Old guidance.", "app.js": "old" };
+    const after = { "AGENTS.md": root, "style.md": before["style.md"], "app.js": "new" };
+    const model = modelFor(before, after);
+    const plan = planReview(model, repositoryRuleSources(model, { bounded: false }));
+    assert.deepEqual(plan.gaps.filter((gap) => /referenced by/.test(gap.reason)).map((gap) => gap.path).sort(),
+        ["missing.md", "removed.md"]);
+    assert.ok(plan.units.some((unit) => unit.kind === "referenced rule context" && unit.path === "style.md"));
+});
+
+test("mixed code and Markdown batches retain governing rules and instruction classification within the request budget", async () => {
+    const root = "# Review rules\nFollow [instructions](SKILL.md).\n" + "Delays are milliseconds.\n".repeat(400);
+    const before = { "AGENTS.md": root, "SKILL.md": "# Skill\nUse a delay of one millisecond." };
+    const after = { "AGENTS.md": root, "SKILL.md": "# Skill\nUse the configured delay." };
+    for (let index = 0; index < 12; index++) {
+        before[`src/module-${index}.js`] = "export const delay = 1;";
+        after[`src/module-${index}.js`] = Array.from({ length: 50 }, (_, line) =>
+            `export const delay${line} = "${"x".repeat(80)}";`).join("\n");
+    }
+    const model = modelFor(before, after);
+    const sources = repositoryRuleSources(model, { bounded: false });
+    const rules = planReview(model, sources).rules.map((item) => item.id);
+    const contexts = [];
+    const result = await runReview({ model, sources, instruction: "Review correctness.", generate: async (context) => {
+        contexts.push(context);
+        return { completed: context.units.map((unit) => unit.id), observations: [], findings: [], unresolved: [], requests: [] };
+    } });
+    assert.equal(result.status, "complete");
+    const governed = contexts.filter((context) => context.units.some((unit) => unit.kind === "change"));
+    assert.ok(governed.length > 1);
+    for (const context of governed) {
+        assert.ok(rules.every((id) => context.evidence.some((item) => item.id === id)));
+        assert.equal(context.omitted_rule_excerpts, 0);
+        assert.ok(Buffer.byteLength(buildReviewPrompt(context)) < REVIEW_LIMITS.requestCharacters);
+    }
+    assert.ok(governed.some((context) => context.instruction_documents.some((document) =>
+        document.path === "SKILL.md" && document.role === "instructions")));
+    assert.ok(governed.some((context) => context.units.some((unit) => unit.path.endsWith(".js"))));
+});
 
 test("instruction-change regression fixtures preserve conflicts, conditional exceptions, references and injection as data", async () => {
     const cases = JSON.parse(await readFile(new URL("fixtures/markdown/scenarios.json", import.meta.url), "utf8"));

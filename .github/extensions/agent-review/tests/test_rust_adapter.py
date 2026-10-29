@@ -13,7 +13,7 @@ from review_model import ReviewModel
 from rust_adapter import RUST_ADAPTER
 from rust_coverage import load_rust_coverage
 from rust_decisions import build as build_decisions
-from rust_graph import _scan_side
+from rust_graph import _mask, _scan_side
 from rust_packages import cargo_package_diff, parse_cargo_packages
 
 
@@ -199,6 +199,36 @@ macro_rules! getter {
         # `;` inside `[u8; 4]` does not end the signature, so the body belongs to the function.
         self.assertEqual(symbols["checksum"]["range"], {"start_line": 17, "end_line": 19})
         self.assertFalse(any(name.startswith("$") for name in symbols))
+
+    def test_character_literals_preserve_following_symbols_and_function_digests(self):
+        literals = ("'_'", "'a'", "'Z'", "b'a'", "'{'", "'}'", "'\u03bb'",
+                    r"'\''", r"'\\'", r"'\n'", r"'\x7f'", r"'\u{1f980}'")
+        for literal in literals:
+            with self.subTest(literal=literal):
+                first = f"pub fn first() {{\n    let value = {literal};\n}}"
+                before = first + "\n"
+                after = before + "pub fn added() {}\n"
+                old = _scan_side({"src/lib.rs": before.encode()}, [])["symbols"]
+                new = _scan_side({"src/lib.rs": after.encode()}, [])["symbols"]
+                symbols = {item["name"]: item for item in new.values()}
+                self.assertEqual(set(symbols), {"first", "added"})
+                self.assertEqual(symbols["first"]["range"], {"start_line": 1, "end_line": 3})
+                self.assertEqual(symbols["added"]["range"], {"start_line": 4, "end_line": 4})
+                self.assertEqual(symbols["first"]["digest"], hashlib.sha256(first.encode()).hexdigest())
+                self.assertEqual(next(iter(old.values()))["digest"], symbols["first"]["digest"])
+                self.assertEqual(len(_mask(after)), len(after))
+                self.assertEqual(_mask(after).count("\n"), after.count("\n"))
+
+    def test_lifetimes_and_loop_labels_are_not_masked_as_literals(self):
+        source = """pub fn borrow<'a>(value: &'a str) -> &'a str {
+    'retry: loop { break 'retry value; }
+}
+pub fn anonymous(value: &'_ str) {}
+pub fn unicode<'\u03bb>(value: &'\u03bb str) -> &'\u03bb str { value }
+"""
+        self.assertEqual(_mask(source), source)
+        symbols = _scan_side({"src/lib.rs": source.encode()}, [])["symbols"].values()
+        self.assertEqual({item["name"] for item in symbols}, {"borrow", "anonymous", "unicode"})
 
     def test_wrapped_function_code_paths_and_test_links(self):
         before = WRAPPED_LIMIT.replace("{threshold}", "3")
