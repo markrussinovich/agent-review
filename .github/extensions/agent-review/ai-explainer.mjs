@@ -87,21 +87,23 @@ export async function generateIsolatedExplanation(options) {
         if (remaining <= 0) throw new Error("Explanation generation and source-fidelity check exceeded their time limit.");
         return remaining;
     };
-    let lastError;
-    let request = options;
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-        try {
-            const content = await generateOnce({ ...request, timeoutMs: timeout() });
-            const verification = options.verifyPrompt?.(content);
-            if (!verification) return content;
-            return await generateOnce({ ...request, prompt: verification, timeoutMs: timeout() });
-        } catch (error) {
-            lastError = error;
-            if (!(error instanceof ExplanationValidationError)) throw error;
-            request = { ...options, prompt: `${options.prompt}\n\nThe previous response failed validation: ${error.message}\nReturn a corrected response that satisfies the original format and evidence constraints.` };
+    const generateValidated = async (prompt) => {
+        let lastError;
+        let requestPrompt = prompt;
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+            try {
+                return await generateOnce({ ...options, prompt: requestPrompt, timeoutMs: timeout() });
+            } catch (error) {
+                lastError = error;
+                if (!(error instanceof ExplanationValidationError)) throw error;
+                requestPrompt = `${prompt}\n\nThe previous response failed validation: ${error.message}\nReturn a corrected response that satisfies the original format and evidence constraints.`;
+            }
         }
-    }
-    throw new ExplanationValidationError(
-        `Copilot did not return a valid explanation after ${attempts} isolated attempt${attempts === 1 ? "" : "s"}: ${lastError?.message}`,
-    );
+        throw new ExplanationValidationError(
+            `Copilot did not return a valid explanation after ${attempts} isolated attempt${attempts === 1 ? "" : "s"}: ${lastError?.message}`,
+        );
+    };
+    const content = await generateValidated(options.prompt);
+    const verification = options.verifyPrompt?.(content);
+    return verification ? generateValidated(verification) : content;
 }

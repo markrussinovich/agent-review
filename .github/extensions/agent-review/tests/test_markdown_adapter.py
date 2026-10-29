@@ -15,6 +15,20 @@ from review_model import ReviewModel
 
 
 class MarkdownTests(unittest.TestCase):
+    def test_directives_are_scoped_to_their_own_sentence_and_ignore_contractions(self):
+        for prefix in [
+            "Use the ledger for reasoning and validation; do not print it or add it as Bicep comments. Follow ",
+            "Never print the ledger; follow ",
+            "The agent's next step is to follow ",
+            "The agent\u2019s next step is to follow ",
+        ]:
+            facts = analyze_side({"SKILL.md": f"{prefix}[runtime](runtime.md).".encode(), "runtime.md": b"Inspect evidence."})
+            self.assertEqual(facts["documents"]["runtime.md"]["role"], "instructions", prefix)
+        for prefix in ['Do not follow ', "Never adhere to ", 'The example says "Follow ', "The example says 'Follow ",
+                       "The example says \u201cFollow ", "`Follow "]:
+            facts = analyze_side({"SKILL.md": f"{prefix}[runtime](runtime.md).".encode(), "runtime.md": b"Inspect evidence."})
+            self.assertNotEqual(facts["documents"]["runtime.md"]["role"], "instructions", prefix)
+
     def test_explicit_follow_propagates_but_links_and_imperatives_do_not(self):
         files = {
             "skills/demo/SKILL.md": b"---\nname: demo\ndescription: Analyze input\n---\nFollow [runtime](references/runtime.md).\nSee [background](references/background.md).\n",

@@ -2,7 +2,7 @@ import { renderGraph, resizeGraph } from "/graph.js";
 import { findingsForNode, findingKey, groupFindings, isFindingClosed, orderFindings } from "/findings.mjs";
 import { resolveSymbolReference } from "/symbol-links.mjs";
 import { packageEvidenceLinks } from "/package-presentation.mjs";
-import { resolveSourceReference } from "/source-references.mjs";
+import { resolveSourceReference, sourceReferencesInText } from "/source-references.mjs";
 import { unchangedDiffContext, diffSegments } from "/diff-context.mjs";
 import { impactSlice } from "/impact-model.mjs";
 import { ItemDiscussionPane } from "/item-discussion-ui.mjs";
@@ -3837,7 +3837,7 @@ function appendInlineMarkdown(container, text, options = {}) {
 }
 
 function parseSourceReference(value) {
-    return resolveSourceReference(value, state.payload?.model);
+    return resolveSourceReference(value, state.payload?.model, markdownContext.subject?.path);
 }
 
 const markdownContext = { intent: null, subject: null };
@@ -3859,7 +3859,7 @@ function sourceReferenceLabel(reference) {
         if (last && line === last[1] + 1) last[1] = line;
         else ranges.push([line, line]);
     }
-    return `${reference.path}${ranges.length ? `:${ranges.map(([from, to]) => from === to ? from : `${from}-${to}`).join(",")}` : ""}`;
+    return `${reference.side ? `${reference.side}:` : ""}${reference.path}${ranges.length ? `:${ranges.map(([from, to]) => from === to ? from : `${from}-${to}`).join(",")}` : ""}`;
 }
 
 function sourceReferenceButton(label, reference, title = null) {
@@ -3896,13 +3896,11 @@ async function openSourceReference(reference, { focus = false, tab = reference.s
 }
 
 function appendTextWithSourceReferences(container, text) {
-    const pattern = /((?:[A-Za-z]:[\\/])?(?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.(?:csproj|cs|slnx?|props|targets|py|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html)(?![A-Za-z0-9_])(?::\d+(?:-\d+)?(?:,\d+(?:-\d+)*)*)?)/g;
     let offset = 0;
-    for (const match of text.matchAll(pattern)) {
-        if (match.index > offset) container.append(document.createTextNode(text.slice(offset, match.index)));
-        const reference = parseSourceReference(match[0]);
-        container.append(reference ? sourceReferenceButton(sourceReferenceLabel(reference), reference) : document.createTextNode(match[0]));
-        offset = match.index + match[0].length;
+    for (const { start, end, reference } of sourceReferencesInText(text, state.payload?.model, markdownContext.subject?.path)) {
+        if (start > offset) container.append(document.createTextNode(text.slice(offset, start)));
+        container.append(sourceReferenceButton(sourceReferenceLabel(reference), reference));
+        offset = end;
     }
     if (offset < text.length) container.append(document.createTextNode(text.slice(offset)));
 }
@@ -4058,7 +4056,7 @@ function renderAnnotation(item, annotation, loading = false) {
     }
     const body = revealOnce(el("div", "annotation-body"), `annotation:${item.id}`);
     markdownContext.intent = state.attribution?.[0] || null;
-    markdownContext.subject = state.payload?.model?.nodes.find((node) => node.id === (item.node_id || item.id)) || null;
+    markdownContext.subject = state.payload?.model?.nodes.find((node) => node.id === (item.node_id || item.id)) || (item.path ? item : null);
     const markdown = risk ? risk.body : annotation.body;
     const { preamble, sections } = annotationSections(markdown);
     const primary = sections.find((section) => /what changed|behavior|summary|findings/i.test(section.title)) || sections[0];

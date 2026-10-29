@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { withLocks } from "./custom-prompts.mjs";
+import { diffSegments } from "./web/diff-context.mjs";
 
 export const DOCUMENT_ROLES = Object.freeze(["instructions", "supporting", "documentation", "example"]);
 const CONTEXT_CHARACTERS = 64000;
@@ -32,11 +33,21 @@ export function effectiveDocuments(facts, overrides = {}) {
     return documents;
 }
 
-function excerpt(path, side, saved, ranges, maxCharacters) {
+function lineRanges(numbers) {
+    const result = [];
+    for (const number of numbers) {
+        const last = result.at(-1);
+        if (last?.[1] === number - 1) last[1] = number;
+        else result.push([number, number]);
+    }
+    return result;
+}
+
+function excerpt(path, side, saved, ranges, maxCharacters, changedLines = []) {
     const text = side === "base" && saved?.baseline_same ? saved.current : saved?.[side === "base" ? "baseline" : "current"];
     if (typeof text !== "string") return { path, side, available: false, ranges: [] };
     const lines = text.split(/\r?\n/);
-    const selected = new Set();
+    const selected = new Set(changedLines);
     for (const [start, end] of ranges) for (let line = Math.max(1, start); line <= Math.min(lines.length, end); line++) selected.add(line);
     let remaining = maxCharacters;
     const chosen = [];
@@ -55,7 +66,9 @@ function excerpt(path, side, saved, ranges, maxCharacters) {
             previous.excerpt += value;
         } else result.push({ start_line: line, end_line: line, excerpt: value });
     }
+    const included = new Set(chosen);
     return { path, side, available: true, source_lines: lines.length, ranges: result,
+        ...(changedLines.length ? { omitted_changed_ranges: lineRanges(changedLines.filter((line) => !included.has(line))) } : {}),
         complete: result.reduce((sum, range) => sum + range.end_line - range.start_line + 1, 0) === lines.length };
 }
 
@@ -64,6 +77,7 @@ export function instructionContext(model, path, overrides = {}) {
     const result = { path, evidence_type: "deterministic", observed_behavior: { available: false,
         reason: "No controlled agent evaluation was supplied. Repository tests and coverage do not measure instruction compliance." },
     precedence: "Unknown unless the supplied host or loading contract explicitly establishes it.", sides: {} };
+    const sourcePlans = new Map();
     for (const side of ["base", "current"]) {
         const facts = model.instruction_documents[side];
         const documents = effectiveDocuments(facts, overrides);
@@ -73,8 +87,10 @@ export function instructionContext(model, path, overrides = {}) {
         let cycle = false;
         while (queue.length && visited.size <= 40) {
             const target = queue.shift();
+            if (target !== path && documents[target]?.root) continue;
             for (const edge of facts.relationships || []) {
                 if (edge.path !== target) continue;
+                if (edge.from === target) continue;
                 if (!["instructions", "supporting"].includes(documents[edge.from]?.role)
                     && !["supplies_instructions", "packages"].includes(edge.kind)) continue;
                 if (relationships.some((item) => item.id === edge.id)) continue;
@@ -85,21 +101,32 @@ export function instructionContext(model, path, overrides = {}) {
                 if (visited.size > 40) break;
             }
         }
+        relationships.sort((a, b) => {
+            const priority = (edge) => Number(edge.path === path) * 2
+                + Number(["prescribes", "supplies_instructions"].includes(edge.kind));
+            return priority(b) - priority(a);
+        });
         const outgoing = (facts.relationships || []).filter((edge) => edge.from === path);
         const saved = model.source_files?.[path];
         const lines = String((side === "base" && saved?.baseline_same ? saved.current
             : saved?.[side === "base" ? "baseline" : "current"]) || "").split(/\r?\n/);
-        const ranges = [];
+        const ranges = [[1, 3]];
+        const changedLines = [...diffSegments(saved?.diff)[side].keys()].sort((a, b) => a - b);
         for (const match of String(saved?.diff || "").matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
             const start = Number(match[side === "base" ? 1 : 3]);
             ranges.push([Math.max(1, start - 8), start + Number(match[side === "base" ? 2 : 4] || 1) + 12]);
         }
         ranges.push([1, Math.min(lines.length, 100)]);
-        const sources = [excerpt(path, side, saved, ranges, 16000)];
+        const sources = [excerpt(path, side, saved, ranges, 16000, changedLines)];
+        sourcePlans.set(sources[0], { path, side, saved, ranges, changedLines, budget: 16000 });
         for (const sourcePath of [...new Set(relationships.map((edge) => edge.from))].slice(0, 6)) {
             if (sourcePath === path) continue;
-            const sourceRanges = relationships.filter((edge) => edge.from === sourcePath).map((edge) => [edge.line - 3, edge.line + 3]);
-            sources.push(excerpt(sourcePath, side, model.source_files?.[sourcePath], sourceRanges, 2500));
+            const edges = relationships.filter((edge) => edge.from === sourcePath);
+            const direct = edges.filter((edge) => edge.path === path).sort((a, b) =>
+                Number(b.kind === "prescribes" || b.kind === "supplies_instructions") - Number(a.kind === "prescribes" || a.kind === "supplies_instructions"));
+            const sourceRanges = [...direct, ...edges].map((edge) => [edge.line, edge.line]);
+            sourceRanges.push(...direct.map((edge) => [edge.line - 1, edge.line + 1]));
+            sources.push(excerpt(sourcePath, side, model.source_files?.[sourcePath], sourceRanges, direct.length ? 6000 : 1500));
         }
         for (const edge of outgoing.filter((edge) => edge.status === "resolved").slice(0, 3)) {
             if (!sources.some((source) => source.path === edge.path)) {
@@ -117,24 +144,47 @@ export function instructionContext(model, path, overrides = {}) {
             limited: visited.size > 40 || outgoing.length > 60 || relationships.length > 60 || facts.gaps.length > 20
                 || Object.keys(frontmatter).length > 12 || Object.entries(frontmatter).some(([key, value]) => key.length > 100 || value.length > 300)
                 || tools.length > 20 || tools.some((tool) => tool.name.length > 100),
-            note: "A reference or prescribed use does not prove an agent received, read, or obeyed this document." };
+            note: "A reference or prescribed use does not prove an agent received, read, or obeyed this document. Any omitted_changed_ranges identify changed source missing from this context; do not claim a complete before/after comparison when they are present." };
     }
     result.role = result.sides.current.document?.role || result.sides.base.document?.role;
     result.character_limit = CONTEXT_CHARACTERS;
     result.limited = Object.values(result.sides).some((side) => side.limited);
-    for (const key of ["sources", "outgoing", "relationships", "gaps"]) {
+    for (const key of ["outgoing", "relationships", "gaps"]) {
         for (const side of Object.values(result.sides)) {
-            while (side[key]?.length > (key === "sources" ? 1 : 0) && JSON.stringify(result).length > CONTEXT_CHARACTERS) {
+            while (side[key]?.length && JSON.stringify(result).length > CONTEXT_CHARACTERS) {
                 side[key].pop();
                 side.limited = result.limited = true;
             }
         }
     }
     for (const side of Object.values(result.sides)) {
+        for (const key of ["headings", "tools"]) {
+            while (side.document?.[key]?.length && JSON.stringify(result).length > CONTEXT_CHARACTERS) {
+                side.document[key].pop();
+                side.limited = result.limited = true;
+            }
+        }
+        for (const key of Object.keys(side.document?.frontmatter || {}).reverse()) {
+            if (JSON.stringify(result).length <= CONTEXT_CHARACTERS) break;
+            delete side.document.frontmatter[key];
+            side.limited = result.limited = true;
+        }
+        while (side.sources?.length > 2 && JSON.stringify(result).length > CONTEXT_CHARACTERS) {
+            side.sources.pop();
+            side.limited = result.limited = true;
+        }
+    }
+    for (const side of Object.values(result.sides)) {
         const source = side.sources?.[0];
-        while (source?.ranges.length && JSON.stringify(result).length > CONTEXT_CHARACTERS) {
-            source.ranges.pop();
-            source.complete = false;
+        const plan = sourcePlans.get(source);
+        while (plan?.budget > 0 && JSON.stringify(result).length > CONTEXT_CHARACTERS) {
+            plan.budget = Math.max(0, plan.budget - 1000);
+            Object.assign(source, excerpt(plan.path, plan.side, plan.saved, plan.ranges, plan.budget, plan.changedLines));
+            side.limited = result.limited = true;
+        }
+    }
+    for (const side of Object.values(result.sides)) {
+        if (side.sources?.[0].omitted_changed_ranges?.length) {
             side.limited = result.limited = true;
         }
     }

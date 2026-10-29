@@ -73,6 +73,44 @@ test("changed late instruction paragraphs take priority over an oversized introd
     assert.ok(JSON.stringify(context).length < 50000);
 });
 
+test("every changed hunk and a long direct consumption directive survive a dense reference graph", () => {
+    const path = "references/runtime-contract.md";
+    const beforeLines = Array.from({ length: 420 }, (_, index) => `Rule ${index + 1}: ${"context ".repeat(65)}`);
+    const afterLines = [...beforeLines];
+    for (const line of [5, 200, 414]) afterLines[line - 1] = `Changed rule ${line}: ${"evidence ".repeat(65)}`;
+    const root = `# Skill\n${"Ledger detail. ".repeat(220)}Do not print the ledger. Follow [runtime contract](${path}).\n`
+        + Array.from({ length: 50 }, (_, index) => `See [sibling ${index}](references/sibling-${index}.md).`).join("\n");
+    const siblings = Object.fromEntries(Array.from({ length: 50 }, (_, index) => [
+        `references/sibling-${index}.md`, `# Sibling\nSee [root](../SKILL.md).\nSee [contract](runtime-contract.md).`,
+    ]));
+    const model = modelFor({ ...siblings, "SKILL.md": root, [path]: beforeLines.join("\n") },
+        { ...siblings, "SKILL.md": root, [path]: afterLines.join("\n") });
+    model.source_files[path].diff = [5, 200, 414].map((line) =>
+        `@@ -${line} +${line} @@\n-${beforeLines[line - 1]}\n+${afterLines[line - 1]}`).join("\n");
+    const context = instructionContext(model, path);
+    assert.equal(context.role, "instructions");
+    for (const side of ["base", "current"]) {
+        const source = context.sides[side].sources[0];
+        assert.deepEqual(source.omitted_changed_ranges, []);
+        assert.ok(source.ranges.some((range) => range.start_line === 1), "Retain the document's identity after changed-line selection.");
+        for (const line of [5, 200, 414]) assert.ok(source.ranges.some((range) => range.start_line <= line && range.end_line >= line));
+        const parent = context.sides[side].sources.find((source) => source.path === "SKILL.md");
+        assert.ok(parent.ranges.some((range) => range.excerpt.includes("Do not print the ledger. Follow")));
+        assert.ok(context.sides[side].relationships.every((edge) => edge.path !== "SKILL.md"), "Stop ancestry traversal at instruction roots.");
+    }
+    assert.ok(JSON.stringify(context).length <= context.character_limit);
+    assert.ok(buildAnnotationPrompt({ instruction_context: context }).includes(afterLines[413]));
+});
+
+test("changed lines that cannot fit are explicitly reported rather than silently omitted", () => {
+    const model = modelFor({ "SKILL.md": "# Rules\nOld rule." }, { "SKILL.md": `# Rules\n${"changed ".repeat(3000)}` });
+    const context = instructionContext(model, "SKILL.md");
+    assert.deepEqual(context.sides.current.sources[0].omitted_changed_ranges, [[2, 2]]);
+    assert.equal(context.limited, true);
+    assert.match(context.sides.current.note, /do not claim a complete before\/after comparison/);
+    assert.ok(JSON.stringify(context).length <= context.character_limit);
+});
+
 test("the complete instruction context stays bounded even with large metadata and references", () => {
     const body = "---\n" + Array.from({ length: 40 }, (_, index) => `attribute${index}: ${"x".repeat(2000)}`).join("\n")
         + "\n---\n# Rules\n" + Array.from({ length: 100 }, (_, index) =>

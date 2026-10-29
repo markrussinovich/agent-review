@@ -21,7 +21,9 @@ try {
         generateAnnotation: async (context) => {
             calls.push(context);
             return (context.kind === "overview" ? ["Summary", "Review order", "Gaps"] : annotationHeadings(context))
-                .map((heading) => `## ${heading}\n\nControlled browser response; validates presentation only.`).join("\n\n");
+                .map((heading) => `## ${heading}\n\n${heading === "What changed and how obligations change"
+                    ? `Controlled browser response: before \`base:${path}:1\`; after \`current:${path}:2\`.`
+                    : "Controlled browser response; validates presentation only."}`).join("\n\n");
         },
     });
     if (process.env.AGENT_REVIEW_UX_MODEL) {
@@ -50,6 +52,22 @@ try {
         assert.match(await panel.innerText(), /SKILL\.md:\d+.*prescribes use of/s);
         assert.match(await panel.innerText(), /Observed agent behavior: unavailable/);
         assert.match(await panel.innerText(), /not proof that an agent received, read, or obeyed/);
+        for (const [side, line] of [["base", 1], ["current", 2]]) {
+            const citation = page.locator("#source-annotation").getByRole("button", { name: `${side}:${path}:${line}`, exact: true });
+            await citation.waitFor();
+            await citation.focus();
+            const [request] = await Promise.all([
+                page.waitForRequest((request) => {
+                    const url = new URL(request.url());
+                    return url.pathname === "/api/source" && url.searchParams.get("side") === side
+                        && url.searchParams.get("path") === path && url.searchParams.get("line") === String(line);
+                }),
+                citation.press("Enter"),
+            ]);
+            assert.equal(new URL(request.url()).searchParams.get("side"), side);
+            await page.waitForFunction((side) => document.querySelector("#source-review-context")?.textContent
+                .includes(side === "base" ? "Base saved snapshot" : "Current saved snapshot"), side);
+        }
         await panel.getByRole("button", { name: "Classification evidence", exact: true }).click();
         await page.waitForFunction(() => document.querySelector("#source-title")?.textContent.includes("SKILL.md"));
         await page.locator(`.workspace-file[data-path="${path}"]:visible`).first().click();

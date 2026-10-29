@@ -74,6 +74,11 @@ checks; contradictions and predicted failure scenarios are AI interpretations.
 No controlled agent evaluation is run by this adapter. Repository test results
 and code coverage do not measure instruction compliance.
 
+Bounded explanation context prioritizes changed lines from every diff hunk and
+the direct instruction that references the document. If changed source cannot
+fit, the context lists the omitted line ranges. Source citations identify the
+saved `base` or `current` version and open that side in the source viewer.
+
 References resolve only within each saved snapshot, never by fetching external
 URLs or executing embedded commands. Structure and relationship limits are
 reported as evidence gaps. Literal module-relative JavaScript file reads into

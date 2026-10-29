@@ -58,10 +58,11 @@ def _prescribes(prefix):
     directive = re.search(r"\b(?:follow|apply|obey|adhere to)\s+(?:the\s+)?(?:rules\s+(?:in|of)\s+)?[^.;:]*$", prefix, re.I)
     if not directive:
         return False
-    preceding = prefix[:directive.start()].replace("\u2019", "'")
+    preceding = re.split(r"[.;!?\n]", prefix[:directive.start()])[-1].replace("\u2019", "'")
     if re.search(r"\b(?:not|never|don't|mustn't|shouldn't|cannot|can't)\b", preceding, re.I):
         return False
-    return not (prefix.count('"') % 2 or prefix.count("'") % 2 or prefix.count("`") % 2
+    quoted = re.sub(r"(?<=\w)['\u2019](?=\w)", "", prefix)
+    return not (quoted.count('"') % 2 or quoted.count("'") % 2 or quoted.count("`") % 2
                 or prefix.count("\u201c") > prefix.count("\u201d")
                 or prefix.count("\u2018") > prefix.count("\u2019"))
 
