@@ -302,8 +302,10 @@ Attention cards distinguish deterministic **Review priority** signals from
 AI-supported concerns and review observations. Their concise previews retain
 the full underlying explanation and evidence. Source explanations lead with
 the behavioral change; supporting background is available under **Full
-explanation**. Section context follows its exact source ranges into the same
-evidence workspace.
+explanation**. Full explanation and Evidence remember each item's disclosure
+choices while background updates arrive and when you switch away and back.
+A new review snapshot resets those choices. Section context follows its exact
+source ranges into the same evidence workspace.
 
 Code explanations lead with the behavioral change, then walk through execution
 order, early exits, precedence, fallbacks, and a concrete source-derived example.

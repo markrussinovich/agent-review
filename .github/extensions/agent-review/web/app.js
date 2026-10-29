@@ -57,6 +57,9 @@ const state = {
     exploring: false,
     fileReviewDrafts: new Map(),
     annotationRequests: new Map(),
+    annotationDisclosures: new Map(),
+    annotationView: null,
+    annotationGeneration: null,
 };
 const elements = Object.fromEntries([
     "source-coverage", "source-position", "diff-layout", "source-strip", "source-strip-toggle", "source-strip-body", "overview-layers", "overview-stats", "overview-limitation",
@@ -640,6 +643,8 @@ function setDiscussionMode(active) {
 function renderSectionEvidence() {
     const section = state.sectionData?.sections.find((section) => section.id === state.selected?.id);
     if (!section || !state.source) return false;
+    rememberAnnotationDisclosures();
+    state.annotationView = null;
     const panel = elements.source_annotation;
     panel.replaceChildren(el("h3", "", section.title),
         el("p", "muted", section.summary_citations.length ? "Section-level AI interpretation; verify the cited source." : "Source-derived section context, not a defect finding."),
@@ -4024,7 +4029,83 @@ function extractRisk(body) {
 }
 
 function renderAnnotation(item, annotation, loading = false) {
+    const panel = elements.source_annotation;
+    const side = panel.closest(".source-side");
+    const generation = state.payload?.review_generation;
+    if (state.annotationGeneration !== generation) {
+        state.annotationDisclosures.clear();
+        state.annotationView = null;
+        state.annotationGeneration = generation;
+    }
+    rememberAnnotationDisclosures();
+    const previous = state.annotationView;
+    const sameItem = previous?.id === item?.id && previous?.generation === generation
+        && previous?.root?.parentNode === panel;
+    const scroll = sameItem && side ? { top: side.scrollTop, left: side.scrollLeft } : null;
+    const active = panel.contains(document.activeElement) ? document.activeElement : null;
+    const focusKey = sameItem ? active?.dataset.annotationFocus : null;
+    // The source model is immutable within a review generation; attribution can arrive later.
+    const key = JSON.stringify([generation, item?.id, item?.title || item?.name, item?.node_id, loading,
+        Boolean(annotation), annotation?.body, annotation?.error, annotation?.evidence_ids, state.attribution?.[0]]);
     renderReviewContext();
+    if (!sameItem || previous.key !== key) {
+        renderAnnotationContent(item, annotation, loading);
+        const counts = new Map();
+        for (const control of panel.querySelectorAll("summary, button, a")) {
+            const identity = JSON.stringify([control.tagName, control.className,
+                control.tagName === "SUMMARY" ? control.parentElement.dataset.annotationDisclosure
+                    : control.title || control.getAttribute("aria-label") || control.textContent]);
+            const occurrence = counts.get(identity) || 0;
+            counts.set(identity, occurrence + 1);
+            control.dataset.annotationFocus = `${identity}:${occurrence}`;
+        }
+        state.annotationView = { id: item?.id, generation, key, root: panel.firstChild };
+        if (focusKey && (!document.activeElement || document.activeElement === document.body || panel.contains(document.activeElement))) {
+            const target = [...panel.querySelectorAll("[data-annotation-focus]")]
+                .find((control) => control.dataset.annotationFocus === focusKey)
+                || panel.querySelector("summary") || panel.querySelector(".annotation-deepen, button");
+            if (target) target.focus({ preventScroll: true });
+            else if (panel.firstElementChild) {
+                panel.firstElementChild.dataset.annotationFocus = "heading";
+                panel.firstElementChild.tabIndex = -1;
+                panel.firstElementChild.focus({ preventScroll: true });
+            }
+        }
+    }
+    if (scroll) {
+        side.scrollTop = scroll.top;
+        side.scrollLeft = scroll.left;
+    }
+}
+
+function rememberAnnotationDisclosures() {
+    const view = state.annotationView;
+    if (!view || view.generation !== state.payload?.review_generation
+        || view.root?.parentNode !== elements.source_annotation) return;
+    const saved = state.annotationDisclosures.get(view.id) || {};
+    for (const details of elements.source_annotation.querySelectorAll("details[data-annotation-disclosure]")) {
+        saved[details.dataset.annotationDisclosure] = details.open;
+    }
+    state.annotationDisclosures.set(view.id, saved);
+}
+
+function annotationDisclosure(item, name, className, label) {
+    const details = el("details", className);
+    const generation = state.payload?.review_generation;
+    details.dataset.annotationDisclosure = name;
+    details.open = Boolean(state.annotationDisclosures.get(item.id)?.[name]);
+    details.append(el("summary", "", label));
+    details.addEventListener("toggle", () => {
+        if (!details.isConnected || state.payload?.review_generation !== generation
+            || state.annotationView?.id !== item.id) return;
+        const saved = state.annotationDisclosures.get(item.id) || {};
+        saved[name] = details.open;
+        state.annotationDisclosures.set(item.id, saved);
+    });
+    return details;
+}
+
+function renderAnnotationContent(item, annotation, loading) {
     const panel = elements.source_annotation;
     panel.replaceChildren();
     if (!item || (!loading && !annotation)) {
@@ -4063,8 +4144,7 @@ function renderAnnotation(item, annotation, loading = false) {
     const primary = sections.find((section) => /what changed|behavior|summary|findings/i.test(section.title)) || sections[0];
     if (primary && sections.length > 1) {
         renderMarkdown(body, primary.text);
-        const more = el("details", "annotation-more");
-        more.append(el("summary", "", "Full explanation"));
+        const more = annotationDisclosure(item, "explanation", "annotation-more", "Full explanation");
         const full = el("div", "");
         renderMarkdown(full, [preamble, ...sections.filter((section) => section !== primary).map((section) => section.text)].join("\n"));
         more.append(full);
@@ -4082,8 +4162,7 @@ function renderAnnotation(item, annotation, loading = false) {
     });
     panel.append(deepen);
     if (annotation.evidence_ids?.length) {
-        const citations = el("details", "annotation-citations");
-        citations.append(el("summary", "", `Evidence (${annotation.evidence_ids.length})`));
+        const citations = annotationDisclosure(item, "evidence", "annotation-citations", `Evidence (${annotation.evidence_ids.length})`);
         const list = el("div", "evidence-list");
         list.append(...annotation.evidence_ids.map(evidenceButton));
         citations.append(list);
@@ -7480,6 +7559,9 @@ function updateReviewApply() {
 }
 
 function resetReviewNavigation() {
+    state.annotationDisclosures.clear();
+    state.annotationView = null;
+    state.annotationGeneration = null;
     clearTimeout(state.cursorSaveTimer);
     state.progressReady = false;
     state.progressSaving = false;
