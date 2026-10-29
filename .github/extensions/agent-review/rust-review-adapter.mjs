@@ -1,7 +1,6 @@
-import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { pythonCandidates } from "./python-runtime.mjs";
-import { cargoTestCommand, cargoTestPlan, formatCargoTestCommand, resolveCargoRuntime, runCargoTests } from "./rust-test-run.mjs";
+import { cargoTestCommand, cargoTestPlan, formatCargoTestCommand, resolveCargoRuntime, runCargoTests, rustSourceHash } from "./rust-test-run.mjs";
 import { isTestPath } from "./web/languages.mjs";
 
 function buildCodePathRequest(model) {
@@ -21,7 +20,7 @@ function buildCodePathRequest(model) {
         if (typeof saved.baseline === "string") baseline[path] = saved.baseline;
         if (typeof saved.current === "string") {
             current[path] = saved.current;
-            if (rust) source_hashes[path] = createHash("sha256").update(saved.current).digest("hex");
+            if (rust) source_hashes[path] = rustSourceHash(saved.current);
         }
     }
     return { baseline, current, callables, source_hashes };

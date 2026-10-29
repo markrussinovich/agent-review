@@ -618,11 +618,15 @@ export async function runReview({
                 unit.evidence.forEach((item) => entries.set(item.id, item));
                 for (const path of unit.rule_paths || []) rulePaths.add(path);
             }
-            // Full rule sources also have work units; attach applicable source when space permits.
-            let omittedRules = 0;
+            // Full rule sources also have work units. Applicable rule text has its own budget, so
+            // packing more change units into a request cannot crowd it out; units are packed around it.
+            let omittedRules = 0, ruleSize = 0;
             for (const rule of plan.rules) if (rulePaths.has(rule.path) && !entries.has(rule.id)) {
-                if (size([...entries.values(), rule]) < limits.requestCharacters / 2) entries.set(rule.id, rule);
-                else omittedRules++;
+                const next = ruleSize + size(rule);
+                if (next < limits.requestCharacters / 2) {
+                    entries.set(rule.id, rule);
+                    ruleSize = next;
+                } else omittedRules++;
             }
             return { phase: "analyze", instruction, intent, units: units.map(({ evidence, ...unit }) => unit),
                 evidence: [...entries.values()], omitted_rule_excerpts: omittedRules };

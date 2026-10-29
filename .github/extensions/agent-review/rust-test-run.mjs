@@ -4,6 +4,11 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { spawnOwnedAnalyzer } from "./ownership-guard.mjs";
 
+export function rustSourceHash(source) {
+    // Rust source loading ignores a leading BOM and normalizes CRLF to LF.
+    return createHash("sha256").update(source.replace(/^\uFEFF/, "").replaceAll("\r\n", "\n")).digest("hex");
+}
+
 export function resolveCargoRuntime(root, config = {}) {
     const configured = config.test_cargo || process.env.AGENT_REVIEW_TEST_CARGO;
     const executable = configured && !isAbsolute(configured) && existsSync(join(root, configured))
@@ -59,9 +64,9 @@ async function verifySources(root, hashes) {
         if (!local || local === ".." || local.startsWith(`..${sep}`) || isAbsolute(local)
             || !/^[a-f0-9]{64}$/.test(expected)) throw new Error(`Invalid reviewed Rust source hash: ${path}`);
         let source;
-        try { source = await readFile(file); }
+        try { source = await readFile(file, "utf8"); }
         catch (error) { throw new Error(`Unable to verify reviewed Rust source ${path}: ${error.message}`); }
-        if (createHash("sha256").update(source).digest("hex") !== expected) {
+        if (rustSourceHash(source) !== expected) {
             throw new Error(`Reviewed Rust source changed: ${path}. Reanalyze before running linked tests.`);
         }
     }

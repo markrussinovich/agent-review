@@ -144,6 +144,32 @@ test("filename examples do not invent missing documents, but explicit rule links
         .map((unit) => unit.path).sort(), ["docs/style.md", "src/app.rs"]);
 });
 
+test("every request that reviews a change carries the rule text that governs it, however many units are packed", async () => {
+    const reviewed = model(12);
+    for (const { path } of reviewed.changes) {
+        const lines = Array.from({ length: 50 }, (_, index) => `export const value${index} = "${"x".repeat(80)}";`);
+        reviewed.source_files[path] = { current: lines.join("\n"), baseline: "old\n",
+            diff: "@@ -1 +1,50 @@\n-old\n" + lines.map((line) => `+${line}\n`).join("") };
+    }
+    const sources = [{ path: "AGENTS.md", text: "Delays are milliseconds.\n".repeat(400),
+        line_offset: 0, applies_to: reviewed.changes.map((change) => change.path) }];
+    const ruleIds = planReview(reviewed, sources).rules.map((item) => item.id);
+    assert.ok(ruleIds.length > 1, "the rule spans several evidence items");
+    const governed = [];
+    const result = await runReview({ model: reviewed, instruction: "Check correctness.", sources,
+        generate: async (context) => {
+            if (context.units.some((unit) => unit.kind === "change")) governed.push(context);
+            return response(context);
+        } });
+    assert.equal(result.status, "complete");
+    assert.ok(governed.length > 1, "the change needs several requests");
+    for (const context of governed) {
+        const supplied = new Set(context.evidence.map((item) => item.id));
+        assert.ok(ruleIds.every((id) => supplied.has(id)), "the governing rule text is supplied");
+        assert.equal(context.omitted_rule_excerpts, 0);
+    }
+});
+
 test("citations must reference an actually supplied line, including the correct snapshot side", () => {
     const plan = planReview(model());
     const item = plan.units[0].evidence[0];
