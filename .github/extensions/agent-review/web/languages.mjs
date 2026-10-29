@@ -5,6 +5,7 @@ export const LANGUAGE_SUPPORT = Object.freeze([
     Object.freeze({ id: "csharp", name: "C# / .NET", extensions: Object.freeze([".cs"]) }),
     Object.freeze({ id: "go", name: "Go", extensions: Object.freeze([".go"]) }),
     Object.freeze({ id: "rust", name: "Rust", extensions: Object.freeze([".rs"]) }),
+    Object.freeze({ id: "markdown", name: "Markdown", executable: false, extensions: Object.freeze([".md"]) }),
 ]);
 
 export function languageForPath(path) {

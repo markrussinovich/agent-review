@@ -256,7 +256,7 @@ async function acquireLock(directory, deadline) {
         "PROMPT_LOCK_TIMEOUT", 500);
 }
 
-async function withLocks(directories, operation) {
+export async function withLocks(directories, operation) {
     const releases = [];
     let result;
     let failure;

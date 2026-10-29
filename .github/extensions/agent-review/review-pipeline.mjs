@@ -5,8 +5,9 @@ import { ExplanationValidationError } from "./ai-response.mjs";
 import { isTestPath } from "./web/languages.mjs";
 import { repositoryRuleReferences } from "./review-contracts.mjs";
 import { impactSlice } from "./web/impact-model.mjs";
+import { effectiveDocuments } from "./markdown-context.mjs";
 
-const VERSION = 6;
+const VERSION = 7;
 export const REVIEW_LIMITS = Object.freeze({
     requestCharacters: 64_000, evidenceCharacters: 8_000, responseCharacters: 24_000,
     maxRequests: 64, maxRetrievals: 128, timeoutMs: 600_000, requestTimeoutMs: 120_000,
@@ -71,6 +72,8 @@ export function planReview(model, sources = [], limits = REVIEW_LIMITS) {
     const units = [];
     const ruleEvidence = [];
     const rulesByPath = new Map();
+    const documents = { base: effectiveDocuments(model.instruction_documents?.base, model.instruction_role_overrides),
+        current: effectiveDocuments(model.instruction_documents?.current, model.instruction_role_overrides) };
     for (const source of sources) {
         for (const path of source.applies_to) {
             const paths = rulesByPath.get(path) || [];
@@ -87,7 +90,7 @@ export function planReview(model, sources = [], limits = REVIEW_LIMITS) {
         }
     }
     const referenced = new Set(sources.map((source) => source.path));
-    for (const reference of repositoryRuleReferences(sources, model.source_files || {})) {
+    for (const reference of repositoryRuleReferences(sources, model.source_files || {}, model.instruction_documents?.current)) {
         if (referenced.has(reference.path)) continue;
         referenced.add(reference.path);
         const saved = model.source_files?.[reference.path];
@@ -120,6 +123,9 @@ export function planReview(model, sources = [], limits = REVIEW_LIMITS) {
         for (const item of items) units.push({
             id: item.id, path: change.path, kind: "change", evidence: [item],
             rule_paths: rulesByPath.get(change.path) || [],
+            ...(change.path.toLowerCase().endsWith(".md") ? {
+                document_role: documents.current[change.path]?.role || documents.base[change.path]?.role,
+            } : {}),
         });
     }
     const supporting = new Set();
@@ -198,7 +204,7 @@ export function planReview(model, sources = [], limits = REVIEW_LIMITS) {
 
 export function reviewIdentity(model, instruction, modelId) {
     const hash = createHash("sha256");
-    hash.update(JSON.stringify([VERSION, model.metadata, instruction, modelId]));
+    hash.update(JSON.stringify([VERSION, model.metadata, instruction, modelId, model.instruction_role_overrides || {}]));
     for (const path of Object.keys(model.source_files || {}).sort()) {
         hash.update(JSON.stringify([path, model.source_files[path]]));
     }
@@ -309,6 +315,9 @@ export function buildReviewPrompt(context) {
             ? "Verify every candidate finding and cross-file interaction against the supplied source. Return decisions as an object keyed by EVERY supplied candidate ID, with values {verdict:'supported'|'rejected'|'unresolved'|'duplicate',title,detail,reason,citations,duplicate_of:''|candidateID}. For supported decisions, finalize title/detail to include ONLY the supported failure; remove or narrow unverified parts of the original claim. Use an empty duplicate_of except for a duplicate. Only mark duplicate for the same root cause AND failure scenario. Do not re-emit candidates or their rewritten versions in findings; reserve findings for genuinely different new problems. Request missing source to settle uncertain claims."
             : "Inspect every assigned unit. Collect evidenced before/after behavior and actionable defects with a concrete failure scenario. Request missing snapshot ranges when needed, especially callers, tests, validators, and referenced documents.",
         "No speculation from absent context. Missing evidence is unresolved, not satisfied. Static-analysis heuristics are not proof of defects.",
+        "Markdown units describe documents, not executable symbols. For instruction documents, compare obligations, evidence requirements, required stops, permissions, prohibitions, and conditional exceptions. Ordinary documentation and quoted examples do not independently impose agent obligations. Never invent callers or execution guarantees.",
+        "Check concrete contradictions, circular prerequisites, missing local references, unclear exceptions, permission broadening and weakened checks, citing before and after text. Tool mentions without an authoritative inventory are unverified. Separate authoring prerequisites from deployment readiness and tool permissions from agent permissions.",
+        "Distinguish deterministic reference checks, AI semantic interpretations, and observed agent evaluations. Neither code coverage nor repository tests prove instruction compliance. References and packaging do not prove an agent read or followed a document. Precedence is unknown unless an explicit host/loading contract establishes it.",
         "For rule-only units, extract checkable requirements with citations; do not report absent changed code as a gap in that pass, because changed units are processed separately. Process rules such as running tests are not source-code defects.",
         "Keep severity separate from confidence. Do not cap findings to a final report's display limit; preserve distinct supported problems.",
         "Return ONLY JSON with these arrays: completed (assigned unit IDs successfully analyzed), observations ({claim,citations}), findings ({title,detail,category,severity:'high'|'medium'|'low',confidence:0..1,citations}), unresolved ({reason,citations}), requests ({path,side:'base'|'current',start_line,end_line}).",
@@ -618,6 +627,33 @@ export async function runReview({
                 unit.evidence.forEach((item) => entries.set(item.id, item));
                 for (const path of unit.rule_paths || []) rulePaths.add(path);
             }
+            const documentContext = [];
+            for (const path of new Set(units.map((unit) => unit.path))) {
+                for (const side of ["base", "current"]) {
+                    const facts = model.instruction_documents?.[side];
+                    const document = effectiveDocuments(facts, model.instruction_role_overrides)[path];
+                    if (!document) continue;
+                    const relationships = (facts.relationships || []).filter((edge) => edge.path === path || edge.from === path).slice(0, 20);
+                    const metadata = { path, side, role: document.role, classification: document.classification,
+                        relationships: [], observed_behavior: facts.observed_behavior, precedence: facts.precedence };
+                    for (const edge of relationships) {
+                        if (size([...documentContext, { ...metadata, relationships: [...metadata.relationships, edge] }]) > limits.requestCharacters / 5) break;
+                        metadata.relationships.push(edge);
+                    }
+                    metadata.omitted_relationships = (facts.relationships || []).filter((edge) => edge.path === path || edge.from === path).length
+                        - metadata.relationships.length;
+                    documentContext.push(metadata);
+                    for (const edge of relationships) {
+                        const saved = model.source_files?.[edge.from];
+                        const text = side === "base" && saved?.baseline_same ? saved.current : saved?.[side === "base" ? "baseline" : "current"];
+                        if (typeof text !== "string") continue;
+                        const lines = text.split(/\r?\n/).slice(Math.max(0, edge.line - 2), edge.line + 1)
+                            .map((text, index) => ({ line: Math.max(1, edge.line - 1) + index, text }));
+                        const item = evidence(edge.from, side, lines);
+                        if (size([...entries.values(), item]) < limits.requestCharacters / 3) entries.set(item.id, item);
+                    }
+                }
+            }
             // Full rule sources also have work units; attach applicable source when space permits.
             let omittedRules = 0;
             for (const rule of plan.rules) if (rulePaths.has(rule.path) && !entries.has(rule.id)) {
@@ -625,7 +661,7 @@ export async function runReview({
                 else omittedRules++;
             }
             return { phase: "analyze", instruction, intent, units: units.map(({ evidence, ...unit }) => unit),
-                evidence: [...entries.values()], omitted_rule_excerpts: omittedRules };
+                evidence: [...entries.values()], omitted_rule_excerpts: omittedRules, instruction_documents: documentContext };
         };
         const flush = async () => {
             if (!group.length) return;

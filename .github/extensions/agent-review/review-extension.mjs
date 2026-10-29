@@ -3,7 +3,7 @@ import { canvasDefinition } from "./canvas-definition.mjs";
 import { createExplanationRuntime, generateIsolatedExplanation } from "./ai-explainer.mjs";
 import { buildCustomAnalysisPrompt, CUSTOM_ANALYSIS_HEADINGS, validateCustomAnalysis } from "./custom-analysis.mjs";
 import {
-    ANNOTATION_HEADINGS,
+    annotationHeadings,
     buildAnnotationPrompt,
     buildAnnotationVerificationPrompt,
     buildOverviewPrompt,
@@ -118,7 +118,7 @@ function createReviewState(requestedPath, input) {
                 workingDirectory: state.repoRoot,
                 prompt: overview ? buildOverviewPrompt(context) : buildAnnotationPrompt(context),
                 sourceEvents: await session.getEvents(),
-                requiredHeadings: overview ? OVERVIEW_HEADINGS : ANNOTATION_HEADINGS,
+                requiredHeadings: overview ? OVERVIEW_HEADINGS : annotationHeadings(context),
                 ...(!overview ? { verifyPrompt: (draft) => buildAnnotationVerificationPrompt(context, draft) } : {}),
             });
         },

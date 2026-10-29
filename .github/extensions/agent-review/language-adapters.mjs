@@ -3,10 +3,12 @@ import { NODE_REVIEW_ADAPTER } from "./node-review-adapter.mjs";
 import { DOTNET_REVIEW_ADAPTER } from "./dotnet-review-adapter.mjs";
 import { GO_REVIEW_ADAPTER } from "./go-review-adapter.mjs";
 import { RUST_REVIEW_ADAPTER } from "./rust-review-adapter.mjs";
+import { MARKDOWN_REVIEW_ADAPTER } from "./markdown-review-adapter.mjs";
 import { languageForPath } from "./web/languages.mjs";
 
 export const REVIEW_ADAPTERS = Object.freeze([
     PYTHON_REVIEW_ADAPTER, NODE_REVIEW_ADAPTER, DOTNET_REVIEW_ADAPTER, GO_REVIEW_ADAPTER, RUST_REVIEW_ADAPTER,
+    MARKDOWN_REVIEW_ADAPTER,
 ]);
 
 export function reviewAdapter(id = "python") {
@@ -68,5 +70,7 @@ export function testAdapterForMap(map) {
     if (ids.length !== 1) {
         throw new Error("This review spans multiple test adapters. Run linked tests per language; combined execution is not implemented yet.");
     }
-    return reviewAdapter(ids[0]);
+    const adapter = reviewAdapter(ids[0]);
+    if (!adapter.tests) throw new Error(`${adapter.id} documents do not have an executable test adapter. Instruction compliance requires controlled agent evaluations.`);
+    return adapter;
 }

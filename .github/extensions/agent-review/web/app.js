@@ -3642,7 +3642,7 @@ function ensureAnnotation(item, epoch = state.selectionEpoch) {
     renderAnnotation(item, null, true);
     requestAnnotation(item)
         .then((annotation) => {
-            if (epoch === state.selectionEpoch && state.selected?.id === item.id) {
+            if (state.payload?.review_generation === generation && epoch === state.selectionEpoch && state.selected?.id === item.id) {
                 renderAnnotation(item, annotation);
             }
             if (state.payload?.review_generation === generation && state.prefetchStatus?.id === item.id) {
@@ -3651,7 +3651,8 @@ function ensureAnnotation(item, epoch = state.selectionEpoch) {
             }
         })
         .catch((error) => {
-            if (epoch === state.selectionEpoch && state.selected?.id === item.id) renderAnnotation(item, { error: error.message });
+            if (state.payload?.review_generation === generation && epoch === state.selectionEpoch
+                && state.selected?.id === item.id) renderAnnotation(item, { error: error.message });
         });
 }
 
@@ -4077,7 +4078,9 @@ function renderAnnotation(item, annotation, loading = false) {
         try {
             await discussItem(item);
             if (discussionPane.item?.id !== item.id || state.selected?.id !== item.id) return;
-            discussionPane.prefill("Walk through this change step by step: explain before/after control flow, precedence and fallbacks, a concrete input/output example, affected consumers, and what the saved tests do or do not establish. Cite the saved code.");
+            discussionPane.prefill(state.source?.path?.toLowerCase().endsWith(".md")
+                ? "Explain the before/after obligations, evidence requirements, required stops, permissions and exceptions. Show how this document reaches an agent, cite both saved versions, and distinguish interpretation from observed behavior."
+                : "Walk through this change step by step: explain before/after control flow, precedence and fallbacks, a concrete input/output example, affected consumers, and what the saved tests do or do not establish. Cite the saved code.");
         } catch (error) { showError(error); }
     });
     panel.append(deepen);
@@ -6086,6 +6089,136 @@ function renderSourceRisk() {
     renderSourceStrip();
 }
 
+function renderMarkdownEvidence(panel) {
+    const path = state.source.path;
+    const facts = state.payload.model.instruction_documents;
+    if (!facts?.current?.documents?.[path] && !facts?.base?.documents?.[path]) return false;
+    const generation = state.payload.review_generation;
+    const cached = state.documentRoleView;
+    if (!cached || cached.generation !== generation) {
+        state.documentRoleView = { generation, loading: true };
+        api("/api/document-roles").then(({ roles }) => {
+            if (state.payload.review_generation !== generation) return;
+            state.documentRoleView = { generation, roles };
+            if (state.source) renderReviewContext();
+        }).catch((error) => {
+            if (state.payload.review_generation !== generation) return;
+            state.documentRoleView = { generation, error: error.message };
+            if (state.source) renderReviewContext();
+        });
+    }
+    const view = state.documentRoleView;
+    if (view.loading) { panel.append(el("p", "muted", "Loading document classification…")); return true; }
+    if (view.error) {
+        const retry = el("button", "link-button", "Retry classification");
+        retry.type = "button";
+        retry.addEventListener("click", () => { state.documentRoleView = null; renderReviewContext(); });
+        panel.append(el("p", "", `Unable to load document roles: ${view.error}`), retry);
+        return true;
+    }
+    const side = state.sourceTab === "base" || !facts.current.documents[path] ? "base" : "current";
+    const document = view.roles.documents[side][path];
+    if (!document) { panel.append(el("p", "muted", `This document is absent from the ${side} snapshot.`)); return true; }
+    const labels = { instructions: "Agent instructions", supporting: "Supporting reference", documentation: "Ordinary documentation", example: "Quoted / example material" };
+    const section = el("section", "review-context-question markdown-evidence");
+    section.append(el("h3", "", "Document role"),
+        el("p", "", `${labels[document.role]} · ${side === "base" ? "Base" : "Current"} saved snapshot${
+            document.overridden ? " · Reviewer correction" : document.inherited_correction ? " · From corrected reference path" : ""}`),
+        el("p", "muted", `Analyzer: ${labels[document.original_role]}. ${document.classification.reason}`));
+    const rationale = document.classification;
+    section.append(sourceReferenceButton("Classification evidence", { path: rationale.path || path, lines: [rationale.line || 1], side }));
+    const label = el("label", "", "Correct document role");
+    const select = el("select", "");
+    select.setAttribute("aria-label", "Correct document role");
+    for (const [value, title] of Object.entries(labels)) {
+        const option = el("option", "", title);
+        option.value = value;
+        select.append(option);
+    }
+    select.value = document.role;
+    label.append(select);
+    const save = el("button", "", "Save role"), reset = el("button", "link-button", "Reset to analyzer");
+    save.type = reset.type = "button";
+    reset.disabled = !document.overridden;
+    const status = el("p", "muted", view.roles.durable ? "Corrections are saved for this review snapshot." : "Memory-only: this provider has no session workspace.");
+    status.setAttribute("role", "status");
+    const submit = async (role) => {
+        save.disabled = reset.disabled = select.disabled = true;
+        status.textContent = "Saving document role…";
+        try {
+            await api("/api/document-roles", { method: "POST", body: JSON.stringify({
+                snapshot: view.roles.snapshot, revision: view.roles.revision, path, role,
+            }) });
+            state.payload = await api("/api/state");
+            state.documentRoleView = null;
+            render();
+            await renderSource({ preserveScroll: true });
+            if (state.selected) ensureAnnotation(state.selected);
+        } catch (error) {
+            status.textContent = `Unable to save: ${error.message}`;
+            save.disabled = select.disabled = false;
+            reset.disabled = !document.overridden;
+        }
+    };
+    save.addEventListener("click", () => void submit(select.value));
+    reset.addEventListener("click", () => void submit(null));
+    section.append(label, save, reset, status);
+    panel.append(section);
+    const relationships = el("section", "review-context-question");
+    relationships.append(el("h3", "", "How it reaches an agent"),
+        el("p", "muted", "Deterministic source references, not proof that an agent received, read, or obeyed this document."));
+    const edges = facts[side].relationships || [];
+    const queue = [path], visited = new Set([path]), selected = new Set();
+    let cycle = false;
+    while (queue.length && visited.size <= 40) {
+        const target = queue.shift();
+        for (const edge of edges.filter((edge) => edge.path === target
+            && (["instructions", "supporting"].includes(view.roles.documents[side][edge.from]?.role)
+                || ["supplies_instructions", "packages"].includes(edge.kind)))) {
+            if (selected.has(edge.id)) continue;
+            selected.add(edge.id);
+            const row = el("p", "");
+            row.append(sourceReferenceButton(`${edge.from}:${edge.line}`, { path: edge.from, lines: [edge.line], side }),
+                documentText(` ${edge.kind === "prescribes" ? "prescribes use of" : edge.kind} ${edge.path} (${edge.status})`));
+            relationships.append(row);
+            if (visited.has(edge.from)) { cycle = true; continue; }
+            visited.add(edge.from);
+            queue.push(edge.from);
+        }
+    }
+    if (!selected.size) relationships.append(el("p", "", document.root
+        ? "Recognized entry-point convention; no explicit supplying loader was established in this snapshot."
+        : "No incoming consumption path is established in the saved snapshot."));
+    if (cycle) relationships.append(el("p", "muted", "A reference cycle or converging path was encountered; no execution order is implied."));
+    if (visited.size > 40) relationships.append(el("p", "muted", "Consumption-path display was limited to 40 documents."));
+    const outgoing = edges.filter((edge) => edge.from === path);
+    const referenceDetails = el("details", "markdown-references");
+    referenceDetails.append(el("summary", "", `Local and external references (${outgoing.length})`));
+    for (const edge of outgoing.slice(0, 40)) {
+        const row = el("p", "");
+        row.append(sourceReferenceButton(`Line ${edge.line}`, { path, lines: [edge.line], side }),
+            documentText(` ${edge.kind}: ${edge.path || edge.target} — ${edge.status === "missing" ? "not found in saved snapshot" : edge.status}`));
+        if (edge.status === "resolved") row.append(documentText(" "), sourceReferenceButton("Open saved target", { path: edge.path, lines: [], side }));
+        referenceDetails.append(row);
+    }
+    if (outgoing.length > 40) referenceDetails.append(el("p", "muted", `${outgoing.length - 40} further references are omitted from this display.`));
+    if (outgoing.length) relationships.append(referenceDetails);
+    panel.append(relationships);
+    const verification = el("section", "review-context-question");
+    verification.append(el("h3", "", "Evidence and limits"),
+        el("p", "", "Deterministic checks: document structure and local reference resolution."),
+        el("p", "", "AI interpretation: explanations and semantic concerns are not execution guarantees."),
+        el("p", "", "Observed agent behavior: unavailable. Repository tests and code coverage do not measure instruction compliance."),
+        el("p", "muted", facts[side].precedence));
+    for (const gap of facts[side].gaps || []) verification.append(el("p", "muted", `${gap.path || "Markdown analysis"}: ${gap.reason}`));
+    panel.append(verification);
+    return true;
+}
+
+function documentText(text) {
+    return document.createTextNode(text);
+}
+
 function renderReviewContext() {
     const panel = elements.source_review_context;
     // Re-renders replace the verify controls; remember which one had keyboard focus so it can be restored.
@@ -6093,6 +6226,7 @@ function renderReviewContext() {
     panel.replaceChildren();
     panel.classList.toggle("hidden", !state.source);
     if (!state.source || !state.payload?.model) return;
+    if (renderMarkdownEvidence(panel)) return;
     const annotation = state.payload.annotations?.[state.selected?.id];
     const context = reviewContext(state.payload.model, { path: state.source.path, selected: state.selected,
         decisionMap: state.payload.decision_map, run: state.payload.test_run, annotation });
@@ -6142,7 +6276,7 @@ function renderSourceDecisions() {
     const subject = !selected ? null : selected.kind === "file" ? selected
         : model?.nodes.find((node) => node.id === (selected.node_id || selected.id)) || null;
     const callables = map?.status === "complete" ? callablesForSubject(map, model, subject) : [];
-    const loading = map?.status === "loading" && languageForPath(subject?.path)
+    const loading = map?.status === "loading" && languageForPath(subject?.path) && languageForPath(subject?.path).executable !== false
         && (isReviewSymbol(subject) || ["module", "file"].includes(subject.kind || subject.type));
     const run = state.payload?.test_run;
     const key = JSON.stringify([map?.status, map?.total_ms, subject?.id, subject?.path, state.source?.path,
@@ -7839,8 +7973,19 @@ function connectEvents() {
             state.customPrompts = [];
             state.customLibraryError = null;
         }
+        const roleCorrection = payload.type === "document-roles" && payload.model?.review_snapshot_key
+            && payload.model.review_snapshot_key === state.payload?.model?.review_snapshot_key;
         if (state.payload?.review_generation !== payload.review_generation
-            && payload.model && !payload.loading) resetReviewNavigation();
+            && payload.model && !payload.loading && !roleCorrection) resetReviewNavigation();
+        if (roleCorrection) {
+            state.documentRoleView = null;
+            state.annotationRequests.clear();
+            state.prefetchedAnnotations = new Set();
+            state.prefetchStatus = null;
+            state.overviewLoading = false;
+            state.layerSummaryLoading = false;
+            state.layerSummaryRequested = null;
+        }
         connectionFeedback.connected();
         state.payload = payload;
         if (state.discussionMode && discussionPane.thread?.id === payload.discussion_update?.id) {
@@ -7865,6 +8010,11 @@ function connectEvents() {
         }
         if (["connected", "refreshed", "repository-changed"].includes(state.payload.type)) loadCustomPrompts();
         render();
+        if (roleCorrection && state.source) {
+            renderSource({ preserveScroll: true }).then(() => {
+                if (state.selected) ensureAnnotation(state.selected);
+            }).catch(showError);
+        }
         if (state.payload.type === "session-history" && state.source?.path) {
             const epoch = state.selectionEpoch;
             refreshAttribution().then(() => {

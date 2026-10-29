@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { join } from "node:path";
 import { buildCodePathRequests, mergeCodePathMaps, reviewAdapter, sourceAdapter, testAdapterForMap } from "../language-adapters.mjs";
 import { buildDecisionRequest } from "../review-state.mjs";
 import { isTestPath, languageForPath } from "../web/languages.mjs";
@@ -11,7 +12,10 @@ test("language support is shared and advertises implemented adapters only", () =
     assert.equal(languageForPath("cmd/main.go").id, "go");
     assert.equal(sourceAdapter("App.cs"), reviewAdapter("csharp"));
     assert.equal(sourceAdapter("cmd/main.go"), reviewAdapter("go"));
-    for (const path of ["README.md", undefined]) {
+    assert.equal(sourceAdapter("README.md"), reviewAdapter("markdown"));
+    assert.equal(reviewAdapter("markdown").capabilities.testExecution, false);
+    assert.throws(() => testAdapterForMap({ adapter_id: "markdown" }), /controlled agent evaluations/);
+    for (const path of ["README.txt", undefined]) {
         assert.equal(languageForPath(path), null);
         assert.equal(sourceAdapter(path), null);
     }
@@ -38,7 +42,7 @@ test("Python code path requests and runtime routing retain existing behavior", (
     assert.deepEqual(buildCodePathRequests(model, "C:\\repo"), [{ ...legacy, adapter_id: "python" }]);
     assert.deepEqual(buildCodePathRequests({ symbols: [], source_files: {} }, "C:\\repo"), []);
     const parser = reviewAdapter().codePathProcess("C:\\extension", "C:\\request.json");
-    assert.deepEqual(parser.args, ["C:\\extension\\analyzer\\decisions.py", "--input", "C:\\request.json"]);
+    assert.deepEqual(parser.args, [join("C:\\extension", "analyzer", "decisions.py"), "--input", "C:\\request.json"]);
     assert.deepEqual(parser.candidates, pythonCandidates());
     assert.equal(testAdapterForMap({ adapter_id: "python" }).tests.command({ executable: "py" }, { tests: [] })[2], "pytest");
 });

@@ -1,7 +1,7 @@
 # Agent Review
 
 A GitHub Copilot Canvas extension for reviewing agent-made changes in Python,
-Node.js/TypeScript, C#/.NET, Go, and Rust repositories. Start with the change's intent and architecture,
+Node.js/TypeScript, C#/.NET, Go, Rust, and Markdown repositories. Start with the change's intent and architecture,
 then follow its impact down to findings, dependency evidence, and source diffs.
 
 [![Agent Review: change brief, architecture graph, attention queue, package changes, source diff, originating prompt, and AI briefing](docs/agent-review.png)](docs/agent-review.png)
@@ -47,6 +47,53 @@ Run the setup/regression checks with `node --test test-repos/tests/prepare.test.
 The large sample's two failing tests are intentional; its guide identifies them.
 
 ## Features and insights
+
+### Review agent instructions
+
+Markdown reviews preserve both saved versions and parse headings, frontmatter,
+lists, links, fenced examples, and quotations into line-addressable evidence.
+Recognized entry points include `SKILL.md`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`,
+and Copilot instruction files. An explicit instruction to follow a local
+reference can establish its intended instruction role; a bare link establishes
+only supporting material. An imperative in an ordinary README does not turn it
+into an agent instruction.
+
+The **Evidence** pane shows the document role, its classification evidence,
+and incoming reference paths, with links to the correct saved source side.
+**Correct document role** saves a reviewer interpretation for this snapshot;
+**Reset to analyzer** removes it. Corrections persist in the session workspace
+and invalidate derived AI interpretations, not file-review decisions or source
+documents. Providers without a workspace explicitly identify memory-only storage.
+Conflicting saves are rejected rather than silently overwriting another tab.
+
+Markdown explanations compare prescribed obligations, evidence requirements,
+required stops, permissions, and conditional exceptions instead of inventing
+functions or callers. Supporting documents and quoted examples remain distinct
+from active rules. Missing local files and heading fragments are deterministic
+checks; contradictions and predicted failure scenarios are AI interpretations.
+No controlled agent evaluation is run by this adapter. Repository test results
+and code coverage do not measure instruction compliance.
+
+References resolve only within each saved snapshot, never by fetching external
+URLs or executing embedded commands. Structure and relationship limits are
+reported as evidence gaps. Literal module-relative JavaScript file reads into
+an `instructions` field can establish intended supply; literal copy operations
+establish packaging only. Other dynamic loading contracts remain unverified.
+A reference, loader, or packaging step does not prove an agent received, read,
+or obeyed the document. Document precedence remains unknown without an explicit
+host or loading contract. Automatic instruction repair, arbitrary skill
+execution, and a general prompt-evaluation framework are outside this feature.
+
+Run Markdown regressions with
+`python -m unittest discover -s .github/extensions/agent-review/tests -p test_markdown_adapter.py`
+and `node --test .github/extensions/agent-review/tests/test-markdown.mjs`.
+The attributed Radius fixture records the upstream base/head revisions.
+For interactive real-repository coverage, set `AGENT_REVIEW_UX_REPO` and
+`AGENT_REVIEW_MARKDOWN_PATH` to an explicitly referenced changed instruction
+document, then run
+`node .github/extensions/agent-review/tests/browser/markdown-review.mjs`
+with the browser-tooling settings below. Controlled responses in this browser
+test exercise presentation, not semantic instruction compliance.
 
 ### Understand the change
 

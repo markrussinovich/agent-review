@@ -324,6 +324,14 @@ export function startReviewServer(state, options = {}) {
                 });
                 return;
             }
+            if (req.method === "GET" && pathname === "/api/document-roles") {
+                sendJson(res, { ok: true, roles: await state.rolesForReview() });
+                return;
+            }
+            if (req.method === "POST" && pathname === "/api/document-roles") {
+                sendJson(res, { ok: true, roles: await state.correctDocumentRole(await readJson(req)) });
+                return;
+            }
             if (req.method === "POST" && pathname === "/api/overview") {
                 sendJson(res, { ok: true, annotation: await state.overviewFor() });
                 return;

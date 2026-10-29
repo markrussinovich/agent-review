@@ -7,7 +7,8 @@ const cached = new WeakMap();
 export function sectionsFor(model, review = null) {
     if (!model) throw new Error("Analyze a saved snapshot before opening review sections.");
     const previous = cached.get(model);
-    if (previous?.review === review) return previous.value;
+    const roles = JSON.stringify(model.instruction_role_overrides || {});
+    if (previous?.review === review && previous.roles === roles) return previous.value;
     const sections = reviewSections(model, review?.observations || []);
     const represented = new Set(sections.flatMap((section) => section.ranges.map((range) => range.path)));
     const changed = (model.changes || []).filter((change) => change.status !== "unchanged");
@@ -20,7 +21,7 @@ export function sectionsFor(model, review = null) {
         file_relations: changedFileRelations(model),
         note: "Source-derived grouping is not completed AI analysis. Linked tests are static evidence unless a saved execution result says otherwise.",
     };
-    cached.set(model, { review, value });
+    cached.set(model, { review, roles, value });
     return value;
 }
 
