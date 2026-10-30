@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { extensionPath } from "./build-distribution.mjs";
@@ -23,6 +23,12 @@ export async function verifyDistribution(extension) {
     assert(node.symbols.some((symbol) => symbol.name === "run"), "Bundled TypeScript did not analyze the snapshot.");
 
     const helper = join(extension, "dotnet-analyzer", "bin", "Release", "net10.0", "AgentReview.Dotnet.dll");
+    for (const name of ["Microsoft.CodeAnalysis.dll", "Microsoft.CodeAnalysis.CSharp.dll"]) {
+        const image = await readFile(join(dirname(helper), name));
+        // Portable IL reports i386; ReadyToRun images report the build machine's OS and CPU.
+        assert.equal(image.readUInt16LE(image.readUInt32LE(0x3c) + 4), 0x14c,
+            `${name} is precompiled for one platform; the release bundle must run on every OS and CPU.`);
+    }
     const { stdout } = await execute("dotnet", [helper, "--self-test"], options);
     assert.match(stdout, /PASS:/);
 

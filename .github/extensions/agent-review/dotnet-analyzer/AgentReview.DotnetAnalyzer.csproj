@@ -15,7 +15,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources>
   </PropertyGroup>
-  <ItemGroup>
+  <ItemGroup Condition="'$(AgentReviewPortableRoslyn)' != 'true'">
     <Reference Include="Microsoft.CodeAnalysis">
       <HintPath>$(MSBuildSDKsPath)\..\Roslyn\bincore\Microsoft.CodeAnalysis.dll</HintPath>
       <Private>true</Private>
@@ -24,6 +24,10 @@
       <HintPath>$(MSBuildSDKsPath)\..\Roslyn\bincore\Microsoft.CodeAnalysis.CSharp.dll</HintPath>
       <Private>true</Private>
     </Reference>
+  </ItemGroup>
+  <!-- Release bundles run on every OS and CPU; the SDK's Roslyn is precompiled for the build machine. -->
+  <ItemGroup Condition="'$(AgentReviewPortableRoslyn)' == 'true'">
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="[5.9.0]" />
   </ItemGroup>
   <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
 </Project>
