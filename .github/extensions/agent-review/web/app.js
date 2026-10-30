@@ -4047,6 +4047,7 @@ function renderAnnotation(item, annotation, loading = false) {
     // The source model is immutable within a review generation; attribution can arrive later.
     const key = JSON.stringify([generation, item?.id, item?.title || item?.name, item?.node_id, loading,
         Boolean(annotation), annotation?.body, annotation?.error, annotation?.evidence_ids, state.attribution?.[0]]);
+    panel.classList.toggle("hidden", !item || (!loading && !annotation));
     renderReviewContext();
     if (!sameItem || previous.key !== key) {
         renderAnnotationContent(item, annotation, loading);
@@ -4108,11 +4109,7 @@ function annotationDisclosure(item, name, className, label) {
 function renderAnnotationContent(item, annotation, loading) {
     const panel = elements.source_annotation;
     panel.replaceChildren();
-    if (!item || (!loading && !annotation)) {
-        panel.classList.add("hidden");
-        return;
-    }
-    panel.classList.remove("hidden");
+    if (!item || (!loading && !annotation)) return;
     const heading = el("div", "annotation-heading");
     heading.append(
         el("span", "annotation-mark", "AI"),

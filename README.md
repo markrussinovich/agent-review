@@ -1158,6 +1158,16 @@ node --test .github\extensions\agent-review\tests\test-*.mjs
 existing `playwright-core` installation (`AGENT_REVIEW_BROWSER_PACKAGE`) and Edge
 on Windows, or `AGENT_REVIEW_BROWSER_EXECUTABLE` for another browser.
 
+Before merging changes to annotation rendering or Evidence-panel navigation,
+run `node .github/extensions/agent-review/tests/browser/annotation-updates.mjs`
+with those browser settings. This required pre-merge check covers background
+updates, cross-file citations and source Back, disclosure state, keyboard focus,
+and reading position in light/dark themes at desktop and narrow widths.
+The build workflow does not run this browser regression; passing CI alone
+does not satisfy this check. Set `AGENT_REVIEW_SCREENSHOT_DIR` to retain
+screenshots, and also verify the running canvas with real repository data as
+required by [AGENTS.md](AGENTS.md).
+
 The large-change regression suite is
 `node --test .github\extensions\agent-review\tests\test-review-pipeline.mjs`.
 For a live Copilot validation, point `AGENT_REVIEW_LARGE_REPO` at a standalone

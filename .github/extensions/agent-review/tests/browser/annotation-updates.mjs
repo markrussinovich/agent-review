@@ -14,7 +14,7 @@ const { chromium } = createRequire(process.env.AGENT_REVIEW_BROWSER_PACKAGE || i
 const execute = promisify(execFile);
 const repo = await mkdtemp(join(tmpdir(), "annotation-updates-"));
 const git = (...args) => execute("git", ["-C", repo, ...args]);
-const body = "## What changed\n\nThe selected function returns a saved value. See `first.py:1`.\n\n"
+const body = "## What changed\n\nThe selected function returns a saved value. See `first.py:1` and its consumer at `second.py:3`.\n\n"
     + "## Background\n\n" + Array.from({ length: 30 }, (_, index) =>
         `Paragraph ${index}: inspect the source-backed behavior before accepting this change.\n\n`).join("")
     + "## Review focus\n\n**Requested:** Check the selected function.\n\nVerify the return value.";
@@ -99,6 +99,28 @@ try {
         await page.keyboard.press("Enter");
         await page.waitForFunction(() => document.querySelector(".annotation-more").open);
         await citations.locator(":scope > summary").click();
+        await more.evaluate((node) => { window.navigationDisclosure = node; });
+        for (const expanded of [true, false]) {
+            if (!expanded) await summary.click();
+            await annotation.getByRole("button", { name: "second.py:3", exact: true }).click();
+            await page.waitForFunction(() => document.querySelector("#source-title").textContent === "second.py:3"
+                && !document.querySelector("#source").hasAttribute("aria-busy"));
+            await page.waitForFunction(() => document.querySelector("#source-annotation").classList.contains("hidden"));
+            await page.locator("#source-back").click();
+            await page.waitForFunction(() => document.querySelector("#source-title").textContent === "first.py:1"
+                && !document.querySelector("#source").hasAttribute("aria-busy"));
+            if (await page.locator("#workspace-context").isVisible()) await page.locator("#workspace-context").click();
+            assert.equal(await annotation.isVisible(), true, "source Back restores the cached annotation's visibility");
+            assert.equal(await more.evaluate((node) => node === window.navigationDisclosure), true,
+                "source Back reuses the unchanged annotation DOM");
+            assert.equal(await more.evaluate((node) => node.open), expanded,
+                "source Back retains the reader's expanded or collapsed choice");
+            assert.equal(await citations.evaluate((node) => node.open), true, "source Back retains the evidence disclosure");
+            await summary.focus();
+            await page.keyboard.press("Enter");
+            assert.equal(await more.evaluate((node) => node.open), !expanded, "the returned summary remains keyboard operable");
+            if (await more.evaluate((node) => !node.open)) await page.keyboard.press("Enter");
+        }
         await summary.focus();
         const scroll = await annotation.evaluate((panel) => {
             window.originalDisclosure = panel.querySelector(".annotation-more");
