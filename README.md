@@ -107,6 +107,11 @@ reading. Originating-session context (the Copilot request that produced the code
 sits directly beneath the AI explanation and its risk assessment; errors
 remain explicit. **Focus code** also hides the decision footer while reading.
 
+File explanations select saved changed hunks and surrounding context, including
+for source languages without a symbol analyzer. Changed lines take priority
+within excerpt budgets; omitted source ranges and diff hunks remain explicit.
+Identical partial excerpts do not establish that the file is unchanged.
+
 Whole-file review decisions have a clear finish line: **Not reviewed**,
 **Reviewed**, or **Needs follow-up**. **Mark file reviewed & next** records a
 whole-file decision and advances only after the save succeeds. File notes and
