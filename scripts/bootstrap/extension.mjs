@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { canvasDefinition } from "./canvas-definition.mjs";
 import { ensureBundle, validateRelease } from "./runtime.mjs";
+import { prepareRuntimes } from "./managed-runtimes.mjs";
 import { startSetupServer } from "./setup-server.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -15,7 +16,9 @@ let progress = { phase: "waiting", message: "Preparing Agent Review..." };
 
 function prepare() {
     if (!preparing) {
-        preparing = ensureBundle(release, { signal: controller.signal, onProgress: (value) => { progress = value; } })
+        const options = { signal: controller.signal, onProgress: (value) => { progress = value; } };
+        preparing = prepareRuntimes(options)
+            .then(() => ensureBundle(release, options))
             .then(async (directory) => {
                 const review = await import(pathToFileURL(join(directory, "review-extension.mjs")));
                 await review.initialize(session);

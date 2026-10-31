@@ -56,6 +56,7 @@ test("loader fits import limits and pins the release checksum and commit", async
     assert(bytes < 5_000_000);
     assert.deepEqual(JSON.parse(await readFile(join(extension, "release-manifest.json"), "utf8")), descriptor);
     const { canvasDefinition: loaderCanvas } = await import(pathToFileURL(join(extension, "canvas-definition.mjs")).href);
+    assert.equal(typeof (await import(pathToFileURL(join(extension, "managed-runtimes.mjs")).href)).prepareRuntimes, "function");
     assert.deepEqual(loaderCanvas, canvasDefinition);
     assert.deepEqual(loaderCanvas.inputSchema.type, ["object", "null"]);
 });
@@ -162,7 +163,7 @@ test("checksum and length mismatches never install downloaded code", async (t) =
     ]) {
         const cacheRoot = join(root, descriptor.sha256);
         await assert.rejects(ensureBundle(descriptor, { cacheRoot,
-            fetchRelease: async () => new Response(bytes) }), /SHA-256|pinned size/);
+            fetchRelease: async () => new Response(bytes) }), /checksum|pinned size/);
         assert.deepEqual(await readdir(cacheRoot), []);
     }
 });
@@ -241,7 +242,10 @@ test("setup serves visible state, error and retry controls without cross-origin 
         { stylesPath: join(source, "web", "styles.css") });
     t.after(() => server.close());
     assert.deepEqual(await (await fetch(`${server.url}state`)).json(), state);
-    assert.match(await (await fetch(server.url)).text(), /role="status"/);
+    const html = await (await fetch(server.url)).text();
+    assert.match(html, /role="status"/);
+    assert.match(html, /Node\.js 24\+, Python 3\.14\+, and \.NET 10/);
+    assert.doesNotMatch(html, /Requires Python|Node.js 20/);
     assert.equal((await fetch(`${server.url}styles.css`)).status, 200);
     assert.equal((await fetch(`${server.url}retry`, { method: "POST",
         headers: { Origin: "https://example.com" } })).status, 403);

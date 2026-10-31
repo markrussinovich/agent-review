@@ -1,0 +1,44 @@
+{
+  "node": {
+    "label": "Node.js 24 LTS",
+    "version": "24.22.0",
+    "algorithm": "sha256",
+    "baseUrl": "https://nodejs.org/dist/v24.22.0/",
+    "artifacts": {
+      "win32-x64": ["node-v24.22.0-win-x64.zip", "f9683a19877e12a9b167305c8db71040d812876359de21f0d2e97c3f321f80c3", "node-v24.22.0-win-x64/node.exe"],
+      "win32-arm64": ["node-v24.22.0-win-arm64.zip", "3a5c209a5bc59e65b3bc0fa13ed5e166a26bd3d55332847f498b76b037408d61", "node-v24.22.0-win-arm64/node.exe"],
+      "darwin-x64": ["node-v24.22.0-darwin-x64.tar.gz", "495e3f273c645f3c4677d438304cdfc701729ea5dec5728f5c8e76a2dece4b91", "node-v24.22.0-darwin-x64/bin/node"],
+      "darwin-arm64": ["node-v24.22.0-darwin-arm64.tar.gz", "6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5", "node-v24.22.0-darwin-arm64/bin/node"],
+      "linux-x64": ["node-v24.22.0-linux-x64.tar.gz", "28ea0a438de9a13bd7891fd758eee6c7819ee8af5442dfd8d45bd65e56d4228c", "node-v24.22.0-linux-x64/bin/node"],
+      "linux-arm64": ["node-v24.22.0-linux-arm64.tar.gz", "b7e7991d5407815adfa74a2a9cd4db683552c8ce32ff4a295c22e972849c3f5d", "node-v24.22.0-linux-arm64/bin/node"]
+    }
+  },
+  "python": {
+    "label": "Python 3.14",
+    "version": "3.14.8",
+    "algorithm": "sha256",
+    "baseUrl": "https://github.com/astral-sh/python-build-standalone/releases/download/20261013/",
+    "artifacts": {
+      "win32-x64": ["cpython-3.14.8+20261013-x86_64-pc-windows-msvc-install_only_stripped.tar.gz", "dce851f280b986764037bd952d40819e94ccceb08ac914004123f43ce17f4095", "python/python.exe"],
+      "win32-arm64": ["cpython-3.14.8+20261013-aarch64-pc-windows-msvc-install_only_stripped.tar.gz", "9c0b221413b0353550bdbf8f0b7bba21c02c8a1199b39dd6af08f06cd6be6851", "python/python.exe"],
+      "darwin-x64": ["cpython-3.14.8+20261013-x86_64-apple-darwin-install_only_stripped.tar.gz", "f0137337ecf6234b30c9c955219dae2d71e1a00387c4d204d6c6929e24bf9a90", "python/bin/python3"],
+      "darwin-arm64": ["cpython-3.14.8+20261013-aarch64-apple-darwin-install_only_stripped.tar.gz", "994adadc202c5df0b4570192cc9a70e3f2c131e512f4a125c56efa8562f44b28", "python/bin/python3"],
+      "linux-x64": ["cpython-3.14.8+20261013-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz", "d8faa1b588506b9e3e5a3f57807bb056d534a1641a6b10d15b6ea3f0b413b960", "python/bin/python3"],
+      "linux-arm64": ["cpython-3.14.8+20261013-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz", "d8ae14f303d3971431184cf423ae5467202de2bc19bf6491a490250b87647d4b", "python/bin/python3"]
+    }
+  },
+  "dotnet": {
+    "label": ".NET 10 LTS",
+    "version": "10.0.13",
+    "algorithm": "sha512",
+    "baseUrl": "https://builds.dotnet.microsoft.com/dotnet/Runtime/10.0.13/",
+    "artifacts": {
+      "win32-x64": ["dotnet-runtime-10.0.13-win-x64.zip", "2b98792ce86adc50899764ad2e4d21bd25cfda5432eeb0b4dfe7944f3ea049f9e0570a8f4aee92314d97cdb5f8b7be1363d501fc5012e680371e607af648ef40", "dotnet.exe"],
+      "win32-arm64": ["dotnet-runtime-10.0.13-win-arm64.zip", "d945425765fe6d0ca63d8305387aa366505708498b7fb4daf23f980766dc2936141820f1c2c4d3e9a203dbf2b1cb5f38f0c19ccc8e312d30d2b8c47a6afbbfbb", "dotnet.exe"],
+      "darwin-x64": ["dotnet-runtime-10.0.13-osx-x64.tar.gz", "773cf5b63565c4a0341fb5457f347c64401cdc73ed13ce34f882c994fc8c2a311c56e99f7643f1d04890f4ac8ae2c4524e6073fd54260e2d3e2538ed7c951d74", "dotnet"],
+      "darwin-arm64": ["dotnet-runtime-10.0.13-osx-arm64.tar.gz", "339c5b031b5fd7d64edd27314a1d0f8a1320b8c61f9ac305c1d4cdb61c94bc438482867ceea09d38fc7194da2a05e6a86b164992a5ec793ea3d65ccce0ea6bac", "dotnet"],
+      "linux-x64": ["dotnet-runtime-10.0.13-linux-x64.tar.gz", "9574d95364110409416735e7842796f8d614c21d74cb25d204a3e4cfd11b2c05efdf19ca89b8069650a04f64add2705967dcb04b8665a36d7a3f30a5d8c05afe", "dotnet"],
+      "linux-arm64": ["dotnet-runtime-10.0.13-linux-arm64.tar.gz", "f9f0b08e7d75ff9528329250bffe58418a9c1d6a2467bc7bc19659b7b385d67c566db8477d80ea4c087b4adeb2cc05b51e33ec47ad977b97f1eed7cd433be8c8", "dotnet"]
+    }
+  }
+}

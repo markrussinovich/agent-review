@@ -98,7 +98,7 @@ export async function buildDistribution({
         if (runtime.runtimeOptions?.tfm !== "net10.0") throw new Error("The helper must target .NET 10.");
         await writeFile(join(outputRoot, "distribution.json"), `${JSON.stringify({
             source_commit: sourceRevision, extension_path: extensionPath.split(sep).join("/"),
-            prerequisites: { python: "3.11+", node: "20+", dotnet: "10.0" },
+            runtimes: { node: "24+", python: "3.14+", dotnet: "10" },
         }, null, 2)}\n`);
         return extension;
     } finally {
