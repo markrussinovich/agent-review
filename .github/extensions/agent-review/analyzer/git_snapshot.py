@@ -106,6 +106,15 @@ def _read_worktree_file(path: Path) -> bytes | None:
         return None
 
 
+def _snapshot_regular_file(repo: Path, name: str) -> bool:
+    path = repo
+    for part in Path(name).parts:
+        path /= part
+        if path.is_symlink():
+            return False
+    return path.is_file()
+
+
 def current_files(
     repo: Path, excludes: tuple[str, ...], on_progress: Callable[[str], None] | None = None,
 ) -> dict[str, bytes]:
@@ -122,7 +131,7 @@ def current_files(
     paths = [
         repo / name
         for name in sorted(set(run_git(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *pathspecs).split("\0")))
-        if name and not _excluded(name, patterns) and (repo / name).is_file()
+        if name and not _excluded(name, patterns) and _snapshot_regular_file(repo, name)
     ]
     # Limit concurrent opens and queued content while overlapping filesystem latency.
     with ThreadPoolExecutor(max_workers=8) as readers:
@@ -156,8 +165,8 @@ def baseline_files(
         if not record:
             continue
         metadata, name = record.split("\t", 1)
-        _, kind, object_id = metadata.split()
-        if kind == "blob" and not _excluded(name, patterns):
+        mode, kind, object_id = metadata.split()
+        if kind == "blob" and mode != "120000" and not _excluded(name, patterns):
             entries.append((name, object_id))
     result: dict[str, bytes] = {}
     total_bytes = 0
@@ -238,7 +247,7 @@ class Snapshot:
     def source_files(self, changes: list[dict[str, object]], generated: set[str] | frozenset[str] = frozenset()) -> dict[str, dict[str, object]]:
         result: dict[str, dict[str, object]] = {}
         retain_baseline = any(
-            path.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".go", ".rs"))
+            path.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".go", ".rs", ".md"))
             or path.rsplit("/", 1)[-1] in {"package.json", "go.mod", "go.sum", "Cargo.toml", "Cargo.lock"}
             for path in set(self.baseline) | set(self.current)
         )

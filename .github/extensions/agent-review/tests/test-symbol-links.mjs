@@ -32,7 +32,27 @@ test("package evidence links point to public sources and reject unsafe repositor
     assert.equal(packageEvidenceLinks("x", "1", "https://github.com.evil.invalid/owner/repo").scorecard, null);
     assert.equal(packageEvidenceLinks("x", "1", "https://user@github.com/owner/repo").scorecard, null);
 });
-import { parseSourceReference, resolveSourceReference } from "../web/source-references.mjs";
+import { parseSourceReference, resolveSourceReference, sourceReferencesInText } from "../web/source-references.mjs";
+
+test("Markdown citations retain snapshot sides and resolve only the selected document's exact basename alias", () => {
+    const path = "skills/references/runtime-contract.md";
+    const model = { source_files: { [path]: {}, "other/runtime-contract.md": {}, "SKILL.md": {} } };
+    assert.deepEqual(parseSourceReference(`base:${path}:134`), { path, lines: [134], side: "base" });
+    assert.deepEqual(resolveSourceReference(`current:${path}:136`, model), { path, lines: [136], side: "current" });
+    assert.deepEqual(resolveSourceReference("base Runtime Contract:134", model, path), { path, lines: [134], side: "base" });
+    assert.equal(resolveSourceReference("base Runtime Contract:134", model), null);
+    assert.equal(resolveSourceReference("base Another Contract:134", model, path), null);
+    assert.equal(resolveSourceReference(`base:current:${path}:134`, model), null);
+    const text = `Compare base Runtime Contract:134 → current Runtime Contract:136 and current:SKILL.md:83.`;
+    const links = sourceReferencesInText(text, model, path);
+    assert.deepEqual(links.map((link) => link.reference), [
+        { path, lines: [134], side: "base" }, { path, lines: [136], side: "current" },
+        { path: "SKILL.md", lines: [83], side: "current" },
+    ]);
+    assert.deepEqual(links.map(({ start, end }) => text.slice(start, end)),
+        ["base Runtime Contract:134", "current Runtime Contract:136", "current:SKILL.md:83"]);
+    assert.deepEqual(sourceReferencesInText("base Runtime Contract:134", model), []);
+});
 
 test("source references accept root files and exact ranges without unbounded expansion", () => {
     for (const extension of ["js", "jsx", "ts", "tsx", "mjs", "cjs", "mts", "cts"]) {

@@ -78,6 +78,10 @@ jobs:
         run: node --test .github/extensions/agent-review/tests/test-custom-analysis.mjs .github/extensions/agent-review/tests/test-review-contracts.mjs .github/extensions/agent-review/tests/test-review-pipeline.mjs .github/extensions/agent-review/tests/test-impact-model.mjs .github/extensions/agent-review/tests/test-item-discussion.mjs .github/extensions/agent-review/tests/test-review-sections.mjs
       - name: Check saved snapshots and oversized diffs
         run: python -m unittest discover -s .github/extensions/agent-review/tests -p test_snapshot.py
+      - name: Check Markdown structure and instruction evidence
+        run: python -m unittest discover -s .github/extensions/agent-review/tests -p test_markdown_adapter.py
+      - name: Check document roles, prompts, and reviewer corrections
+        run: node --test .github/extensions/agent-review/tests/test-markdown.mjs .github/extensions/agent-review/tests/test-language-adapters.mjs
       - name: Check cross-platform session paths and attribution
         run: node --test .github/extensions/agent-review/tests/test-session-context.mjs
       - name: Check source navigation and snapshot caching

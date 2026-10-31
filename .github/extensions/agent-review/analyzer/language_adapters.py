@@ -69,6 +69,10 @@ def active_adapters(
             from rust_adapter import RUST_ADAPTER
 
             adapters = (*adapters, RUST_ADAPTER)
+        if any(path.lower().endswith(".md") for path in paths):
+            from markdown_adapter import MARKDOWN_ADAPTER
+
+            adapters = (*adapters, MARKDOWN_ADAPTER)
     ids = [adapter.id for adapter in adapters]
     if len(ids) != len(set(ids)):
         raise ValueError("Language adapters must have unique IDs.")

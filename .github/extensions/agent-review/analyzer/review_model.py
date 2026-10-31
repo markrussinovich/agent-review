@@ -104,6 +104,7 @@ class ReviewModel:
     evidence: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     code_paths: dict[str, Any] = field(default_factory=dict)
+    instruction_documents: dict[str, Any] = field(default_factory=dict)
 
     def add_evidence(self, kind: str, data: dict[str, Any]) -> str:
         canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
@@ -190,6 +191,7 @@ class ReviewModel:
         }
         return {
             **({"code_paths": self.code_paths} if self.code_paths else {}),
+            **({"instruction_documents": self.instruction_documents} if self.instruction_documents else {}),
             "source_files": self.source_files,
             "metadata": {
                 "schema_version": 1,

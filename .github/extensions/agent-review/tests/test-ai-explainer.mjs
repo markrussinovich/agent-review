@@ -49,6 +49,23 @@ test("accepts an explanation with every required section", () => {
     assert.equal(validateExplanation(validExplanation, ANNOTATION_HEADINGS), validExplanation);
 });
 
+test("risk validation normalizes harmless emphasis and wrapping but requires a severity and rationale in the risk section", () => {
+    for (const variant of [
+        "**Risk:** Medium — Evidence-backed rationale.",
+        "**Risk: Medium** - Evidence-backed rationale.",
+        "Risk: medium – Evidence-backed\nrationale.",
+    ]) {
+        assert.equal(validateExplanation(validExplanation.replace("**Risk: Medium — Evidence-backed rationale.**", variant), ANNOTATION_HEADINGS), validExplanation);
+    }
+    const literal = validExplanation.replace("Evidence-backed rationale.", "The pattern `$&` is source evidence.");
+    assert.equal(validateExplanation(literal, ANNOTATION_HEADINGS), literal);
+    for (const invalid of ["**Risk: Medium**", "**Risk: Medium — **", "**Risk: Medium — **\n- Check the source.", "**Risk: Unknown — Unsupported.**", "Risk is medium."]) {
+        assert.throws(() => validateExplanation(validExplanation.replace("**Risk: Medium — Evidence-backed rationale.**", invalid), ANNOTATION_HEADINGS), /labeled risk assessment/);
+    }
+    assert.throws(() => validateExplanation(validExplanation.replace("## Risk and review focus", "**Risk: High — Outside the section.**\n\n## Risk and review focus")
+        .replace("**Risk: Medium — Evidence-backed rationale.**", "No labeled assessment."), ANNOTATION_HEADINGS), /labeled risk assessment/);
+});
+
 test("an injected explanation runtime uses the production validation and read-only session without a host SDK import", async () => {
     let options, request, disconnected = false;
     const body = await generateIsolatedExplanation({
@@ -79,12 +96,47 @@ test("source-fidelity checking uses a separate session and returns the checked a
             }, disconnect: async () => {},
         }) },
     });
+
     assert.equal(requests.length, 2);
     assert.equal(result, corrected);
     assert.match(requests[1].prompt, /every supplied input field|EVERY supplied input field/);
     assert.match(requests[1].prompt, /flag gates B only/);
     assert.match(requests[1].prompt, /Evidence-backed detail/);
     assert.ok(requests[1].timeout <= requests[0].timeout && requests[1].timeout > 0);
+});
+
+test("a rejected fidelity assessment is repaired in the fidelity stage, without restarting the draft", async () => {
+    const requests = [];
+    const result = await generateIsolatedExplanation({
+        workingDirectory: "C:\\repo", prompt: "Original draft request.", requiredHeadings: ANNOTATION_HEADINGS,
+        verifyPrompt: (draft) => `Check this draft against source:\n${draft}`,
+        runtimeClient: { createSession: async () => ({
+            sendAndWait: async ({ prompt }) => {
+                requests.push(prompt);
+                return { data: { content: requests.length === 2
+                    ? validExplanation.replace("**Risk: Medium — Evidence-backed rationale.**", "Missing assessment.")
+                    : validExplanation } };
+            }, disconnect: async () => {},
+        }) },
+    });
+    assert.equal(result, validExplanation);
+    assert.equal(requests.length, 3);
+    assert.match(requests[2], /^Check this draft against source:/);
+    assert.match(requests[2], /Start the Risk and review focus section with \*\*Risk: Medium/);
+});
+
+test("repeated fidelity validation failures remain explicit and never return the unchecked draft", async () => {
+    let requests = 0;
+    await assert.rejects(generateIsolatedExplanation({
+        workingDirectory: "C:\\repo", prompt: "Draft.", requiredHeadings: ANNOTATION_HEADINGS,
+        verifyPrompt: (draft) => `Check source:\n${draft}`,
+        runtimeClient: { createSession: async () => ({
+            sendAndWait: async () => ({ data: { content: ++requests === 1 ? validExplanation
+                : validExplanation.replace("**Risk: Medium — Evidence-backed rationale.**", "Missing assessment.") } }),
+            disconnect: async () => {},
+        }) },
+    }), /after 2 isolated attempts.*labeled risk assessment/);
+    assert.equal(requests, 3);
 });
 
 test("validation failures keep their type so bounded discussion repairs still work through the provider", async () => {
