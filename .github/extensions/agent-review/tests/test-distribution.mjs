@@ -64,6 +64,7 @@ test("distribution includes runtime assets, notices, locked tooling, and managed
     }
     const publish = calls.find((call) => call.args[0] === "publish");
     assert(publish.args.includes("-p:UseAppHost=false"));
+    assert(publish.args.includes("-p:AgentReviewPortableRoslyn=true"));
     assert(publish.args.includes("--no-self-contained"));
     assert(!publish.cwd.startsWith(source));
     assert(calls.some((call) => call.args.includes("--ignore-scripts")

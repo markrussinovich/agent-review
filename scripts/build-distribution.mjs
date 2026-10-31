@@ -80,7 +80,7 @@ export async function buildDistribution({
         await run("dotnet", ["publish", join(helper, "AgentReview.DotnetAnalyzer.csproj"),
             "-c", "Release", "--output", binaries, "--no-self-contained",
             "-p:UseAppHost=false", "-p:ImportDirectoryBuildProps=false",
-            "-p:ImportDirectoryBuildTargets=false", "-p:UseSharedCompilation=false",
+            "-p:ImportDirectoryBuildTargets=false", "-p:UseSharedCompilation=false", "-p:AgentReviewPortableRoslyn=true",
             "-p:ContinuousIntegrationBuild=true", `-p:PathMap=${helper}=/agent-review/dotnet-analyzer`, "-nodeReuse:false"],
         { ...options, cwd: helper });
 
