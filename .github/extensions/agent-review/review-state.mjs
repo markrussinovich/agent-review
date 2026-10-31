@@ -15,7 +15,7 @@ import { assessCratePackageRisk } from "./crate-package-risk.mjs";
 import { buildPackageUsageContext } from "./package-context.mjs";
 import { CustomPromptStore } from "./custom-prompts.mjs";
 import { customAnalysisContext, validateCustomAnalysis } from "./custom-analysis.mjs";
-import { resolveReviewTarget } from "./review-target.mjs";
+import { listReviewTargets, resolveReviewTarget } from "./review-target.mjs";
 import { buildSessionContext, findSessionAttribution, mergeSessionContexts } from "./session-context.mjs";
 import { spawnOwnedAnalyzer } from "./ownership-guard.mjs";
 import { fingerprintWorktree } from "./worktree-changes.mjs";
@@ -51,7 +51,7 @@ import { contextForSection, sectionsFor } from "./review-sections-context.mjs";
 import { annotationCodeContext } from "./annotation-context.mjs";
 import { ReviewProgressStore, validateReviewCursor, validateReviewEntries } from "./review-progress.mjs";
 import { reviewSnapshotKey } from "./web/review-ledger.mjs";
-import { createReviewHandoff, runGitHub, validateHandoffImport } from "./review-handoff.mjs";
+import { createReviewHandoff, runGitHub, supportsGitHubHandoff, validateHandoffImport } from "./review-handoff.mjs";
 import { pullRequestCommentableLines, pullRequestState, pullRequestThreads, ReviewDraftStore, setFileViewed, submitPullRequestReview, validateDraftComment } from "./pr-review.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -339,6 +339,8 @@ export class ReviewState {
         this.reviewProgressStore = new ReviewProgressStore(this.workspacePath);
         this.documentRoleStore = new DocumentRoleStore(this.workspacePath);
         this.documentRoles = null;
+        this.adoClient = options.adoClient;
+        this.runTargetCommand = options.runTargetCommand;
         this.reviewDraftStore = new ReviewDraftStore(this.workspacePath);
         this.github = options.github || runGitHub;
         this.submitHandoffReview = options.submitHandoffReview
@@ -428,7 +430,7 @@ export class ReviewState {
 
     async saveReviewProgress(input) {
         const location = await this.validateReviewProgress(input);
-        const before = this.reviewTarget?.mode === "pr" && this.reviewTarget.url
+        const before = this.githubPullRequest()
             ? await this.reviewProgressStore.read(input.snapshot).catch(() => null) : null;
         const record = await this.reviewProgressStore.update(input.snapshot, input.revision, input.entries, location);
         if (!before) return record;
@@ -436,10 +438,15 @@ export class ReviewState {
         return github_viewed ? { ...record, github_viewed } : record;
     }
 
+    // Only GitHub PRs reach GitHub's review, Viewed and thread APIs; Azure DevOps review stays read-only and local.
+    githubPullRequest() {
+        return Boolean(this.reviewTarget && supportsGitHubHandoff(this.reviewTarget));
+    }
+
     // The PR's identity, author, viewer and per-file Viewed state, cached briefly so Review stays responsive.
     async pullRequestInfo({ fresh = false } = {}) {
         const url = this.reviewTarget?.url;
-        if (this.reviewTarget?.mode !== "pr" || !url) throw new Error("This review is not a GitHub pull request.");
+        if (!this.githubPullRequest()) throw new Error("This review is not a GitHub pull request.");
         if (!fresh && this.prStateCache?.url === url && Date.now() - this.prStateCache.at < 30_000) return this.prStateCache.value;
         const value = await pullRequestState(url, this.repoRoot, this.github);
         this.prStateCache = { url, at: Date.now(), value };
@@ -450,6 +457,7 @@ export class ReviewState {
     // a failure is reported with the save and never blocks the local decision. Viewed is never set once the PR has
     // newer commits than the reviewed snapshot, because GitHub would record the reviewer as having seen code they did not.
     async syncViewed(previous, next) {
+        if (!this.githubPullRequest()) return null;
         const reviewed = (entries, id) => entries?.[id]?.disposition === "reviewed";
         const ids = new Set([...Object.keys(previous || {}), ...Object.keys(next || {})].filter((id) => id.startsWith("review-file:")));
         const changes = [...ids].filter((id) => reviewed(previous, id) !== reviewed(next, id))
@@ -485,7 +493,7 @@ export class ReviewState {
     async pullRequestLines() {
         const url = this.reviewTarget?.url;
         const head = this.model?.metadata?.head_sha;
-        if (this.reviewTarget?.mode !== "pr" || !url || !head) return null;
+        if (!this.githubPullRequest() || !url || !head) return null;
         if (this.prLinesCache?.url === url && this.prLinesCache.head === head) return this.prLinesCache.lines;
         const pr = await this.pullRequestInfo();
         if (pr.head !== head) return null;
@@ -498,13 +506,13 @@ export class ReviewState {
         const model = this.model;
         if (!model || this.loading) throw new Error("Wait for the saved review before editing review comments.");
         // On a pull request GitHub's own patch decides which lines can hold a comment; offline, the saved diff does.
-        if (action === "add" && this.reviewTarget?.mode === "pr" && this.reviewTarget.url) {
+        if (action === "add" && this.githubPullRequest()) {
             const pr = await this.pullRequestInfo().catch(() => null);
             if (pr && pr.head !== model.metadata.head_sha) {
                 throw new Error(`The pull request has newer commits (${String(pr.head || "").slice(0, 7)}) than this review. Re-open it in Agent Review before commenting.`);
             }
         }
-        const lines = action === "add" && this.reviewTarget?.mode === "pr" ? await this.pullRequestLines().catch(() => null) : null;
+        const lines = action === "add" && this.githubPullRequest() ? await this.pullRequestLines().catch(() => null) : null;
         const change = action === "add" ? { action, comment: validateDraftComment(comment, model, lines) }
             : action === "edit" ? (() => {
                 const text = typeof body === "string" ? body.trim() : "";
@@ -520,7 +528,10 @@ export class ReviewState {
     // Local drafts plus, for a GitHub PR, its existing review threads and the reviewer's Viewed state.
     async prReview() {
         const drafts = await this.reviewDrafts();
-        if (this.reviewTarget?.mode !== "pr" || !this.reviewTarget.url) {
+        if (this.reviewTarget?.provider === "ado") {
+            return { available: false, drafts, reason: "Azure DevOps review is read-only. Comments stay local drafts and export with the handoff; nothing is posted." };
+        }
+        if (!this.githubPullRequest()) {
             return { available: false, drafts, reason: "Comments stay local drafts and export with the handoff. Open a GitHub pull request to post them." };
         }
         try {
@@ -562,7 +573,7 @@ export class ReviewState {
         const run = this.testRun ? { ...this.testRun, stale: this.testRun.status === "complete" && this.testRunStale() } : null;
         const priority = concernPriorities(buildReviewPlan(model, this.decisionMap, run, findings));
         const drafts = await this.reviewDrafts();
-        const pr = target.mode === "pr" && Boolean(target.url);
+        const pr = supportsGitHubHandoff(target);
         // On a PR the drafted comments are posted inline; elsewhere they travel in the summary.
         const result = createReviewHandoff(model, target, progress, { testRun: run, layers: this.handoffLayers(model), priority,
             comments: pr ? [] : drafts.comments, decisionMap: this.decisionMap });
@@ -574,7 +585,9 @@ export class ReviewState {
         this.handoffPreview = { token, model, target, revision: progress.revision, snapshot: progress.snapshot,
             body: result.markdown, created: Date.now(), consumed: false, draftRevision: drafts.revision };
         return { ...result, token, revision: progress.revision, comments: drafts.comments.length,
-            provider: this.handoffSubmitting ? { available: false, pending: true, url: target.url, commit: model.metadata.head_sha,
+            provider: target.provider === "ado" ? { available: false, url: target.url, commit: model.metadata.head_sha, comments: drafts.comments.length,
+                reason: "Azure DevOps review is read-only; publishing is unavailable. Export Markdown or review-state JSON locally instead; drafted line comments are included in the summary." }
+                : this.handoffSubmitting ? { available: false, pending: true, url: target.url, commit: model.metadata.head_sha,
                 reason: "Awaiting the previous submission receipt. Local export is available; do not submit again." }
                 : result.markdown.length > 60_000 ? { available: false, reason: "This summary exceeds the bounded PR review size. Export locally instead; nothing will be submitted." }
                 : moved ? { available: false, head_moved: true, url: target.url, commit: model.metadata.head_sha, head, comments: drafts.comments.length,
@@ -624,8 +637,11 @@ export class ReviewState {
         if (confirm !== true || !preview || token !== preview.token || preview.consumed || this.handoffSubmitting || Date.now() - preview.created > 15 * 60_000) {
             throw new Error("A fresh preview and explicit confirmation are required; nothing was submitted.");
         }
+        if (!supportsGitHubHandoff(preview.target)) {
+            throw new Error("Provider publishing is unavailable for this target. Azure DevOps review is read-only; export locally instead.");
+        }
         if (!["COMMENT", "APPROVE", "REQUEST_CHANGES"].includes(event)) throw new Error("Choose Comment, Approve or Request changes; nothing was submitted.");
-        if (typeof summary !== "string" || summary.length > 10_000) throw new Error("Your summary must be text of at most 10,000 characters; nothing was submitted.");
+        if (typeof summary !== "string" || summary.length > 10_000) throw new Error("Your summary must be text of at most 10,000 characters;         nothing was submitted.");
         if (this.loading || this.model !== preview.model || this.reviewTarget !== preview.target || preview.target.mode !== "pr") {
             throw new Error("The review target changed or is not a PR; nothing was submitted.");
         }
@@ -1075,7 +1091,7 @@ export class ReviewState {
         }
         this.switchingTarget = true;
         try {
-            const resolved = await resolveReviewTarget(this.repoRoot, input);
+            const resolved = await resolveReviewTarget(this.repoRoot, input, this.runTargetCommand, { adoClient: this.adoClient });
             this.stopInternalReviews();
             this.saveCurrentReview();
             this.reviewTarget = resolved;
@@ -1131,7 +1147,12 @@ export class ReviewState {
 
     reviewCacheKey(target = this.reviewTarget) {
         return JSON.stringify([target.mode, target.currentRef || null,
-            target.mode === "worktree" ? this.worktreeBaseRef : target.baseRef]);
+            target.mode === "worktree" ? this.worktreeBaseRef : target.baseRef,
+            ...(target.mode === "pr" ? [target.provider || "github", target.url || target.ref] : [])]);
+    }
+
+    listReviewTargets(input) {
+        return listReviewTargets(this.repoRoot, input, this.runTargetCommand, { adoClient: this.adoClient });
     }
 
     saveCurrentReview() {

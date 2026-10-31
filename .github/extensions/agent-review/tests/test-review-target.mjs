@@ -120,6 +120,7 @@ test("commit list refresh fetches remotes before listing all branch histories", 
     test("PR list is repository scoped and includes open, closed and merged PRs", async () => {
         const calls = [];
         const result = await listReviewTargets("C:\\repo", { mode: "pr", page: 1 }, async (command, args) => {
+            if (command === "git") return { stdout: "https://github.com/example/repo.git\n" };
             calls.push(args);
             assert.equal(command, "gh");
             return { stdout: args[0] === "repo" ? JSON.stringify({ nameWithOwner: "example/repo" })

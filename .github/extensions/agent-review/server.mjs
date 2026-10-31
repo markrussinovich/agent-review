@@ -2,7 +2,6 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { listReviewTargets } from "./review-target.mjs";
 import { reviewSnapshotKey } from "./web/review-ledger.mjs";
 
 const browserModels = new WeakMap();
@@ -237,7 +236,7 @@ export function startReviewServer(state, options = {}) {
                 return;
             }
             if (req.method === "GET" && pathname === "/api/review-targets") {
-                sendJson(res, await listReviewTargets(state.repoRoot, {
+                sendJson(res, await state.listReviewTargets({
                     mode: requestUrl.searchParams.get("mode"),
                     page: Number(requestUrl.searchParams.get("page") || 0),
                 }));
@@ -245,7 +244,7 @@ export function startReviewServer(state, options = {}) {
             }
             if (req.method === "POST" && pathname === "/api/review-targets/refresh") {
                 const input = await readJson(req);
-                sendJson(res, await listReviewTargets(state.repoRoot, {
+                sendJson(res, await state.listReviewTargets({
                     mode: input.mode,
                     page: 0,
                     refresh: input.mode === "commit",
