@@ -8,7 +8,7 @@ function diffHunks(diff) {
         const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
         if (header) hunks.push({ base: Number(header[1]), baseCount: Number(header[2] ?? 1),
             current: Number(header[3]), currentCount: Number(header[4] ?? 1), header: line, lines: [] });
-        else if (hunks.length && /^[ +\-]/.test(line) && !/^(?:---|\+\+\+) /.test(line)) hunks.at(-1).lines.push(line);
+        else if (hunks.length && /^[ +\-]/.test(line)) hunks.at(-1).lines.push(line);
     }
     return hunks;
 }
@@ -43,7 +43,34 @@ function projectLine(hunks, line, side, end) {
     return Math.max(1, line + offset);
 }
 
-function excerpts(source, requested, budget, points = []) {
+function hunkRanges(hunks, source, side) {
+    if (typeof source !== "string" || !source.length) return [];
+    const lineCount = source.split(/\r?\n/).length;
+    const ranges = [];
+    for (const hunk of hunks) {
+        const start = Math.max(1, hunk[side] - 5);
+        const end = Math.min(lineCount, hunk[side] + Math.max(1, hunk[`${side}Count`]) - 1 + 5);
+        const previous = ranges.at(-1);
+        if (previous && start <= previous[1] + 1) previous[1] = Math.max(previous[1], end);
+        else if (start <= end) ranges.push([start, end]);
+    }
+    return ranges;
+}
+
+function changedLines(hunks, side) {
+    const lines = [];
+    for (const hunk of hunks) {
+        let line = hunk[side];
+        const prefix = side === "base" ? "-" : "+";
+        for (const text of hunk.lines) {
+            if (text.startsWith(prefix)) lines.push(line++);
+            else if (text.startsWith(" ")) line++;
+        }
+    }
+    return lines;
+}
+
+function excerpts(source, requested, budget, points = [], changes = []) {
     if (typeof source !== "string") return { available: false, ranges: [], omitted_ranges: [] };
     const lines = source.split(/\r?\n/);
     const wanted = new Set();
@@ -52,10 +79,11 @@ function excerpts(source, requested, budget, points = []) {
     }
     const ordered = [...wanted].sort((a, b) => a - b);
     const chosen = new Set();
-    const priority = new Set([...ordered.slice(0, 16), ...ordered.slice(-16)]);
+    const changed = new Set(changes.filter((line) => wanted.has(line)));
+    const priority = new Set();
     for (const point of points) for (let line = point - 5; line <= point + 8; line++) if (wanted.has(line)) priority.add(line);
     let used = 0;
-    for (const line of new Set([...priority, ...ordered])) {
+    for (const line of new Set([...changed, ...priority, ...ordered.slice(0, 16), ...ordered.slice(-16), ...ordered])) {
         const cost = bytes(`${line}: ${lines[line - 1]}\n`) + 12;
         if (used + cost > budget) continue;
         chosen.add(line);
@@ -73,7 +101,8 @@ function excerpts(source, requested, budget, points = []) {
         if (collection === ranges) range.excerpt += `${line}: ${lines[line - 1]}\n`;
     }
     return { available: true, complete: omitted.length === 0, requested_ranges: requested,
-        source_lines: lines.length, ranges, omitted_ranges: omitted };
+        source_lines: lines.length, ranges, omitted_ranges: omitted,
+        changed_lines: { total: changed.size, included: [...changed].filter((line) => chosen.has(line)).length } };
 }
 
 export async function annotationCodeContext(model, context, sourceForPath) {
@@ -85,34 +114,39 @@ export async function annotationCodeContext(model, context, sourceForPath) {
     const subjectSide = subject.change === "removed" || snapshot.current === null ? "base" : "current";
     const otherSide = subjectSide === "current" ? "base" : "current";
     const hunks = diffHunks(snapshot.diff);
+    const fileScope = ["file", "module"].includes(subject.kind) || !subject.start_line;
+    const changes = { base: changedLines(hunks, "base"), current: changedLines(hunks, "current") };
     const symbols = (model.nodes || []).filter((node) => node.path === path && node.start_line
         && ["function", "method", "constructor", "class"].includes(node.kind));
-    const ranges = subject.start_line ? [[subject.start_line, subject.end_line || subject.start_line + 40]]
+    const ranges = fileScope && hunks.length ? hunkRanges(hunks, snapshot[subjectSide], subjectSide)
+        : subject.start_line ? [[subject.start_line, subject.end_line || subject.start_line + 40]]
         : symbols.filter((node) => node.change !== "unchanged").slice(0, 6)
             .map((node) => [node.start_line, node.end_line || node.start_line + 40]);
-    if (!ranges.length) {
+    if (!ranges.length && !(fileScope && hunks.length)) {
         const line = evidence.find((item) => item.path === path)?.line || 1;
         ranges.push([Math.max(1, line - 5), line + 99]);
     }
-    const projected = hunks.length || snapshot.current === snapshot.base
+    const projected = fileScope && hunks.length ? hunkRanges(hunks, snapshot[otherSide], otherSide)
+        : hunks.length || snapshot.current === snapshot.base
         ? ranges.map(([start, end]) => [projectLine(hunks, start, subjectSide, false),
             projectLine(hunks, end, subjectSide, true)]).filter(([start, end]) => end >= start) : [];
     const pointLines = evidence.filter((item) => item.path === path).map((item) => item.line);
     const result = {
         path, subject_side: subjectSide,
-        [subjectSide]: excerpts(snapshot[subjectSide], ranges, 19_000, pointLines),
-        [otherSide]: excerpts(snapshot[otherSide], projected, 13_000),
+        [subjectSide]: excerpts(snapshot[subjectSide], ranges, 19_000, pointLines, changes[subjectSide]),
+        [otherSide]: excerpts(snapshot[otherSide], projected, 13_000, [], changes[otherSide]),
         baseline_scope: subject.change === "added"
             ? "Prior edit context, not a claimed matching definition."
             : "Before/current ranges aligned using saved diff coordinates.",
         diff: "", diff_error: snapshot.diff_error || null, base_error: snapshot.base_error || null, usages: [], tests: [], declarations: [],
         evidence_limits: { omitted_diff_hunks: 0, omitted_related_symbols: 0,
-            note: "Omitted excerpts are available saved source, not absent files. Static examples are not executed tests." },
+            scope: fileScope && hunks.length ? "Changed file hunks with surrounding context." : "Selected source ranges.",
+            note: "Omitted excerpts are available saved source, not absent files. Identical bounded excerpts do not establish that the file is unchanged. Static examples are not executed tests." },
     };
-    if (!projected.length && typeof snapshot[otherSide] === "string") {
+    if (!projected.length && typeof snapshot[otherSide] === "string" && !(fileScope && hunks.length)) {
         result.evidence_limits.alignment = "Saved opposite-side source exists but its selected range could not be aligned.";
     }
-    const relevant = hunks.filter((hunk) => ranges.some(([start, end]) =>
+    const relevant = fileScope ? hunks : hunks.filter((hunk) => ranges.some(([start, end]) =>
         hunk[subjectSide] <= end && hunk[subjectSide] + Math.max(1, hunk[`${subjectSide}Count`]) - 1 >= start));
     for (const hunk of relevant) {
         const value = `${hunk.header}\n${hunk.lines.join("\n")}\n`;
@@ -191,8 +225,8 @@ export async function annotationCodeContext(model, context, sourceForPath) {
         }
     }
     for (let attempt = 1; bytes(result) > 48_000 && attempt <= 8; attempt++) {
-        result[subjectSide] = excerpts(snapshot[subjectSide], ranges, Math.floor(19_000 / 2 ** attempt), pointLines);
-        result[otherSide] = excerpts(snapshot[otherSide], projected, Math.floor(13_000 / 2 ** attempt));
+        result[subjectSide] = excerpts(snapshot[subjectSide], ranges, Math.floor(19_000 / 2 ** attempt), pointLines, changes[subjectSide]);
+        result[otherSide] = excerpts(snapshot[otherSide], projected, Math.floor(13_000 / 2 ** attempt), [], changes[otherSide]);
     }
     if (bytes(result) > 48_000) throw new Error("The selected explanation evidence exceeds its bounded context limit.");
     return result;
