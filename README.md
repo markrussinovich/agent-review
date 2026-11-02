@@ -847,6 +847,8 @@ saved declaration or exact declared module prefix is available. Build tags,
 generated files, cgo, reflection, interface dispatch, promoted methods, generic
 type inference, and dynamic registration can make relationships incomplete.
 
+Receiver calls link method receiver variables and explicitly typed function declaration parameters to a unique saved struct or named scalar type and its directly declared method. Local-assignment type inference, type aliases, generic instantiations, promoted methods, and interface dispatch remain unsupported. Shadowed receiver names are conservatively omitted across the enclosing callable. Caller counts and impact rankings reflect resolved graph edges, not all possible runtime calls.
+
 Go complexity and signature findings compare the saved baseline and current declarations. "Complex new callable added" applies only to added callables with cyclomatic complexity of at least 8; documentation-only changes do not make existing callables new.
 
 `go.mod` `require`, `replace`, and `exclude` directives are compared with exact

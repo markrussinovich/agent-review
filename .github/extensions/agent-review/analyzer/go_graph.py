@@ -27,7 +27,12 @@ _IMPORT_ONE = re.compile(r'(?m)^[ \t]*import\s+(?:(\.|_|[A-Za-z_]\w*)\s+)?"([^"]
 _IMPORT_ITEM = re.compile(r'(?m)^[ \t]*(?:(\.|_|[A-Za-z_]\w*)\s+)?"([^"]+)"')
 _CALL = re.compile(r"\b(?:(?P<prefix>[A-Za-z_]\w*)\s*\.\s*)?(?P<name>[A-Za-z_]\w*)\s*\(")
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
-_KEYWORDS = {"if", "for", "switch", "select", "return", "go", "defer", "make", "new",
+_SCALAR_TYPES = set(
+    "bool string int int8 int16 int32 int64 uint uint8 uint16 uint32 uint64 "
+    "uintptr byte rune float32 float64 complex64 complex128".split()
+)
+_CONTROL_KEYWORDS = {"if", "for", "switch", "select", "return", "go", "defer"}
+_KEYWORDS = _CONTROL_KEYWORDS | {"make", "new",
              "len", "cap", "append", "copy", "delete", "close", "panic", "recover",
              "print", "println", "complex", "real", "imag"}
 
@@ -235,11 +240,38 @@ def _container_function_type(text: str, start: int) -> bool:
     }
 
 
-def _call_bindings(signature: str, receiver: str | None, body: str) -> set[str]:
+def _parameter_types(text: str) -> dict[str, str]:
+    types = {}
+    pending = []
+    for field in _split_fields(text):
+        match = re.match(r"\s*([A-Za-z_]\w*)(.*)", field, re.DOTALL)
+        if not match:
+            pending.clear()
+            continue
+        name, tail = match.groups()
+        if not tail.strip():
+            pending.append(name)
+            continue
+        if tail[0].isspace() or tail.startswith("*"):
+            declared = re.sub(r"\s+", "", tail)
+            if re.fullmatch(r"\*?[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?", declared):
+                for parameter in [*pending, name]:
+                    if parameter != "_":
+                        types[parameter] = declared.removeprefix("*")
+        pending.clear()
+    return types
+
+
+def _call_bindings(signature: str, receiver: str | None,
+                   body: str) -> tuple[set[str], dict[str, str]]:
     # Over-approximate bindings across the callable instead of guessing lexical scopes.
-    names = _signature_names(signature) | _parameter_names(receiver or "")
-    for parameters in re.findall(r"\[([^\]]*)\]", receiver or ""):
-        names.update(re.findall(r"[A-Za-z_]\w*", parameters))
+    parameters = _signature_names(signature) | _parameter_names(receiver or "")
+    types = _parameter_types(signature[1:_delimiter_end(signature, 0) - 1])
+    types.update(_parameter_types(receiver or ""))
+    type_parameters = set()
+    for arguments in re.findall(r"\[([^\]]*)\]", receiver or ""):
+        type_parameters.update(re.findall(r"[A-Za-z_]\w*", arguments))
+    names = set()
     signature_end = 0
     for match in re.finditer(r"\bfunc\s*(?=\()", body):
         if match.start() < signature_end:
@@ -277,7 +309,9 @@ def _call_bindings(signature: str, receiver: str | None, body: str) -> set[str]:
             declared = re.match(r"\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)", field)
             if declared:
                 names.update(re.findall(r"[A-Za-z_]\w*", declared.group(1)))
-    return names
+    types = {name: declared for name, declared in types.items()
+             if name not in names and declared.split(".", 1)[0] not in type_parameters}
+    return parameters | type_parameters | names, types
 
 
 def _receiver(value: str | None) -> str | None:
@@ -285,6 +319,7 @@ def _receiver(value: str | None) -> str | None:
         return None
     fields = value.split()
     candidate = fields[-1] if fields else value
+    candidate = candidate.rsplit("*", 1)[-1]
     return re.sub(r"[^A-Za-z0-9_]", "", candidate.split("[", 1)[0]) or None
 
 
@@ -339,9 +374,16 @@ def parse_go(path: str, raw: bytes) -> tuple[GoFile | None, str | None]:
             "complexity": complexity,
         }
         file.symbols.append(symbol)
-        bindings = _call_bindings(match.group(3), match.group(1), masked[opening + 1:end - 1])
-        covered.append((opening, end, symbol, bindings))
+        bindings, receiver_types = _call_bindings(
+            match.group(3), match.group(1), masked[opening + 1:end - 1])
+        covered.append((opening, end, symbol, bindings, receiver_types))
+    depth, previous = 0, 0
     for match in _TYPE.finditer(masked):
+        for brace in re.finditer(r"[{}]", masked[previous:match.start()]):
+            depth += 1 if brace.group() == "{" else -1
+        previous = match.start()
+        if depth:
+            continue
         opening = masked.find("{", match.start(), match.end())
         end = _delimiter_end(masked, opening) if opening >= 0 else source.find("\n", match.start())
         end = len(source) if end < 0 else end
@@ -362,26 +404,32 @@ def parse_go(path: str, raw: bytes) -> tuple[GoFile | None, str | None]:
         for item in _IMPORT_ITEM.finditer(block.group(1)):
             alias, target = item.groups()
             file.imports.append({"alias": alias or target.rsplit("/", 1)[-1], "target": target,
+                                 "explicit_alias": alias is not None,
                                  "line": _line(source, block.start(1) + item.start())})
     for item in _IMPORT_ONE.finditer(source):
         if any(block.start() <= item.start() < block.end() for block in _IMPORT_BLOCK.finditer(source)):
             continue
         alias, target = item.groups()
         file.imports.append({"alias": alias or target.rsplit("/", 1)[-1], "target": target,
+                             "explicit_alias": alias is not None,
                              "line": _line(source, item.start())})
-    for opening, end, owner, bindings in covered:
+    for opening, end, owner, bindings, receiver_types in covered:
         for call in _CALL.finditer(masked, opening + 1, end - 1):
-            if call.group("name") in _KEYWORDS:
+            prefix = call.group("prefix")
+            receiver_type = receiver_types.get(prefix) if prefix else None
+            if (call.group("name") in _CONTROL_KEYWORDS
+                    or call.group("name") in _KEYWORDS and receiver_type is None):
                 continue
             previous = call.start() - 1
             while previous > opening and masked[previous].isspace():
                 previous -= 1
             if masked[previous] == ".":
                 continue
-            if (call.group("prefix") or call.group("name")) in bindings:
+            if (prefix or call.group("name")) in bindings and not receiver_type:
                 continue
-            file.calls.append({"owner": owner["id"], "prefix": call.group("prefix"),
-                               "name": call.group("name"), "line": _line(source, call.start())})
+            file.calls.append({"owner": owner["id"], "prefix": prefix,
+                               "name": call.group("name"), "line": _line(source, call.start()),
+                               "receiver_type": receiver_type})
     return file, None
 
 
@@ -478,16 +526,37 @@ def analyze_go(baseline_files: dict[str, bytes], current_files: dict[str, bytes]
             "language": "go", "ecosystem": "gomod", "kind": "package",
         })
 
-    def side_edges(files: dict[str, GoFile], declared: set[str]) -> list[dict[str, Any]]:
+    def side_edges(files: dict[str, GoFile], declared: set[str],
+                   side_roots: dict[str, str]) -> list[dict[str, Any]]:
         edges = []
         side_functions: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+        side_methods: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+        side_types: dict[tuple[str, str], list[bool]] = defaultdict(list)
+        side_packages: dict[str, set[str]] = defaultdict(set)
         for parsed in files.values():
+            if not parsed.path.endswith("_test.go"):
+                side_packages[_import_for_package(parsed.package, side_roots)].add(parsed.package)
             for symbol in parsed.symbols:
                 if symbol["kind"] == "function":
                     side_functions[parsed.package][symbol["name"]].append(symbol["id"])
+                elif symbol["kind"] == "method":
+                    side_methods[(parsed.package, symbol["receiver"], symbol["name"])].append(symbol["id"])
+                else:
+                    signature_text = _masked(symbol["signature"])
+                    signature = signature_text.split()
+                    concrete = (symbol["kind"] == "struct" and "[" not in signature_text
+                                or len(signature) == 3 and signature[2] in _SCALAR_TYPES)
+                    side_types[(parsed.package, symbol["name"])].append(concrete)
         for path, file in files.items():
             aliases = {item["alias"]: item["target"] for item in file.imports if item["alias"] not in ("_", ".")}
+            receiver_aliases: dict[str, set[str]] = defaultdict(set)
             for item in file.imports:
+                packages = side_packages.get(item["target"], set())
+                if item["alias"] not in ("_", ".") and len(packages) == 1:
+                    package = next(iter(packages))
+                    alias = (item["alias"] if item["explicit_alias"]
+                             else package.rsplit(":", 1)[-1])
+                    receiver_aliases[alias].add(package)
                 target_package = import_packages.get(item["target"])
                 local_targets = sorted(module_ids[candidate] for candidate, parsed in files.items()
                                        if parsed.package == target_package)
@@ -503,18 +572,34 @@ def analyze_go(baseline_files: dict[str, bytes], current_files: dict[str, bytes]
                                   "path": path, "line": item["line"], "detail": item["target"]})
             for call in file.calls:
                 target_package = file.package
-                if call["prefix"] is not None:
+                if call["receiver_type"]:
+                    qualifier, separator, type_name = call["receiver_type"].rpartition(".")
+                    if not separator:
+                        type_name = call["receiver_type"]
+                    else:
+                        packages = receiver_aliases.get(qualifier, set())
+                        if len(packages) != 1:
+                            continue
+                        target_package = next(iter(packages))
+                        if not call["name"][0].isupper():
+                            continue
+                    if side_types.get((target_package, type_name)) != [True]:
+                        continue
+                    candidates = side_methods.get((target_package, type_name, call["name"]), [])
+                elif call["prefix"] is not None:
                     if call["prefix"] not in aliases:
                         continue
                     target_package = import_packages.get(aliases[call["prefix"]])
-                candidates = side_functions.get(target_package, {}).get(call["name"], [])
+                    candidates = side_functions.get(target_package, {}).get(call["name"], [])
+                else:
+                    candidates = side_functions.get(target_package, {}).get(call["name"], [])
                 if len(candidates) == 1:
                     edges.append({"kind": "calls", "source": call["owner"], "target": candidates[0],
                                   "path": path, "line": call["line"],
                                   "detail": f"{call['prefix'] + '.' if call['prefix'] else ''}{call['name']}"})
         return edges
-    before_edges = side_edges(baseline, baseline_declared)
-    after_edges = side_edges(current, current_declared)
+    before_edges = side_edges(baseline, baseline_declared, _module_path(baseline_files))
+    after_edges = side_edges(current, current_declared, _module_path(current_files))
     before_keys = {(edge["kind"], edge["source"], edge["target"], edge["path"], edge["line"]) for edge in before_edges}
     after_keys = {(edge["kind"], edge["source"], edge["target"], edge["path"], edge["line"]) for edge in after_edges}
     for edge in [*after_edges, *(item for item in before_edges if (
