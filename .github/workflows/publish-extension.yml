@@ -82,6 +82,12 @@ jobs:
         run: python -m unittest discover -s .github/extensions/agent-review/tests -p test_markdown_adapter.py
       - name: Check document roles, prompts, and reviewer corrections
         run: node --test .github/extensions/agent-review/tests/test-markdown.mjs .github/extensions/agent-review/tests/test-language-adapters.mjs
+      - name: Prepare locked language tooling
+        run: npm ci --prefix .github/extensions/agent-review --ignore-scripts --bin-links=false --no-audit --no-fund
+      - name: Check C/C++ syntax, review routing, test execution and source-matched coverage
+        run: |
+          node --test .github/extensions/agent-review/tests/test-cpp-support.mjs
+          python -m unittest discover -s .github/extensions/agent-review/tests -p test_cpp_adapter.py
       - name: Check cross-platform session paths and attribution
         run: node --test .github/extensions/agent-review/tests/test-session-context.mjs
       - name: Check source navigation and snapshot caching

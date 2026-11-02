@@ -7,7 +7,7 @@ export function reviewSections(model, observations = []) {
     const nodes = new Map((model.nodes || []).map((node) => [node.id, node]));
     const callables = (model.nodes || []).filter((node) => paths.has(node.path)
         && node.change !== "unchanged" && !isTestPath(node.path)
-        && ["function", "method", "constructor", "class", "interface"].includes(node.kind));
+        && ["function", "method", "constructor", "destructor", "operator", "lambda", "class", "interface"].includes(node.kind));
     const changedIds = new Set(callables.map((node) => node.id));
     const incoming = new Map(), outgoing = new Map();
     const edges = (model.edges || []).filter((edge) => ["calls", "inherits", "imports"].includes(edge.type)

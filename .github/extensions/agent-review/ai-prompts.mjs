@@ -7,7 +7,7 @@ export const ANNOTATION_HEADINGS = [
 ];
 
 // Bump when the item-explanation prompt changes meaningfully; saved explanations from older prompts are regenerated.
-export const ANNOTATION_PROMPT_VERSION = 4;
+export const ANNOTATION_PROMPT_VERSION = 5;
 
 export const INSTRUCTION_HEADINGS = [
     "What this document is", "How it reaches an agent", "What changed and how obligations change",
@@ -103,6 +103,7 @@ export function buildAnnotationPrompt(context) {
         "For added code, explain observable behavior rather than merely saying it is new. For removed code, explain the lost contract and any evidenced replacement.",
         "Cite saved `path:line` or `path:start-end` ranges for the mechanism and example. Separate demonstrated source behavior, likely downstream consequences, and unverified runtime impact.",
         "code_context contains bounded current/base ranges, source-backed consumer/dependency excerpts and supplied tests. Read the actual implementations and assertions. Describe partial ranges and omitted related symbols as context limits, not absent saved code or missing tests.",
+        "Identical bounded excerpts do not establish that the file is unchanged. Inspect saved diffs and changed-line inclusion counts; state when edits were omitted. For C/C++, preprocessor guards are configuration conditions, not evaluated runtime branches; macros, overloads and dynamic dispatch are not compiler resolved.",
         "An opposite-side diff-aligned range may include neighboring edit context, especially for added/removed symbols; do not claim identical callable identity from alignment alone.",
         "## Why it changed",
         "1-2 bullets. If session_attribution or session_intent states the goal, start with **Stated intent:** and quote at most 15 words of it.",

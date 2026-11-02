@@ -46,9 +46,9 @@ def resolved_package_version(declarations: list[dict[str, Any]]) -> str | None:
 
 
 def _symbol_metadata(item: dict[str, Any]) -> dict[str, Any]:
-    metadata = {key: item[key] for key in ("language", "ecosystem") if key in item}
+    metadata = {key: item[key] for key in ("language", "ecosystem", "dialect", "conditions") if key in item}
     if (
-        item.get("language") in {"csharp", "go", "rust"}
+        item.get("language") in {"csharp", "go", "rust", "cpp"}
         or str(item.get("path", "")).lower().endswith((".cs", ".go", ".rs"))
     ) and "identity" in item:
         metadata["identity"] = item["identity"]
@@ -73,11 +73,16 @@ def _is_rust_symbol(node: dict[str, Any]) -> bool:
         "module", "struct", "enum", "trait",
     }
 
+def _is_cpp_symbol(node: dict[str, Any]) -> bool:
+    return node.get("language") == "cpp" and node["type"] in {
+        "namespace", "struct", "union", "enum", "type", "constructor", "destructor", "operator", "lambda",
+    }
+
 
 def _is_callable_node(node: dict[str, Any]) -> bool:
     return node["type"] in ("function", "method") or (
-        node.get("language") == "csharp"
-        and node["type"] in ("property", "constructor", "operator", "accessor")
+        (node.get("language") == "csharp" and node["type"] in ("property", "constructor", "operator", "accessor"))
+        or (node.get("language") == "cpp" and node["type"] in ("constructor", "destructor", "operator", "lambda"))
     )
 
 
@@ -169,7 +174,7 @@ class ReviewModel:
         changed_symbols = [
             node for node in nodes
             if (node["type"] in ("class", "function", "method") or _is_csharp_symbol(node)
-                or _is_go_symbol(node) or _is_rust_symbol(node))
+                or _is_go_symbol(node) or _is_rust_symbol(node) or _is_cpp_symbol(node))
             and node["change"] != "unchanged"
         ]
         changed_modules = [
@@ -205,6 +210,7 @@ class ReviewModel:
                 **({"csharp_loc": self.repository["csharp_loc"]} if "csharp_loc" in self.repository else {}),
                 **({"go_loc": self.repository["go_loc"]} if "go_loc" in self.repository else {}),
                 **({"rust_loc": self.repository["rust_loc"]} if "rust_loc" in self.repository else {}),
+                **({"cpp_loc": self.repository["cpp_loc"]} if "cpp_loc" in self.repository else {}),
                 **(
                     {"review_languages": self.repository["review_languages"]}
                     if "review_languages" in self.repository
@@ -401,7 +407,7 @@ class ReviewModel:
             })
             result.append({
                 "id": symbol["id"], "type": symbol["kind"], "name": symbol["name"],
-                "display_name": symbol["qualname"] if symbol["kind"] == "method" else symbol["name"],
+                "display_name": symbol["qualname"] if symbol["kind"] == "method" or symbol.get("language") == "cpp" else symbol["name"],
                 "qualified_name": f"{symbol['module']}.{symbol['qualname']}",
                 "parent_id": parent_id, "module_id": module["id"],
                 "component_id": component_id, "path": symbol["path"],
@@ -578,7 +584,7 @@ class ReviewModel:
                 )
             if metrics["lines_changed"] >= 25 and (
                 node["type"] in ("module", "class", "function", "method")
-                or _is_csharp_symbol(node) or _is_go_symbol(node) or _is_rust_symbol(node)
+                or _is_csharp_symbol(node) or _is_go_symbol(node) or _is_rust_symbol(node) or _is_cpp_symbol(node)
             ):
                 node["_size_evidence"] = self.add_evidence(
                     "line_delta", {"path": node["path"], "line": node["start_line"],
@@ -635,7 +641,7 @@ class ReviewModel:
             )
             append_finding(
                 node, "signature", "_signature_evidence",
-                "Public symbol contract changed" if _is_csharp_symbol(node) or _is_go_symbol(node) or _is_rust_symbol(node)
+                "Public symbol contract changed" if _is_csharp_symbol(node) or _is_go_symbol(node) or _is_rust_symbol(node) or _is_cpp_symbol(node)
                 else "Public callable contract changed",
                 f"{node['name']} changed its signature with {callers} direct or transitive callers to verify.",
                 50 + min(32, callers * 3),

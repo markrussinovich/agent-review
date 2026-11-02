@@ -113,7 +113,8 @@ export function reviewCommands(model) {
     for (const change of model.changes || []) if (change.status !== "unchanged") {
         items.push({ id: `file:${change.path}`, kind: "file", title: change.path, path: change.path, label: "Changed file", rank: 1 });
     }
-    for (const node of model.nodes || []) if (node.path && ["function", "method", "class", "interface"].includes(node.kind)) {
+    for (const node of model.nodes || []) if (node.path && ["function", "method", "constructor", "destructor",
+        "operator", "lambda", "class", "interface"].includes(node.kind)) {
         const title = node.display_name || node.name;
         // Minified or anonymous symbols have no searchable name.
         if (!/[\p{L}\p{N}_$]/u.test(title || "")) continue;

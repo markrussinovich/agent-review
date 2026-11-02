@@ -138,7 +138,7 @@ export function repositoryRuleReferences(sources, savedFiles, markdownFacts = nu
             references.set(`${source.path}:${path}`, { from: source.path, path });
         };
         for (const link of links) add(link[1], true);
-        for (const match of source.text.matchAll(/(?:[A-Za-z0-9_.-]+\/)*(?:Cargo\.lock|[A-Za-z0-9_.-]+\.(?:csproj|cs|slnx?|props|targets|py|go|rs|mod|sum|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html))\b/g)) {
+        for (const match of source.text.matchAll(/(?:[A-Za-z0-9_.-]+\/)*(?:Cargo\.lock|[A-Za-z0-9_.-]+\.(?:csproj|cs|slnx?|props|targets|py|go|rs|c|cc|cpp|cxx|h|hh|hpp|hxx|ipp|tpp|inl|mod|sum|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html))\b/gi)) {
             if (!links.some((link) => match.index >= link.index && match.index < link.index + link[0].length)) add(match[0], false);
         }
     }
