@@ -128,6 +128,78 @@ test("nested branches, exceptions and lambdas do not leak decisions to the wrong
     assert.deepEqual(lambda.entries.map((entry) => entry.decision.value), ["y"]);
 });
 
+test("C and C++ callable parameters shadow global functions but not explicitly qualified calls", async () => {
+    for (const path of ["bindings.c", "bindings.cpp"]) {
+        const report = await analyzeCppSnapshot({ current: { [path]: `int Target() { return 1; }
+int Pointer(int (*Target)()) { return Target(); }
+int Function(int Target()) { return Target(); }
+${path.endsWith(".cpp") ? "int Qualified(int (*Target)()) { return ::Target(); }" : ""}
+` } });
+        const target = report.symbols.find((symbol) => symbol.name === "Target");
+        for (const name of ["Pointer", "Function"]) {
+            const caller = report.symbols.find((symbol) => symbol.name === name);
+            assert.ok(!report.edges.some((edge) => edge.kind === "calls" && edge.source === caller.id));
+        }
+        assert.match(report.warnings.join("\n"), /unresolved C\/C\+\+ call Target/);
+        if (path.endsWith(".cpp")) {
+            const qualified = report.symbols.find((symbol) => symbol.name === "Qualified");
+            assert.ok(report.edges.some((edge) => edge.kind === "calls"
+                && edge.source === qualified.id && edge.target === target.id));
+        }
+    }
+});
+
+test("local bindings and lambda parameters respect lexical scope during call resolution", async () => {
+    const report = await analyzeCppSnapshot({ current: { "locals.cpp": `int Target() { return 1; }
+int Other() { return 2; }
+int Before() { Target(); auto Target = [] { return 0; }; return Target(); }
+int Outside() { { auto Target = callback; Target(); } return Target(); }
+int Range() { for (auto Target : callbacks) Target(); return Target(); }
+int Conditional() { if (auto Target = callback; ready) Target(); return Target(); }
+int ConditionValue() { if (auto Target = callback) Target(); return Target(); }
+int Captures(int (*Target)()) {
+ auto local = [Target = callback](int (*Other)()) { return Target() + Other(); };
+ return local();
+}
+` } });
+    const target = report.symbols.find((symbol) => symbol.name === "Target");
+    for (const name of ["Before", "Outside", "Range", "Conditional", "ConditionValue"]) {
+        const caller = report.symbols.find((symbol) => symbol.name === name);
+        assert.ok(report.edges.some((edge) => edge.kind === "calls"
+            && edge.source === caller.id && edge.target === target.id), name);
+        assert.ok(report.warnings.some((warning) => warning.includes(`locals.cpp:${caller.range.start_line}:`)
+            && warning.includes("unresolved C/C++ call Target")), name);
+    }
+    const captures = report.symbols.find((symbol) => symbol.name === "Captures");
+    const lambda = report.symbols.find((symbol) => symbol.kind === "lambda" && symbol.parent_id === captures.id);
+    assert.ok(!report.edges.some((edge) => edge.kind === "calls" && edge.source === lambda.id));
+});
+
+test("do/while decisions do not require the condition before the first iteration", async () => {
+    const report = await analyzeCppSnapshot({
+        baseline: { "loops.cpp": "int Loop(bool keep) { while (keep) { return 7; } return 0; }\n" },
+        current: { "loops.cpp": `int Do(bool keep, bool ready) {
+ if (ready) do { if (keep) return 1; else return 2; } while (keep);
+ return 0;
+}
+int While(bool keep) { while (keep) return 3; return 0; }
+int For(bool keep) { for (; keep;) return 4; return 0; }
+int Loop(bool keep) { do { return 7; } while (keep); }
+` } });
+    const decisions = (name) => report.code_paths.callables.find((callable) => callable.qualname === name)
+        .entries.map((entry) => entry.decision);
+    assert.deepEqual(decisions("Do").find((decision) => decision.value === "1").when, ["ready", "keep"]);
+    assert.deepEqual(decisions("Do").find((decision) => decision.value === "2").when, ["ready", "!(keep)"]);
+    assert.deepEqual(decisions("While").find((decision) => decision.value === "3").when, ["keep"]);
+    assert.deepEqual(decisions("For").find((decision) => decision.value === "4").when, ["keep"]);
+    assert.deepEqual(decisions("Loop").find((decision) => decision.value === "7").when, []);
+    const loop = report.code_paths.callables.find((callable) => callable.qualname === "Loop");
+    const seven = loop.entries.find((entry) => entry.status === "changed");
+    assert.equal(seven.base.value, "7");
+    assert.deepEqual(seven.base.when, ["keep"]);
+    assert.equal(loop.entries.find((entry) => entry.status === "removed").decision.value, "0");
+});
+
 test("return/default/noexcept changes preserve callable identity and declaration names do not affect linkage", async () => {
     const report = await analyzeCppSnapshot({
         baseline: { "app.cpp": "auto value(int n=1) noexcept -> int { return n; }\n" },

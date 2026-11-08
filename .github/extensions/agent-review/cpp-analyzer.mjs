@@ -54,7 +54,7 @@ function graph(snapshot) {
             const names = target.startsWith("::") ? [target.slice(2)]
                 : [...scope.map((_, index) => [...scope.slice(0, scope.length - index), target].join("::")), target];
             let candidates = [];
-            for (const name of names) {
+            for (const name of call.shadowed ? [] : names) {
                 candidates = visible.filter((symbol) => isCppCallable(symbol) && sameName(symbol, name));
                 if (candidates.length) break;
             }
@@ -95,7 +95,7 @@ function compareDecisions(before = [], after = []) {
         if (old.decision.outcome !== next.decision.outcome) continue;
         const value = old.decision.value === next.decision.value;
         const condition = shape(old.decision) === shape(next.decision);
-        if (value || condition) pairs.push({ old, next, score: Number(value) + 2 * Number(condition) });
+        if (value || condition) pairs.push({ old, next, score: 2 * Number(value) + Number(condition) });
     }
     pairs.sort((a, b) => b.score - a.score
         || Math.abs(a.old.index - a.next.index) - Math.abs(b.old.index - b.next.index));

@@ -39,6 +39,20 @@ function functionDeclarator(node) {
     return functionDeclarator(field(node, "declarator"));
 }
 
+function declaratorNames(node) {
+    if (!node) return [];
+    if (node.type === "identifier") return [node.text];
+    if (node.type === "structured_binding_declarator") return node.namedChildren.flatMap(declaratorNames);
+    return declaratorNames(field(node, "declarator")
+        || (["parenthesized_declarator", "reference_declarator"].includes(node.type) ? node.namedChildren[0] : null));
+}
+
+function parameterNames(node) {
+    if (!node) return [];
+    return (field(node, "parameters")?.namedChildren || [])
+        .flatMap((parameter) => declaratorNames(field(parameter, "declarator")));
+}
+
 function parameterSignature(node) {
     const parameters = field(node, "parameters");
     if (!parameters) return "()";
@@ -81,6 +95,7 @@ function preprocessorConditions(node) {
 
 function extract(root, path, source, dialect) {
     const symbols = [], includes = [], calls = [], bases = [], tests = [], warnings = [];
+    const lambdaBindings = new Map();
     const module = `cpp:${path}`;
     const moduleId = cppId("module", path);
     function record(node, kind, name, scopes, parent, extra = {}) {
@@ -98,12 +113,21 @@ function extract(root, path, source, dialect) {
         symbols.push(entry);
         return entry;
     }
-    function bodyFacts(node, owner, conditions = [], context = []) {
-        if (node.type === "lambda_expression") return;
+    function bodyFacts(node, owner, conditions = [], context = [], bindings = new Set()) {
+        if (node.type === "lambda_expression") {
+            lambdaBindings.set(node.id, new Set(bindings));
+            return;
+        }
+        if (["compound_statement", "if_statement", "switch_statement", "while_statement",
+            "do_statement", "for_statement", "for_range_loop", "catch_clause"].includes(node.type)) {
+            bindings = new Set(bindings);
+        }
+        if (node.type === "catch_clause") for (const name of parameterNames(node)) bindings.add(name);
         if (node.type === "call_expression") {
             const target = field(node, "function");
             if (target) calls.push({ source: owner.id, target: compact(target.text), path,
-                line: target.startPosition.row + 1, conditions: owner.conditions });
+                line: target.startPosition.row + 1, conditions: owner.conditions,
+                shadowed: target.type === "identifier" && bindings.has(target.text) });
         }
         const condition = field(node, "condition");
         const conditionText = compact(condition?.text || "").replace(/^\((.*)\)$/s, "$1");
@@ -121,12 +145,20 @@ function extract(root, path, source, dialect) {
             });
         }
         const consequence = field(node, "consequence"), alternative = field(node, "alternative");
+        const declarators = ["declaration", "condition_clause"].includes(node.type)
+            ? node.childrenForFieldName("declarator") : [];
         for (const child of node.namedChildren) {
+            if (declarators.some((declarator) => declarator.id === child.id) && !functionDeclarator(child)) {
+                for (const name of declaratorNames(child)) bindings.add(name);
+            }
+            if (node.type === "for_range_loop" && child.id === field(node, "body")?.id) {
+                for (const name of declaratorNames(field(node, "declarator"))) bindings.add(name);
+            }
             let next = conditions, nextContext = context;
             if (node.type === "if_statement" && conditionText) {
                 if (child.id === consequence?.id) next = [...conditions, conditionText];
                 else if (child.id === alternative?.id) next = [...conditions, `!(${conditionText})`];
-            } else if (["while_statement", "for_statement", "do_statement"].includes(node.type)
+            } else if (["while_statement", "for_statement"].includes(node.type)
                 && child.id === field(node, "body")?.id && conditionText) {
                 next = [...conditions, conditionText];
             } else if (node.type === "case_statement") {
@@ -135,7 +167,7 @@ function extract(root, path, source, dialect) {
             } else if (node.type === "catch_clause") {
                 nextContext = [...context, `catch ${compact(field(node, "parameters")?.text || "(...)")}`];
             }
-            bodyFacts(child, owner, next, nextContext);
+            bodyFacts(child, owner, next, nextContext, bindings);
         }
     }
     function walk(node, scopes = [], parent = null) {
@@ -206,7 +238,7 @@ function extract(root, path, source, dialect) {
                     symbol_id: entry.id, framework: "gtest" });
                 else if (testMacro) warnings.push(`${path}:${node.startPosition.row + 1}: GoogleTest registration is not an exact literal test identity; execution is unavailable.`);
                 if (body) {
-                    bodyFacts(body, entry);
+                    bodyFacts(body, entry, [], [], new Set(parameterNames(declarator)));
                     entry.complexity += body.descendantsOfType(["if_statement", "while_statement", "for_statement",
                         "case_statement", "catch_clause", "conditional_expression"]).length;
                     for (const lambda of body.descendantsOfType("lambda_expression")) walk(lambda, [...scopes, testName || name], entry);
@@ -224,7 +256,14 @@ function extract(root, path, source, dialect) {
             const entry = record(node, "lambda", `(lambda at ${node.startPosition.row + 1}:${node.startPosition.column + 1})`,
                 scopes, parent, { definition: true, decisions: [], complexity: 1 });
             const body = field(node, "body");
-            if (body) bodyFacts(body, entry);
+            const bindings = new Set(lambdaBindings.get(node.id) || []);
+            for (const name of parameterNames(field(node, "declarator"))) bindings.add(name);
+            for (const capture of field(node, "captures")?.namedChildren || []) {
+                if (capture.type === "lambda_capture_initializer") {
+                    for (const name of declaratorNames(field(capture, "left"))) bindings.add(name);
+                }
+            }
+            if (body) bodyFacts(body, entry, [], [], bindings);
             return;
         }
         if (node.type === "expression_statement") {
