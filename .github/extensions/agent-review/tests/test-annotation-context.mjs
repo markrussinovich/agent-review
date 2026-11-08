@@ -6,6 +6,160 @@ const text = (count, label = "line") => Array.from({ length: count }, (_, i) => 
 const selected = { id: "function", name: "merge", kind: "function", path: "a.js",
     start_line: 1, end_line: 250, change: "modified" };
 const context = (subject = selected) => ({ subject, evidence: {}, related_edges: [] });
+const file = { id: "file:main.cpp", name: "main.cpp", path: "main.cpp", kind: "file", change: "modified",
+    start_line: null, end_line: null };
+const excerptText = (side) => side.ranges.map((range) => range.excerpt).join("\n");
+const modifiedSnapshot = (count, edits) => {
+    const base = text(count).split("\n"), current = [...base];
+    for (const [line, value] of edits) current[line - 1] = value;
+    return { base: base.join("\n"), current: current.join("\n"),
+        diff: edits.map(([line, value]) => `@@ -${line} +${line} @@\n-${base[line - 1]}\n+${value}\n`).join("") };
+};
+
+test("unsupported file explanations include late edits instead of identical opening excerpts", async () => {
+    const snapshot = modifiedSnapshot(300, [[250, "int limit() { return 20; }"]]);
+    for (const path of ["main.cpp", "notes.txt"]) {
+        const result = await annotationCodeContext({ nodes: [] }, context({ ...file, path }), async () => snapshot);
+        assert.match(excerptText(result.current), /250: int limit\(\) \{ return 20; \}/);
+        assert.match(excerptText(result.base), /250: line 250/);
+        assert.notEqual(excerptText(result.base), excerptText(result.current));
+        assert.deepEqual(result.current.requested_ranges, [[245, 255]]);
+        assert.match(result.diff, /\+int limit/);
+        assert.equal(result.evidence_limits.unrelated_diff_hunks, 0);
+        assert.equal(result.evidence_limits.omitted_diff_hunks, 0);
+        assert.deepEqual(result.current.changed_lines, { total: 1, included: 1 });
+    }
+});
+
+test("file and module explanations include every distant edit, not just the first changed symbols", async () => {
+    const edits = Array.from({ length: 8 }, (_, index) => [50 + index * 100, `changed ${index}`]);
+    const snapshot = modifiedSnapshot(900, edits);
+    const nodes = edits.map(([line], index) => ({ id: `symbol:${index}`, path: file.path, kind: "function",
+        start_line: line, end_line: line + 2, change: "modified" }));
+    for (const subject of [file, { ...file, kind: "module", start_line: 1, end_line: 900 }]) {
+        const result = await annotationCodeContext({ nodes }, context(subject), async () => snapshot);
+        for (const [line, value] of edits) {
+            assert.match(excerptText(result.current), new RegExp(`${line}: ${value}`));
+            assert.match(result.diff, new RegExp(`\\+${value}`));
+        }
+        assert.equal(result.current.requested_ranges.length, 8);
+        assert.equal(result.evidence_limits.unrelated_diff_hunks, 0);
+        assert.deepEqual(result.base.changed_lines, { total: 8, included: 8 });
+    }
+});
+
+test("neighboring hunk context merges without duplicating source ranges", async () => {
+    const snapshot = modifiedSnapshot(300, [[250, "changed first"], [255, "changed second"]]);
+    const result = await annotationCodeContext({ nodes: [] }, context(file), async () => snapshot);
+    assert.deepEqual(result.current.requested_ranges, [[245, 260]]);
+    assert.deepEqual(result.base.requested_ranges, [[245, 260]]);
+    assert.equal(result.current.ranges.length, 1);
+    assert.deepEqual(result.current.changed_lines, { total: 2, included: 2 });
+});
+
+test("deletion-only edits use each side's hunk coordinates, including deletion at EOF", async () => {
+    for (const line of [1, 250, 300]) {
+        const base = text(300).split("\n"), current = [...base];
+        current.splice(line - 1, 1);
+        const result = await annotationCodeContext({ nodes: [] }, context(file), async () => ({
+            base: base.join("\n"), current: current.join("\n"),
+            diff: `@@ -${line} +${line - 1},0 @@\n-${base[line - 1]}\n`,
+        }));
+        assert.match(excerptText(result.base), new RegExp(`${line}: line ${line}(?:\\n|$)`));
+        assert.match(result.diff, new RegExp(`-line ${line}`));
+        assert.deepEqual(result.base.changed_lines, { total: 1, included: 1 });
+        assert.deepEqual(result.current.changed_lines, { total: 0, included: 0 });
+        assert.ok(result.current.requested_ranges.every(([start, end]) => start >= 1 && end <= current.length));
+        assert.equal(result.evidence_limits.unrelated_diff_hunks, 0);
+    }
+});
+
+test("insertion-only edits preserve the before context at the beginning and end of a file", async () => {
+    for (const line of [1, 301]) {
+        const base = text(300).split("\n"), current = [...base];
+        current.splice(line - 1, 0, "inserted");
+        const result = await annotationCodeContext({ nodes: [] }, context(file), async () => ({
+            base: base.join("\n"), current: current.join("\n"),
+            diff: `@@ -${line - 1},0 +${line} @@\n+inserted\n`,
+        }));
+        assert.match(excerptText(result.current), new RegExp(`${line}: inserted`));
+        assert.ok(result.base.ranges.length);
+        assert.deepEqual(result.current.changed_lines, { total: 1, included: 1 });
+        assert.deepEqual(result.base.changed_lines, { total: 0, included: 0 });
+    }
+});
+
+test("added, deleted, and emptied files retain their available changed sides", async () => {
+    const source = text(300);
+    const addedDiff = `@@ -0,0 +1,300 @@\n${source.split("\n").map((line) => `+${line}`).join("\n")}\n`;
+    const removedDiff = `@@ -1,300 +0,0 @@\n${source.split("\n").map((line) => `-${line}`).join("\n")}\n`;
+    const added = await annotationCodeContext({ nodes: [] }, context({ ...file, change: "added" }),
+        async () => ({ base: null, current: source, diff: addedDiff }));
+    assert.equal(added.base.available, false);
+    assert.deepEqual(added.current.changed_lines, { total: 300, included: 300 });
+    for (const current of [null, ""]) {
+        const removed = await annotationCodeContext({ nodes: [] },
+            context({ ...file, change: current === null ? "deleted" : "modified" }),
+            async () => ({ base: source, current, diff: removedDiff }));
+        assert.deepEqual(removed.base.changed_lines, { total: 300, included: 300 });
+        assert.deepEqual(removed.current.ranges, []);
+        assert.equal(removed.current.available, current !== null);
+        assert.equal(removed.evidence_limits.unrelated_diff_hunks, 0);
+    }
+});
+
+test("changed lines outrank unchanged boundaries in budget-limited symbol excerpts on both sides", async () => {
+    const base = text(3000, "padding ".repeat(12)).split("\n"), current = [...base];
+    base[1499] = "return oldWinner;";
+    current[1499] = "return newWinner;";
+    const result = await annotationCodeContext({ nodes: [] }, context({ ...selected, end_line: 3000 }),
+        async () => ({ base: base.join("\n"), current: current.join("\n"),
+            diff: "@@ -1500 +1500 @@\n-return oldWinner;\n+return newWinner;\n" }));
+    assert.match(excerptText(result.current), /1500: return newWinner/);
+    assert.match(excerptText(result.base), /1500: return oldWinner/);
+    assert.equal(result.current.complete, false);
+    assert.equal(result.base.complete, false);
+    assert.deepEqual(result.current.changed_lines, { total: 1, included: 1 });
+    assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 48_000);
+});
+
+test("large changed hunks report omitted edits and remain within the explanation budget", async () => {
+    const base = text(500, "old ".repeat(30)), current = text(500, "new ".repeat(30));
+    const result = await annotationCodeContext({ nodes: [] }, context(file), async () => ({
+        base, current, diff: `@@ -1,500 +1,500 @@\n${base.split("\n").map((line) => `-${line}`).join("\n")}\n`
+            + `${current.split("\n").map((line) => `+${line}`).join("\n")}\n`,
+    }));
+    for (const side of [result.base, result.current]) {
+        assert.equal(side.complete, false);
+        assert.equal(side.changed_lines.total, 500);
+        assert.ok(side.changed_lines.included > 0 && side.changed_lines.included < 500);
+        assert.ok(side.omitted_ranges.length);
+    }
+    assert.equal(result.evidence_limits.omitted_diff_hunks, 1);
+    assert.equal(result.evidence_limits.unrelated_diff_hunks, 0);
+    assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 48_000);
+});
+
+test("oversized changed lines are omitted explicitly rather than mistaken for unchanged files", async () => {
+    const snapshot = modifiedSnapshot(300, [[250, "x".repeat(30_000)]]);
+    const result = await annotationCodeContext({ nodes: [] }, context(file), async () => snapshot);
+    assert.equal(result.current.complete, false);
+    assert.deepEqual(result.current.changed_lines, { total: 1, included: 0 });
+    assert.ok(result.current.omitted_ranges.some((range) => range.start_line <= 250 && range.end_line >= 250));
+    assert.equal(result.evidence_limits.omitted_diff_hunks, 1);
+    assert.match(result.evidence_limits.note, /Identical bounded excerpts do not establish/);
+    assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 48_000);
+});
+
+test("diff content resembling file headers is retained as changed source", async () => {
+    const result = await annotationCodeContext({ nodes: [] }, context(file), async () => ({
+        base: "-- old source", current: "++ new source",
+        diff: "--- a/main.cpp\n+++ b/main.cpp\n@@ -1 +1 @@\n--- old source\n+++ new source\n",
+    }));
+    assert.match(result.diff, /--- old source\n\+\+\+ new source/);
+    assert.deepEqual(result.base.changed_lines, { total: 1, included: 1 });
+    assert.deepEqual(result.current.changed_lines, { total: 1, included: 1 });
+});
 
 test("selected bodies include behavior beyond the former 120-line cutoff on both sides", async () => {
     const source = text(250) + "\nreturn finalPrecedenceWinner;";
