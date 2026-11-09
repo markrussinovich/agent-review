@@ -24,16 +24,18 @@ border-radius: 6px; background: var(--cp-surface); }
 .setup progress { width: 100%; accent-color: var(--cp-link); }
 .setup pre { color: var(--cp-danger); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
 .setup button { padding: 6px 12px; border: 1px solid var(--cp-border); border-radius: 6px;
-background: var(--cp-primary); color: white; cursor: pointer; }
+background: var(--cp-primary); color: var(--cp-primary-fg); cursor: pointer; }
 @media(max-width: 680px) { .setup { margin: 16px; padding: 16px; } }
 `;
 const script = `
 const status = document.querySelector("#status"), error = document.querySelector("#error");
 const retry = document.querySelector("#retry"), progress = document.querySelector("progress");
-const theme = () => { document.documentElement.dataset.theme =
-    (document.documentElement.dataset.colorMode || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")); };
+const root = document.documentElement, attributes = ["data-theme-tone", "data-color-mode"];
+const theme = () => { root.dataset.theme = attributes.map((name) => root.getAttribute(name))
+    .find((mode) => mode === "light" || mode === "dark")
+    || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); };
 theme();
-new MutationObserver(theme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-color-mode"] });
+new MutationObserver(theme).observe(root, { attributes: true, attributeFilter: attributes });
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", theme);
 let stopped = false;
 async function update() {
@@ -70,7 +72,8 @@ export async function startSetupServer(getState, retry, { stylesPath = join(root
         try {
             const headers = {
                 "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
-                "Content-Security-Policy": "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'",
+                // The Copilot app injects its ambient theme as inline <style>; scripts stay same-origin only.
+                "Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'",
             };
             if (req.method === "GET" && req.url === "/state") {
                 res.writeHead(200, { ...headers, "Content-Type": "application/json" });
