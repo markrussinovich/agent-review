@@ -836,7 +836,19 @@ that location. Content, compiler/extractor and parse configuration invalidate
 facts; semantic compilation, relationships and test links are rebuilt for
 each snapshot. `--no-cache` disables the scan's persistent .NET facts cache.
 C# code paths and test links are produced by that same compiler pass and
-reused by the provider. Long-running compiler work reports elapsed progress.
+reused by the provider. Source-only comparisons compile changed projects,
+their transitive consumers (including tests), and their dependency closure,
+retaining every supplied source and TFM in those contexts. Unrelated contexts
+are omitted before parsing and explicitly reported as limited; the graph is
+not a complete repository architecture view. Configuration changes and unknown
+source/reference membership retain the full supplied graph. Identical snapshots
+compile once while preserving unchanged identities. Progress identifies the
+project, TFM, stage, snapshot, and context count; long stages retain that detail
+alongside elapsed time. Helper progress goes to stderr, never the stdout JSON.
+Compiler error reporting samples declaration and source-tree diagnostics until
+the existing ten-error display budget is filled, rather than eagerly diagnosing
+every method body in an already-incomplete project. Relationship and test
+analysis still traverses all sources in the selected contexts.
 
 Each saved C# snapshot supports up to **32 Mi source characters**. The helper's
 separate **128 Mi-character JSON request limit** accommodates both snapshots and
@@ -1412,6 +1424,16 @@ node --test .github\extensions\agent-review\tests\test-*.mjs
 [Browser regressions](.github/extensions/agent-review/tests/browser/) use an
 existing `playwright-core` installation (`AGENT_REVIEW_BROWSER_PACKAGE`) and Edge
 on Windows, or `AGENT_REVIEW_BROWSER_EXECUTABLE` for another browser.
+
+For C# project-progress rendering, set `AGENT_REVIEW_PROGRESS_MODEL` and
+`AGENT_REVIEW_PROGRESS_EVENTS` to a real successful run's saved ReviewModel and
+recorded progress JSON, then run
+`node .github\extensions\agent-review\tests\browser\dotnet-progress.mjs`.
+This explicitly labeled replay checks project/TFM/count/snapshot/elapsed text,
+light/dark and narrow layouts, keyboard cancellation, and completion; it does
+not replace verification of an actual owned analyzer launch. Keep that launch's
+configured `workspacePath` directory present until it finishes: the ownership
+guard deliberately stops analysis when its owner directory disappears.
 
 The Copilot app injects its theme as inline `<style>` tokens and sets
 `data-theme-tone` on `<html>`, so the canvas and preparation-screen CSPs allow

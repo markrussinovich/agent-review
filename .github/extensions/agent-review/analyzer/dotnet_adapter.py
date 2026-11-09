@@ -7,6 +7,7 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -32,6 +33,7 @@ def helper_path() -> Path:
 
 def run_dotnet_helper(
     payload: dict[str, Any], *, on_wait: Callable[[float], None] | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     helper = helper_path()
     if not helper.is_file():
@@ -44,7 +46,7 @@ def run_dotnet_helper(
         )
     with tempfile.TemporaryDirectory(prefix="agent-review-dotnet-") as directory:
         request = Path(directory) / "request.json"
-        request.write_text(json.dumps(payload), encoding="utf-8")
+        request.write_text(json.dumps({**payload, **({"progress": True} if on_progress else {})}), encoding="utf-8")
         environment = os.environ.copy()
         if payload.get("use_cache") is False:
             environment["AGENT_REVIEW_DOTNET_CACHE"] = ""
@@ -53,21 +55,51 @@ def run_dotnet_helper(
                               or Path.home() / ".copilot" / "agent-review" / "file-cache")
             environment["AGENT_REVIEW_DOTNET_CACHE"] = str(cache_root / "dotnet-facts")
         try:
-            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-review-dotnet") as executor:
-                started = time.monotonic()
-                pending = executor.submit(
-                    subprocess.run,
-                    [os.environ.get("AGENT_REVIEW_DOTNET", "dotnet"), str(helper), "--input", str(request)],
-                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
-                    env=environment,
-                )
-                while True:
-                    try:
-                        result = pending.result(timeout=5)
-                        break
-                    except FutureTimeout:
-                        if on_wait:
-                            on_wait(time.monotonic() - started)
+            command = [os.environ.get("AGENT_REVIEW_DOTNET", "dotnet"), str(helper), "--input", str(request)]
+            if on_progress:
+                with (Path(directory) / "result.json").open("w+", encoding="utf-8") as output:
+                    with subprocess.Popen(command, stdout=output, stderr=subprocess.PIPE, text=True,
+                                          encoding="utf-8", errors="replace", env=environment) as process:
+                        def read_progress() -> str:
+                            tail: deque[str] = deque(maxlen=100)
+                            assert process.stderr is not None
+                            for line in process.stderr:
+                                tail.append(line[-6000:])
+                                if line.startswith("AGENT_REVIEW_DOTNET_PROGRESS "):
+                                    try:
+                                        event = json.loads(line.removeprefix("AGENT_REVIEW_DOTNET_PROGRESS "))
+                                    except json.JSONDecodeError as error:
+                                        raise RuntimeError("Roslyn helper returned invalid project progress JSON.") from error
+                                    if not isinstance(event, dict) or not isinstance(event.get("message"), str):
+                                        raise RuntimeError("Roslyn helper returned an invalid project progress event.")
+                                    on_progress(event["message"])
+                            return "".join(tail)[-6000:]
+
+                        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-review-dotnet-progress") as executor:
+                            stderr = executor.submit(read_progress)
+                            started = time.monotonic()
+                            try:
+                                while True:
+                                    if stderr.done():
+                                        stderr.result()
+                                    remaining = 120 - (time.monotonic() - started)
+                                    if remaining <= 0:
+                                        raise subprocess.TimeoutExpired(command, 120)
+                                    try:
+                                        process.wait(timeout=min(5, remaining))
+                                        break
+                                    except subprocess.TimeoutExpired:
+                                        if on_wait:
+                                            on_wait(time.monotonic() - started)
+                            finally:
+                                if process.poll() is None:
+                                    process.kill()
+                                    process.wait()
+                            output.seek(0)
+                            result = subprocess.CompletedProcess(command, process.returncode,
+                                                                 output.read(), stderr.result())
+            else:
+                result = _run_helper_command(command, environment, on_wait)
         except FileNotFoundError as error:
             raise AdapterUnavailable("C# analysis requires dotnet on PATH or AGENT_REVIEW_DOTNET; "
                                "install a local .NET 10 runtime/SDK. No reviewed code was executed.") from error
@@ -83,6 +115,23 @@ def run_dotnet_helper(
         if not isinstance(value, dict):
             raise AdapterUnavailable("Roslyn helper output must be a JSON object.")
         return value
+
+
+def _run_helper_command(command: list[str], environment: dict[str, str],
+                        on_wait: Callable[[float], None] | None) -> subprocess.CompletedProcess[str]:
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-review-dotnet") as executor:
+        started = time.monotonic()
+        pending = executor.submit(
+            subprocess.run, command,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120,
+            env=environment,
+        )
+        while True:
+            try:
+                return pending.result(timeout=5)
+            except FutureTimeout:
+                if on_wait:
+                    on_wait(time.monotonic() - started)
 
 
 def normalize_code_paths(facts: dict) -> dict:
@@ -145,9 +194,17 @@ class DotnetAdapter:
             saved = model.source_files.setdefault(path, {})
             saved["baseline"] = trees["baseline"].get(path)
             saved["current"] = trees["current"].get(path)
+        stage = "Roslyn is resolving saved C# relationships and code paths"
+
+        def project_progress(message: str) -> None:
+            nonlocal stage
+            stage = message
+            progress(message, 65)
+
         facts = run_dotnet_helper({**trees, "mode": "decisions", "use_cache": snapshot.use_cache},
+            on_progress=project_progress,
             on_wait=lambda elapsed: progress(
-                f"Roslyn is resolving saved C# relationships and code paths · {round(elapsed):,}s elapsed", 65))
+                f"{stage} · {round(elapsed):,}s elapsed", 65))
         if "code_paths" in facts:
             model.code_paths["csharp"] = normalize_code_paths(facts)
         model.warnings.extend(facts.get("warnings", []))
