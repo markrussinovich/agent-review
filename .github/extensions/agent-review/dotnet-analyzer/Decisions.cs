@@ -18,7 +18,8 @@ internal sealed class DecisionCollector
 
     internal List<Decision> Collect(Entity entity)
     {
-        foreach (var declaration in entity.Declarations)
+        foreach (var declaration in entity.Declarations.Concat(entity.RecoveredDeclarations)
+            .OrderBy(d => d.SyntaxTree.FilePath, StringComparer.Ordinal).ThenBy(d => d.SpanStart))
         {
             var facts = SyntaxFactsCache.DecisionFacts(declaration, () =>
             {

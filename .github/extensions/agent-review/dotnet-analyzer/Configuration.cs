@@ -161,7 +161,6 @@ internal sealed class ProjectConfig
                     languageVersion = LanguageVersion.Default;
                 }
                 var implicitUsings = Property("ImplicitUsings", "disable");
-                // SDK-generated implicit usings are not supplied source. Omission is deliberate.
                 if (implicitUsings is "enable" or "true")
                 {
                     if (root.Attribute("Sdk")?.Value != "Microsoft.NET.Sdk")
@@ -195,6 +194,25 @@ internal sealed class ProjectConfig
                 if (properties.Any(x => x.Name.LocalName == "AssemblyName" &&
                     (Active(x, tfm) is null || x.Value.Contains("$(", StringComparison.Ordinal))))
                     assemblyName = null;
+                bool GenerationEnabled(string name)
+                {
+                    var enabled = true;
+                    foreach (var property in properties.Where(x => x.Name.LocalName == name))
+                    {
+                        var active = Active(property, tfm);
+                        if (active == false) continue;
+                        if (active is null || !bool.TryParse(property.Value.Trim(), out var value))
+                        {
+                            config.Incomplete = true;
+                            warnings.Add($"{config.Scope}: {name} unavailable; generated friend attributes are not inferred.");
+                            return false;
+                        }
+                        enabled = value;
+                    }
+                    return enabled;
+                }
+                var generateAssemblyInfo = GenerationEnabled("GenerateAssemblyInfo");
+                var generateFriendAttributes = GenerationEnabled("GenerateInternalsVisibleToAttributes");
                 config = new ProjectConfig
                 {
                     Path = path, Tfm = tfm, Scope = config.Scope, Sources = [],
@@ -305,6 +323,7 @@ internal sealed class ProjectConfig
                             warnings.Add($"{config.Scope}: {item.Name.LocalName} '{item.Attribute("Include")?.Value}' unavailable; no restore or assembly loading from reviewed paths.");
                             break;
                         case "InternalsVisibleTo":
+                            if (!generateAssemblyInfo || !generateFriendAttributes) break;
                             var friend = item.Attribute("Include")?.Value;
                             if (friend is not null && Regex.IsMatch(friend, @"^[A-Za-z_][A-Za-z0-9_.-]*$") &&
                                 item.Attributes().All(a => a.Name.LocalName is "Include" or "Condition") && !item.Elements().Any())
@@ -373,7 +392,7 @@ internal sealed class ProjectConfig
             ? compatible[0].Project : null;
     }
 
-    private static (int Platform, Version Version)? CompatibleRank(string consumer, string dependency)
+    private static (int Framework, Version Version, int Platform, Version PlatformVersion)? CompatibleRank(string consumer, string dependency)
     {
         var pattern = @"^net(?<version>\d+\.\d+)(?:-(?<platform>[a-z]+)(?<platformVersion>[\d.]*))?$";
         var target = Regex.Match(consumer, pattern);
@@ -381,10 +400,11 @@ internal sealed class ProjectConfig
         if (!target.Success || !Version.TryParse(target.Groups["version"].Value, out var targetVersion) ||
             targetVersion.Major < 5) return null;
         if (Regex.Match(dependency, @"^netstandard(?<version>2\.[01])$") is { Success: true } standard)
-            return (-1, Version.Parse(standard.Groups["version"].Value));
+            return (0, Version.Parse(standard.Groups["version"].Value), 0, new Version(0, 0));
         if (!source.Success || !Version.TryParse(source.Groups["version"].Value, out var sourceVersion) ||
             sourceVersion.Major < 5 || sourceVersion > targetVersion) return null;
         var platform = source.Groups["platform"].Value;
+        var platformVersion = new Version(0, 0);
         if (platform.Length != 0)
         {
             if (platform != target.Groups["platform"].Value) return null;
@@ -392,8 +412,9 @@ internal sealed class ProjectConfig
             var targetPlatform = target.Groups["platformVersion"].Value;
             if (sourcePlatform.Length != 0 && (!Version.TryParse(sourcePlatform, out var sourceApi) ||
                 !Version.TryParse(targetPlatform, out var targetApi) || sourceApi > targetApi)) return null;
+            if (sourcePlatform.Length != 0) platformVersion = Version.Parse(sourcePlatform);
         }
-        return (platform.Length == 0 ? 0 : 1, sourceVersion);
+        return (1, sourceVersion, platform.Length == 0 ? 0 : 1, platformVersion);
     }
 
     private static bool HasCondition(XElement element) => element.AncestorsAndSelf()

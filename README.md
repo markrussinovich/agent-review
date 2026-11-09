@@ -787,6 +787,11 @@ Changed declarations and callables take priority before global budgets, followed
 by changed-source context and related consumer/test projects. An unchanged source
 declaration omitted on only one side is not a symbol removal or addition.
 Partial declarations for a retained identity remain merged at the symbol boundary.
+Byte-identical omitted partial parts are reconciled against the other saved
+snapshot only when parse configuration and compile membership agree. This
+retains syntax/declaration evidence without inventing semantic bindings for
+unexamined source. Capped relationship comparisons use bounded observed call
+counts; unresolved comparisons remain explicitly unknown.
 Bounded caller counts show resolved relationships, not proof of zero callers;
 incomplete code-path/test results never establish that no changes or tests exist.
 Unexamined test candidates are counted separately from known linked tests; a
@@ -812,7 +817,12 @@ explicit compatibility warning; multiple unknown-context choices are not guessed
 Literal `Microsoft.NET.Sdk` implicit usings use its standard namespace set.
 Literal unsigned `InternalsVisibleTo` items map to unique supplied project
 assembly identities, so internal test calls can resolve without loading any
-reviewed assembly. Other SDK-generated source and signing remain unsupported.
+reviewed assembly. `GenerateAssemblyInfo` and
+`GenerateInternalsVisibleToAttributes` must be enabled; disabled or unresolved
+generation flags never synthesize friendship. Supplied source attributes remain
+source evidence. Compatible modern .NET references prefer the nearest framework
+version before platform specificity, then the nearest compatible platform version.
+Other SDK-generated source and signing remain unsupported.
 
 The real-repository bounded C# browser regression requires
 `AGENT_REVIEW_UX_REPO`, pinned `AGENT_REVIEW_BASE_REF` / `AGENT_REVIEW_CURRENT_REF`,

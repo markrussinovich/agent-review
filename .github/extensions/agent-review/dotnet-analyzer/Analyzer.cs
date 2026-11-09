@@ -10,6 +10,8 @@ internal sealed class Entity
 {
     public required SymbolRecord Symbol { get; set; }
     public List<SyntaxNode> Declarations { get; } = [];
+    // Verified omitted parts supply syntax evidence, not invented semantic bindings.
+    public List<SyntaxNode> RecoveredDeclarations { get; } = [];
     public required string Fingerprint { get; set; }
     public required ProjectState Project { get; init; }
     public ISymbol? SemanticSymbol { get; init; }
@@ -47,6 +49,9 @@ internal sealed class Snapshot
     public HashSet<(string Scope, string Path)> AnalyzedSources { get; } = [];
     public HashSet<string> PriorityCallers { get; } = new(StringComparer.Ordinal);
     public HashSet<string> OmittedEdgeSources { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, HashSet<string>> SourceMembership { get; } = new(StringComparer.Ordinal);
+    public Dictionary<(string Source, string Target, string Kind), int> RelationshipCounts { get; } = [];
+    public bool RelationshipProofsLimited { get; set; }
 }
 
 internal static class Analyzer
@@ -80,6 +85,8 @@ internal static class Analyzer
             baseline.GetValueOrDefault(path) != currentFiles.GetValueOrDefault(path)).ToHashSet(StringComparer.Ordinal);
         var before = Build(baseline, currentFiles, changedPaths, warnings, "baseline");
         var after = Build(currentFiles, baseline, changedPaths, warnings, "current", before.PriorityCallers);
+        RecoverUnchangedDeclarations(before, after);
+        RecoverUnchangedDeclarations(after, before);
         var symbols = new List<SymbolRecord>();
         foreach (var (id, entity) in after.Entities.OrderBy(e => e.Key, StringComparer.Ordinal))
         {
@@ -114,7 +121,7 @@ internal static class Analyzer
         if (before.Limited || after.Limited)
             paths = paths with { Limited = true, Warnings = paths.Warnings.Append("Snapshot analysis limits omitted source, symbols, or relationships.").ToList() };
         return new AnalysisResult(symbols.OrderBy(s => s.Id, StringComparer.Ordinal).ToList(),
-            DiffEdges(before, after),
+            DiffEdges(before, after, warnings),
             warnings.Distinct(StringComparer.Ordinal).ToList(), paths);
     }
 
@@ -144,6 +151,7 @@ internal static class Analyzer
         var configurations = ProjectConfig.Read(files, warnings);
         snapshot.ConfigurationScopes.UnionWith(configurations.Select(c => c.Scope));
         foreach (var config in configurations) snapshot.ParseOptions[config.Scope] = config.Options;
+        foreach (var config in configurations) snapshot.SourceMembership[config.Scope] = config.Sources.ToHashSet(StringComparer.Ordinal);
         var affected = configurations.Where(c => changedPaths.Contains(c.Path) || c.Sources.Any(changedPaths.Contains))
             .Select(c => c.Path).ToHashSet(StringComparer.Ordinal);
         var consumers = new HashSet<string>(affected, StringComparer.Ordinal);
@@ -494,6 +502,12 @@ internal static class Analyzer
         void AddEdge(EdgeRecord edge)
         {
             edgeCount++;
+            var key = (edge.Source, edge.Target, edge.Kind);
+            if (snapshot.RelationshipCounts.TryGetValue(key, out var observed))
+                snapshot.RelationshipCounts[key] = observed + 1;
+            else if (snapshot.RelationshipCounts.Count < MaxEdges)
+                snapshot.RelationshipCounts[key] = 1;
+            else snapshot.RelationshipProofsLimited = true;
             var rank = changedIds.Contains(edge.Source) || changedIds.Contains(edge.Target) ? 0 :
                 changedPaths.Contains(edge.Path) ? 1 : 2;
             if (edgeBuckets[rank].Count < MaxEdges) edgeBuckets[rank].Add(edge);
@@ -574,11 +588,37 @@ internal static class Analyzer
             snapshot.Limited = true;
             warnings.Add($"Edges capped at {MaxEdges}; remaining resolved relationships omitted.");
         }
+        if (snapshot.RelationshipProofsLimited)
+            warnings.Add($"Relationship comparison proofs capped at {MaxEdges} distinct relationships; further one-sided changes remain unknown.");
         allWarnings.AddRange(warnings.Select(w => $"{label}: {w}"));
         return snapshot;
     }
 
     internal static bool IsType(string kind) => kind is "class" or "struct" or "record" or "interface" or "enum";
+    private static void RecoverUnchangedDeclarations(Snapshot source, Snapshot target)
+    {
+        if (!target.Limited) return;
+        foreach (var (id, previous) in source.Entities)
+        {
+            if (!target.Entities.TryGetValue(id, out var entity) ||
+                !target.ParseOptions[entity.Project.Config.Scope].Equals(previous.Project.Config.Options))
+                continue;
+            foreach (var declaration in previous.Declarations)
+            {
+                var path = declaration.SyntaxTree.FilePath;
+                if (target.AnalyzedSources.Contains((entity.Project.Config.Scope, path)) ||
+                    !target.SourceMembership[entity.Project.Config.Scope].Contains(path) ||
+                    !source.Files.TryGetValue(path, out var text) || target.Files.GetValueOrDefault(path) != text)
+                    continue;
+                entity.RecoveredDeclarations.Add(declaration);
+            }
+            if (entity.RecoveredDeclarations.Count == 0) continue;
+            var complete = entity.Declarations.Concat(entity.RecoveredDeclarations)
+                .OrderBy(d => d.SyntaxTree.FilePath, StringComparer.Ordinal).ThenBy(d => d.SpanStart).ToArray();
+            entity.Fingerprint = Hash(string.Join("\n", complete.Select(SyntaxFactsCache.DeclarationHash)));
+            entity.Symbol = entity.Symbol with { Declarations = complete.Select(DeclarationLocation).ToList() };
+        }
+    }
     internal static bool WasOmitted(Entity entity, Snapshot other) =>
         other.Limited && other.ConfigurationScopes.Contains(entity.Project.Config.Scope) &&
         (
@@ -587,6 +627,7 @@ internal static class Analyzer
                 (entity.Project.Config.Scope, d.SyntaxTree.FilePath, SyntaxFactsCache.DeclarationHash(d)))) ||
                 other.ParseOptions[entity.Project.Config.Scope].Equals(entity.Project.Config.Options) &&
                 entity.Declarations.All(d => !other.AnalyzedSources.Contains((entity.Project.Config.Scope, d.SyntaxTree.FilePath)) &&
+                    other.SourceMembership[entity.Project.Config.Scope].Contains(d.SyntaxTree.FilePath) &&
                     other.Files.GetValueOrDefault(d.SyntaxTree.FilePath) ==
                     entity.Project.Trees.First(t => t.FilePath == d.SyntaxTree.FilePath).GetText().ToString())
             : other.Files.TryGetValue(entity.Symbol.Path, out var text) && Hash(text) == entity.Fingerprint);
@@ -614,7 +655,7 @@ internal static class Analyzer
         }
     }
 
-    private static List<EdgeRecord> DiffEdges(Snapshot baseline, Snapshot currentSnapshot)
+    private static List<EdgeRecord> DiffEdges(Snapshot baseline, Snapshot currentSnapshot, List<string> warnings)
     {
         var before = baseline.Edges;
         var after = currentSnapshot.Edges;
@@ -650,26 +691,56 @@ internal static class Analyzer
             }
             output.AddRange(available.Order().Select(i => previous[i] with { Change = "removed" }));
         }
-        bool SameContext(string id)
-        {
-            var scope = id.Split("::", 2, StringSplitOptions.None)[0];
-            var separator = scope.LastIndexOf('@');
-            return separator >= 0 && baseline.ParseOptions.TryGetValue(scope, out var options) &&
-                currentSnapshot.ParseOptions.TryGetValue(scope, out var currentOptions) && options.Equals(currentOptions) &&
-                baseline.Files.GetValueOrDefault(scope[..separator]) == currentSnapshot.Files.GetValueOrDefault(scope[..separator]);
-        }
-        bool UnchangedSource(EdgeRecord edge) => baseline.Files.TryGetValue(edge.Path, out var source) &&
-            currentSnapshot.Files.GetValueOrDefault(edge.Path) == source && SameContext(edge.Source) && SameContext(edge.Target);
         bool OmittedRelationship(EdgeRecord edge, Snapshot present, Snapshot other)
         {
             bool OmittedEndpoint(string id) => !other.Entities.ContainsKey(id) &&
                 present.Entities.TryGetValue(id, out var entity) && WasOmitted(entity, other);
-            return OmittedEndpoint(edge.Source) || OmittedEndpoint(edge.Target) ||
-                other.Entities.ContainsKey(edge.Source) && other.Entities.ContainsKey(edge.Target) &&
-                other.OmittedEdgeSources.Contains(edge.Source) && UnchangedSource(edge);
+            return OmittedEndpoint(edge.Source) || OmittedEndpoint(edge.Target);
         }
-        return output.Where(e => e.Change != "removed" || !OmittedRelationship(e, baseline, currentSnapshot))
+        bool ExaminedChange(EdgeRecord edge)
+        {
+            if (edge.Change == "unchanged") return true;
+            var other = edge.Change == "removed" ? currentSnapshot : baseline;
+            var scope = edge.Source.Split("::", 2, StringSplitOptions.None)[0];
+            if (!other.Limited || !other.SourceMembership.TryGetValue(scope, out var sources) ||
+                !sources.Contains(edge.Path) || other.AnalyzedSources.Contains((scope, edge.Path))) return true;
+            warnings.Add($"Relationship change at {edge.Path}:{edge.Line} is unknown because the other snapshot omitted its caller source; one-sided evidence is not classified.");
+            return false;
+        }
+        var resolved = output.Where(ExaminedChange)
+            .Where(e => e.Change != "removed" || !OmittedRelationship(e, baseline, currentSnapshot))
             .Select(e => e.Change == "added" && OmittedRelationship(e, currentSnapshot, baseline) ? e with { Change = "unchanged" } : e)
+            .ToList();
+        var compared = new List<EdgeRecord>();
+        foreach (var group in resolved.GroupBy(Key))
+        {
+            if (!baseline.OmittedEdgeSources.Contains(group.Key.Source) &&
+                !currentSnapshot.OmittedEdgeSources.Contains(group.Key.Source) ||
+                !baseline.Entities.ContainsKey(group.Key.Source) || !currentSnapshot.Entities.ContainsKey(group.Key.Source) ||
+                !baseline.Entities.ContainsKey(group.Key.Target) || !currentSnapshot.Entities.ContainsKey(group.Key.Target))
+            {
+                compared.AddRange(group);
+                continue;
+            }
+            var knownBefore = baseline.RelationshipCounts.TryGetValue(group.Key, out var beforeCount) ||
+                !baseline.RelationshipProofsLimited;
+            var knownAfter = currentSnapshot.RelationshipCounts.TryGetValue(group.Key, out var afterCount) ||
+                !currentSnapshot.RelationshipProofsLimited;
+            if (!knownBefore || !knownAfter)
+            {
+                compared.AddRange(group.Where(e => e.Change == "unchanged"));
+                warnings.Add($"Relationship change from {group.Key.Source} to {group.Key.Target} is unknown at the comparison proof limit; one-sided evidence is not classified.");
+                continue;
+            }
+            var added = Math.Max(0, afterCount - beforeCount);
+            var removed = Math.Max(0, beforeCount - afterCount);
+            foreach (var edge in group)
+            {
+                if (edge.Change == "removed" && removed-- <= 0) continue;
+                compared.Add(edge.Change == "added" && added-- <= 0 ? edge with { Change = "unchanged" } : edge);
+            }
+        }
+        return compared
             .OrderBy(e => e.Path, StringComparer.Ordinal).ThenBy(e => e.Line)
             .ThenBy(e => e.Source, StringComparer.Ordinal).ThenBy(e => e.Target, StringComparer.Ordinal)
             .ThenBy(e => e.Kind, StringComparer.Ordinal).ThenBy(e => e.Change, StringComparer.Ordinal).ToList();
