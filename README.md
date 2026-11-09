@@ -464,6 +464,11 @@ evidence when available and states its presentation and analysis limits.
 
 The UI distinguishes supplied evidence from completed analysis, shows changed
 file/evidence-unit progress, and exposes **Stop AI review** and **Continue review**.
+Incomplete results repeat analyzed-file and evidence-unit coverage beside findings,
+including empty and expanded finding lists. "No supported findings so far" is not
+a clean bill of health: unreviewed evidence and unresolved gaps can hide findings.
+Requests continue automatically within the execution budget, prioritizing changed
+files not yet analyzed; a budget limit or **Stop AI review** still stops the run.
 Partial results survive failed requests and budget limits. Successful passes are
 checkpointed in the Copilot session workspace; continuation reuses them only for
 matching snapshot content, rules, instruction, selected model, limits, and
@@ -1328,6 +1333,15 @@ node --test .github\extensions\agent-review\tests\test-*.mjs
 [Browser regressions](.github/extensions/agent-review/tests/browser/) use an
 existing `playwright-core` installation (`AGENT_REVIEW_BROWSER_PACKAGE`) and Edge
 on Windows, or `AGENT_REVIEW_BROWSER_EXECUTABLE` for another browser.
+
+For incomplete internal-review presentation, run
+`node .github\extensions\agent-review\tests\browser\internal-review-results.mjs`
+from a real changed checkout with applicable repository instructions. Set
+`AGENT_REVIEW_UX_REPO` and `AGENT_REVIEW_UX_BASE` to select another checkout/base,
+and `AGENT_REVIEW_SCREENSHOT_DIR` to retain screenshots. This uses the production
+analyzer and bounded review pipeline with a controlled AI provider; it checks
+empty and supported findings, full lists, citations, keyboard continuation/stop,
+and complete-state wording in light/dark themes at desktop and narrow widths.
 
 Before merging changes to annotation rendering or Evidence-panel navigation,
 run `node .github/extensions/agent-review/tests/browser/annotation-updates.mjs`
