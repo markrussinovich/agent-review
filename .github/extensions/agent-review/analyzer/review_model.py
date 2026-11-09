@@ -46,7 +46,7 @@ def resolved_package_version(declarations: list[dict[str, Any]]) -> str | None:
 
 
 def _symbol_metadata(item: dict[str, Any]) -> dict[str, Any]:
-    metadata = {key: item[key] for key in ("language", "ecosystem", "dialect", "conditions") if key in item}
+    metadata = {key: item[key] for key in ("language", "ecosystem", "dialect", "conditions", "relationships_incomplete") if key in item}
     if (
         item.get("language") in {"csharp", "go", "rust", "cpp"}
         or str(item.get("path", "")).lower().endswith((".cs", ".go", ".rs"))

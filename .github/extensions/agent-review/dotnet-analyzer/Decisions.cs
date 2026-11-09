@@ -365,8 +365,14 @@ internal static class DecisionAnalysis
         totals["callables_changed"] = 0;
         var candidates = before.Entities.Values.Concat(after.Entities.Values)
             .Where(e => IsCallable(e) && !TestLinks.IsTestSource(e)).Select(e => e.Symbol.Id)
-            .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
-        var limited = candidates.Length > MaxCallables;
+            .Distinct(StringComparer.Ordinal).Where(id =>
+                before.Entities.TryGetValue(id, out var old) && after.Entities.TryGetValue(id, out var current)
+                    ? true : before.Entities.TryGetValue(id, out old)
+                        ? !Analyzer.WasOmitted(old, after) : !Analyzer.WasOmitted(after.Entities[id], before))
+            .OrderBy(id => before.Entities.TryGetValue(id, out var old) && after.Entities.TryGetValue(id, out var current) &&
+                old.Fingerprint == current.Fingerprint ? 1 : 0)
+            .ThenBy(id => id, StringComparer.Ordinal).ToArray();
+        var limited = candidates.Length > MaxCallables || before.Limited || after.Limited;
         var shown = 0;
         foreach (var id in candidates.Take(MaxCallables))
         {

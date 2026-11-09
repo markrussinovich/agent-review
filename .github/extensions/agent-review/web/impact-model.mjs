@@ -118,6 +118,8 @@ export function impactSlice(model, id, { depth = 1, direction = "both", maxNodes
         }
     }
     const gaps = [];
+    if (seeds.some((seed) => index.nodes.get(seed)?.relationships_incomplete))
+        gaps.push("C# caller and test relationships are incomplete; counts include only resolved saved-source relationships, not all consumers or tests.");
     if (!seeds.length) gaps.push("Select a changed function, file, or finding to explore its impact.");
     else if (!edges.size) {
         const packageNode = [...selected.values()].find((node) => node.kind === "package");

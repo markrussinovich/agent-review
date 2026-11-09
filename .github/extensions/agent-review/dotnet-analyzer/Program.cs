@@ -56,8 +56,16 @@ namespace AgentReview;
 // 5 links per entry, 128 nested syntax decision scopes. Exceeding input bounds is an error;
 // analysis caps set limited and warn.
 // XML supports literal properties, TargetFramework equality conditions, snapshot Compile globs,
-// exact-TFM project references, defines/LangVersion/Nullable/AllowUnsafeBlocks/checked/OutputType.
-// Unsupported evaluation, imports, SDK implicit usings, package/assembly references and missing
+// exact or unambiguous compatible modern-.NET project references, single-context unknown-TFM
+// fallback (warned), defines/LangVersion/Nullable/AllowUnsafeBlocks/checked/OutputType.
+// Supported literal properties and namespace Using items from nearest saved Directory.Build.props
+// precede project properties. Imports/targets still never evaluate. Changed declarations,
+// callables, and relevant consumer/test contexts precede budgets; retained partials stay merged.
+// One-sided unchanged declaration omissions never become additions/removals. Limited relationships
+// are lower bounds, and verification.limited includes unresolved snapshot configuration.
+// Literal Microsoft.NET.Sdk implicit usings use the standard namespaces. Unsigned literal
+// InternalsVisibleTo items map unique supplied project names to snapshot assembly identities.
+// Unsupported evaluation, imports, other SDK-generated source, package/assembly references and missing
 // source are explicitly incomplete. TPA references are helper runtime APIs, not target contracts.
 // Unassigned sources are syntax-only. Lambdas, dynamic/reflection dispatch, generators, arbitrary
 // expression effects, interprocedural exception/flow analysis and execution coverage are omitted.
@@ -129,7 +137,7 @@ internal sealed record Request(Dictionary<string, string>? Baseline, Dictionary<
 internal sealed record SymbolRecord(string Id, string Name, string Qualname, string Path, int Line,
     int EndLine, string Kind, string Module, string Classification, string Language = "csharp",
     string Ecosystem = "nuget", string? ParentId = null, List<DeclarationSpan>? Declarations = null,
-    List<DeclarationSpan>? BaselineDeclarations = null)
+    List<DeclarationSpan>? BaselineDeclarations = null, bool RelationshipsIncomplete = false)
 {
     public string? ParentIdentity => ParentId;
 }
@@ -145,7 +153,7 @@ internal sealed record TestRecord(string Id, string FullName, string Project, st
     string Name, string Path, int Line, List<string> Calls, List<string> Callables,
     List<AssertionRecord> Assertions, string DeclarationRecognition, string? Via = null);
 internal sealed record AssertionRecord(int Line, string Text, string Kind, string Recognition = "semantic");
-internal sealed record Evidence(string Level, List<TestEvidence> Tests, int OmittedTests = 0);
+internal sealed record Evidence(string Level, List<TestEvidence> Tests, int OmittedTests = 0, bool Limited = false);
 internal sealed record TestEvidence(string Id, string Path, int Line, string? Match = null,
     AssertionRecord? Assertion = null, int? Ambiguous = null, string? Via = null, string? Project = null);
 internal sealed record Decision(string Kind, string Outcome, string? Value, List<string> When,

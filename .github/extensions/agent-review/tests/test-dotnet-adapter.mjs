@@ -67,6 +67,19 @@ test("xUnit plans use exact filters, surface build/restore, and reject outside p
         /'FullyQualifiedName=Tests.One\|FullyQualifiedName=Tests.Two'/);
 });
 
+test("bounded C# analysis cannot present absent links as no callers or tests", () => {
+    for (const map of [{ limited: true }, { verification: { limited: true } }]) {
+        const plan = dotnetTestPlan({ status: "complete", ...map }, "C:\\repo");
+        assert.match(plan.reason, /incomplete analysis/);
+        assert.doesNotMatch(plan.reason, /No statically resolved xUnit tests reach/);
+    }
+    const result = pathEvidence({ id: "bounded" }, {
+        status: "added", decision: { line: 1 }, evidence: { level: "none", tests: [], limited: true },
+    });
+    assert.equal(result.level, "none");
+    assert.equal(result.text, "No test evidence in incomplete analysis");
+});
+
 test("NuGet assessment queries only NuGet and NuGet OSV for the exact saved version", async () => {
     const calls = [];
     const fetchImpl = async (url, init) => {

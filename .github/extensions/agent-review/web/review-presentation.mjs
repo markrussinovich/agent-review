@@ -60,6 +60,8 @@ export function reviewContext(model, { path, selected, decisionMap, run, annotat
     if (counts.inferred) verification.push(`${countLabel(counts.inferred, "code path")} with static test associations, not execution proof.`);
     if (coverage?.total > 0) verification.push(`Current-side aggregate coverage: ${coverage.covered}/${coverage.total} changed executable lines. Not named-test or per-path proof.`);
     const gaps = [];
+    if (decisionMap?.limited || decisionMap?.verification?.limited)
+        gaps.push("Code-path or test analysis is incomplete; unresolved and omitted callers/tests remain unknown.");
     if (counts.untested) gaps.push(`${countLabel(counts.untested, "code path")} without linked-test evidence; inspect the changed conditions.`);
     if (!callables.length) gaps.push("Per-path test evidence is unavailable for this selection.");
     if (run?.stale) gaps.push("The recorded test run predates worktree changes; rerun before relying on its results.");

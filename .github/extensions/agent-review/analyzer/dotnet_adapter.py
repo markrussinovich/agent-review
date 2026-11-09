@@ -96,6 +96,7 @@ def normalize_code_paths(facts: dict) -> dict:
         callable["target_framework"] = scope.rsplit("@", 1)[-1] if "@" in scope else None
     for test in result.get("verification", {}).get("tests", []):
         targets = test.get("callables", test["calls"])
+        test["callable_ids"] = list(targets)
         test["callables"] = sorted({names.get(identifier, identifier) for identifier in targets})
         if test["link"] == "reachable":
             test["link"] = "via"

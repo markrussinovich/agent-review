@@ -45,6 +45,7 @@ class DotnetAdapterTests(unittest.TestCase):
                                                             "link": "reachable"}]}}}
         result = normalize_code_paths(facts)
         self.assertEqual(result["verification"]["tests"][0]["callables"], ["Demo.App.Run()"])
+        self.assertEqual(result["verification"]["tests"][0]["callable_ids"], [identity])
         self.assertEqual(result["verification"]["tests"][0]["link"], "via")
         self.assertEqual(result["callables"][0]["target_framework"], "net10.0")
 

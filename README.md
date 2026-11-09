@@ -781,6 +781,12 @@ separate **128 Mi-character JSON request limit** accommodates both snapshots and
 JSON escaping/metadata overhead; it does not increase the analysis budgets.
 Oversized or invalid requests fail with an error rather than silently dropping
 files. File, project-context, symbol and edge caps report incomplete analysis.
+Changed declarations and callables take priority before global budgets, followed
+by changed-source context and related consumer/test projects. An unchanged source
+declaration omitted on only one side is not a symbol removal or addition.
+Partial declarations for a retained identity remain merged at the symbol boundary.
+Bounded caller counts show resolved relationships, not proof of zero callers;
+incomplete code-path/test results never establish that no changes or tests exist.
 
 Scanning reads **both saved trees** and never invokes reviewed MSBuild targets,
 restores packages, builds projects, or executes reviewed code. Project XML is
@@ -792,6 +798,31 @@ is not proof of NuGet package usage.
 C# code paths are syntax-derived control-flow summaries with snapshot spans,
 not a symbolic-execution proof of path feasibility. Conditional compilation is
 configuration-scoped; unsupported MSBuild evaluation is not guessed.
+The nearest saved `Directory.Build.props` contributes supported literal
+properties and namespace `Using` items before project properties. Custom imports
+and targets still never execute or evaluate. Modern .NET project references
+prefer the exact TFM, then an unambiguous compatible supplied context (including
+Windows-specific consumers of plain .NET libraries and supported `netstandard`
+contracts). An unknown TFM can use a single supplied dependency context with an
+explicit compatibility warning; multiple unknown-context choices are not guessed.
+Literal `Microsoft.NET.Sdk` implicit usings use its standard namespace set.
+Literal unsigned `InternalsVisibleTo` items map to unique supplied project
+assembly identities, so internal test calls can resolve without loading any
+reviewed assembly. Other SDK-generated source and signing remain unsupported.
+
+The real-repository bounded C# browser regression requires
+`AGENT_REVIEW_UX_REPO`, pinned `AGENT_REVIEW_BASE_REF` / `AGENT_REVIEW_CURRENT_REF`,
+and `AGENT_REVIEW_SCREENSHOT_DIR`. Run
+`node .github\extensions\agent-review\tests\browser\dotnet-bounded-review.mjs`
+with the browser-tooling settings below against the reported ConnectEnvelopeBuilder
+change. It runs the production analyzer/server, compares source-context and
+Impact relationships, and captures light/dark, narrow, keyboard-driven views.
+Scanning and this regression never execute the reviewed tests.
+When Git loading itself is too slow for a bounded check, an immutable helper
+request exported from those exact Git trees can be supplied as
+`AGENT_REVIEW_DOTNET_SAVED_REQUEST`. That mode still runs the production .NET
+adapter, compiler, review model and server, but explicitly reports that the
+full Git loader was not exercised; it is not full-pipeline timing evidence.
 
 NuGet `PackageReference` and nearest `Directory.Packages.props` declarations
 are snapshot-scoped, with manifest links. Existing **saved** lock/assets files
