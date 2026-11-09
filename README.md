@@ -713,6 +713,30 @@ When updating a source installation, copy the changed runtime files and the
 rebuilt trusted Roslyn helper, then **reload extensions and reopen the canvas**.
 An existing canvas provider keeps its already-loaded JavaScript; retrying a
 failed review before reloading does not activate the new analyzer transport.
+The provider serves supported HTML, CSS, JavaScript, and module files directly
+from `web/`, so adding a module does not require editing a server allowlist.
+New providers compare their loaded source hash with the current runtime and
+web files when a canvas starts. A mismatch shows **Update requires reload**.
+Older providers cannot perform this comparison, but the updated `/app.js`
+entry point catches failed module imports and shows recovery instructions
+instead of leaving the page on **Connecting**. A stalled startup is reported
+after ten seconds.
+
+Reloading the page only retries browser loading; it cannot replace an
+already-running provider. Use your host's reload-extensions action and reopen
+the canvas in the same session. If that action is unavailable, update or
+reimport Agent Review through the original installation method, or restart
+Copilot. Do not kill the provider process or delete the session/worktree.
+An already-open page loaded entirely from an older version cannot acquire this
+recovery UI until it is reopened with the updated source.
+Run the serving/build-compatibility regressions with
+`node --test .github\extensions\agent-review\tests\test-startup-server.mjs`.
+For the actual stale-provider update sequence, set `AGENT_REVIEW_UX_REPO` to a
+real Git repository and run
+`node .github\extensions\agent-review\tests\browser\startup-modules.mjs`
+with the browser-tooling settings below. It keeps a historical allowlist-based
+provider running while replacing its web source, and also checks build
+mismatch, stalled imports, keyboard disclosure, narrow layouts, and recovery.
 
 The included `.npmrc` also disables executable links. Project extensions reject
 symbolic links, and Agent Review imports TypeScript directly without needing

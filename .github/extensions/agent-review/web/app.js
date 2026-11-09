@@ -1,28 +1,96 @@
-import { renderGraph, resizeGraph } from "/graph.js";
-import { findingsForNode, findingKey, groupFindings, isFindingClosed, orderFindings } from "/findings.mjs";
-import { resolveSymbolReference } from "/symbol-links.mjs";
-import { packageEvidenceLinks } from "/package-presentation.mjs";
-import { resolveSourceReference, sourceReferencesInText } from "/source-references.mjs";
-import { unchangedDiffContext, diffSegments } from "/diff-context.mjs";
-import { impactSlice } from "/impact-model.mjs";
-import { ItemDiscussionPane } from "/item-discussion-ui.mjs";
-import { aiPlaceholder as activityPlaceholder } from "/ai-activity.mjs";
-import { parseReviewLocation, reviewLocation } from "/review-location.mjs";
-import { annotationSections, conciseReviewText, overviewBlurb, reviewCommands, reviewContext, reviewItemEvidence, reviewSignal } from "/review-presentation.mjs";
-import { isReviewSymbol, isTestPath, languageForPath } from "/languages.mjs";
-import { ConnectionFeedback } from "/connection-feedback.mjs";
-import { describeAnalysisWarning, summarizeAnalysisWarnings, unlinkedSentence } from "/analysis-limitations.mjs";
-import { buildReviewPlan, concernPriorities } from "/review-plan.mjs";
-import { fileTree, groupForSource, reviewSequence, treeTotals, workspaceNavigation } from "/review-workspace.mjs";
-import { countLabel, plural } from "/count-format.mjs";
-import {
+let startupFailed = false;
+const startupTimer = setTimeout(() => showStartupFailure(new Error("Startup exceeded 10 seconds. A browser module or the provider did not respond.")), 10_000);
+
+function showStartupFailure(error) {
+    startupFailed = true;
+    clearTimeout(startupTimer);
+    const panel = document.getElementById("error");
+    const updated = error.code === "provider_updated";
+    const title = document.createElement("strong");
+    title.textContent = updated ? "Agent Review was updated - reload extensions" : "Agent Review could not start";
+    const guidance = document.createElement("p");
+    guidance.textContent = "Reload extensions in your Copilot host, then reopen this canvas in the same session. If your host has no reload-extensions action, update or reimport Agent Review using its original installation method, or restart Copilot. Reanalyze and Retry page do not restart an old provider. Do not kill the provider or delete your session or worktree.";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.textContent = "Retry page";
+    retry.addEventListener("click", () => location.reload());
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Technical details";
+    const technical = document.createElement("pre");
+    technical.textContent = error.message;
+    details.append(summary, technical);
+    panel.replaceChildren(title, guidance, retry, details);
+    panel.classList.add("startup-error");
+    panel.classList.remove("hidden");
+    const status = document.getElementById("status");
+    status.textContent = updated ? "Update requires reload" : "Startup failed";
+    status.classList.add("startup-failed");
+    document.getElementById("analysis-progress").classList.add("hidden");
+    for (const control of document.querySelectorAll(".top-actions button, .top-actions select")) control.disabled = true;
+    for (const element of document.querySelectorAll(".workspace, #review-overview, #review-background")) element.classList.add("hidden");
+}
+
+async function checkProviderBuild() {
+    for (let attempt = 0; attempt < 3; attempt++) {
+        let response;
+        try { response = await fetch("/api/build", { signal: AbortSignal.timeout(2000) }); }
+        catch (error) {
+            if (attempt === 2) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            continue;
+        }
+        // Legacy providers do not advertise a build; import failures below still get recovery guidance.
+        if (response.status === 404) return;
+        if (!response.ok) throw new Error(`Unable to check the provider build (HTTP ${response.status}).`);
+        const build = await response.json();
+        if (build.compatible !== true) {
+            const error = new Error(`Loaded provider: ${build.provider}\nUpdated source: ${build.source}`);
+            error.code = "provider_updated";
+            throw error;
+        }
+        return;
+    }
+}
+
+async function startApp() {
+await checkProviderBuild();
+const [
+    { renderGraph, resizeGraph },
+    { findingsForNode, findingKey, groupFindings, isFindingClosed, orderFindings },
+    { resolveSymbolReference },
+    { packageEvidenceLinks },
+    { resolveSourceReference, sourceReferencesInText },
+    { unchangedDiffContext, diffSegments },
+    { impactSlice },
+    { ItemDiscussionPane },
+    { aiPlaceholder: activityPlaceholder },
+    { parseReviewLocation, reviewLocation },
+    { annotationSections, conciseReviewText, overviewBlurb, reviewCommands, reviewContext, reviewItemEvidence, reviewSignal },
+    { isReviewSymbol, isTestPath, languageForPath },
+    { ConnectionFeedback },
+    { describeAnalysisWarning, summarizeAnalysisWarnings, unlinkedSentence },
+    { buildReviewPlan, concernPriorities },
+    { fileTree, groupForSource, reviewSequence, treeTotals, workspaceNavigation },
+    { countLabel, plural },
+    {
     REVIEW_DISPOSITIONS, concernTriage, effectiveDisposition, fileReviewId, fileReviewProgress, isConcernSetAside, isReviewComplete, nextFileReview, parseReviewLedger, reviewProgress,
     reviewSnapshotKey, serializeReviewLedger,
-} from "/review-ledger.mjs";
-import {
+    },
+    {
     callableName, callablesForSubject, changedCallables, decisionAction, decisionConditions, decisionSentence, decisionTotals,
     EVIDENCE_GROUPS, baseTestId, evidenceCounts, layerTestStatus, linkedTestOutcome, pathEvidence, scopeDecisionMap,
-} from "/decision-map.mjs";
+    },
+] = await Promise.all([
+    import("/graph.js"), import("/findings.mjs"), import("/symbol-links.mjs"),
+    import("/package-presentation.mjs"), import("/source-references.mjs"), import("/diff-context.mjs"),
+    import("/impact-model.mjs"), import("/item-discussion-ui.mjs"), import("/ai-activity.mjs"),
+    import("/review-location.mjs"), import("/review-presentation.mjs"), import("/languages.mjs"),
+    import("/connection-feedback.mjs"), import("/analysis-limitations.mjs"), import("/review-plan.mjs"),
+    import("/review-workspace.mjs"), import("/count-format.mjs"), import("/review-ledger.mjs"),
+    import("/decision-map.mjs"),
+]);
+if (startupFailed) return;
 
 const state = {
     payload: null,
@@ -6901,7 +6969,7 @@ function renderCustomAnalyses() {
         if (result?.error) details.append(el("p", "error", result.error));
         const rerun = el("button", "", result ? "Run again" : "Run now");
         rerun.type = "button";
-        rerun.disabled = !prompt.trusted || state.payload.loading || ["queued", "running"].includes(result?.status);
+        rerun.disabled = !state.payload || !prompt.trusted || state.payload.loading || ["queued", "running"].includes(result?.status);
         rerun.addEventListener("click", () => runCustomAnalyses({ scope: prompt.scope, id: prompt.id, force: true }));
         details.append(rerun);
         children.push(details);
@@ -8114,3 +8182,6 @@ function connectEvents() {
     };
 }
 connectEvents();
+}
+
+startApp().then(() => clearTimeout(startupTimer)).catch(showStartupFailure);
