@@ -15,12 +15,22 @@ export const canvasDefinition = {
         { name: "refresh", description: "Re-analyze the selected worktree, commit, or PR snapshot and update the open Agent Review canvas." },
         {
             name: "get_review_context",
-            description: "Get deterministic evidence and relationships for a selected review node, edge, package, finding, or evidence id. Omit id to summarize the review.",
+            description: "Get deterministic evidence and relationships for a selected review node, edge, package, finding, or evidence id. Omit id for a compact review summary without session transcripts, regardless of the current selection.",
             inputSchema: { type: "object", properties: { id: { type: "string", description: "ReviewModel item id." } },
                 additionalProperties: false },
         },
         { name: "get_session_change_context",
-            description: "Get Copilot session intent and agent activity associated with the change. This is contextual provenance, not deterministic code evidence." },
+            description: "Get session provenance and counts. Opt into bounded prompt pages with include_turns, offset, and limit. Session prompts are contextual provenance, not deterministic code evidence; activity transcripts are not returned.",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    include_turns: { type: "boolean", description: "Include a page of prompt summaries. Defaults to false." },
+                    offset: { type: "integer", minimum: 0, description: "Zero-based turn offset. Defaults to 0." },
+                    limit: { type: "integer", minimum: 1, maximum: 25, description: "Prompt summaries per page. Defaults to 10." },
+                },
+                additionalProperties: false,
+            },
+        },
         {
             name: "focus_item", description: "Focus an item in the open canvas so the human can inspect the same evidence.",
             inputSchema: { type: "object", properties: { id: { type: "string" }, kind: { type: "string" } },
