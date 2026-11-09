@@ -2,6 +2,7 @@
 
 This intentionally does not invoke ``go list`` or compile packages: imports and
 calls are linked only when their declarations are present in the saved snapshot.
+Call edges are emitted only when the target can be resolved.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ _IMPORT_BLOCK = re.compile(r"(?ms)^[ \t]*import\s*\((.*?)^\s*\)")
 _IMPORT_ONE = re.compile(r'(?m)^[ \t]*import\s+(?:(\.|_|[A-Za-z_]\w*)\s+)?"([^"]+)"')
 _IMPORT_ITEM = re.compile(r'(?m)^[ \t]*(?:(\.|_|[A-Za-z_]\w*)\s+)?"([^"]+)"')
 _CALL = re.compile(r"\b(?:(?P<prefix>[A-Za-z_]\w*)\s*\.\s*)?(?P<name>[A-Za-z_]\w*)\s*\(")
+_IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
 _KEYWORDS = {"if", "for", "switch", "select", "return", "go", "defer", "make", "new",
              "len", "cap", "append", "copy", "delete", "close", "panic", "recover",
              "print", "println", "complex", "real", "imag"}
@@ -118,16 +120,164 @@ def _line(source: str, offset: int) -> int:
     return source.count("\n", 0, offset) + 1
 
 
-def _brace_end(masked: str, opening: int) -> int:
+def _delimiter_end(masked: str, opening: int) -> int:
+    left = masked[opening]
+    right = {"(": ")", "{": "}", "[": "]"}[left]
     depth = 0
     for index in range(opening, len(masked)):
-        if masked[index] == "{":
+        if masked[index] == left:
             depth += 1
-        elif masked[index] == "}":
+        elif masked[index] == right:
             depth -= 1
             if depth == 0:
                 return index + 1
     return len(masked)
+
+
+def _split_fields(text: str, separators: str = ",") -> list[str]:
+    fields = []
+    depth, start = 0, 0
+    for index, char in enumerate(text):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif not depth and char in separators:
+            fields.append(text[start:index])
+            start = index + 1
+    fields.append(text[start:])
+    return fields
+
+
+def _nested_signature_end(text: str, opening: int) -> int:
+    # Skip result-type syntax, including nested function types, without resolving types.
+    end = _delimiter_end(text, opening)
+    token = ")"
+    while end < len(text):
+        char = text[end]
+        if char.isspace():
+            if char == "\n" and token not in {"func", "map", "chan", "struct", "interface", "*", ".", "<-"}:
+                break
+            end += 1
+            continue
+        identifier = _IDENTIFIER.match(text, end)
+        if identifier:
+            token = identifier.group()
+            end = identifier.end()
+        elif char in "([":
+            end = _delimiter_end(text, end)
+            token = text[end - 1]
+        elif char == "{" and token in {"struct", "interface"}:
+            end = _delimiter_end(text, end)
+            token = "}"
+        elif char in "*." or text.startswith("<-", end):
+            token = "<-" if text.startswith("<-", end) else char
+            end += len(token)
+        else:
+            break
+    return end
+
+
+def _parameter_names(text: str) -> set[str]:
+    names = set()
+    for field in _split_fields(text):
+        match = re.match(r"\s*([A-Za-z_]\w*)(.*)", field, re.DOTALL)
+        if not match:
+            continue
+        name, tail = match.groups()
+        rest = tail.lstrip()
+        if (not rest or rest.startswith(("*", "(", "<-", "..."))
+                or (tail[0].isspace() and not rest.startswith("."))):
+            names.add(name)
+    return names
+
+
+def _signature_names(signature: str, opening: int = 0) -> set[str]:
+    end = _delimiter_end(signature, opening)
+    names = _parameter_names(signature[opening + 1:end - 1])
+    while end < len(signature) and signature[end].isspace():
+        end += 1
+    if end < len(signature) and signature[end] == "(":
+        names.update(_parameter_names(signature[end + 1:_delimiter_end(signature, end) - 1]))
+    return names
+
+
+def _container_function_type(text: str, start: int) -> bool:
+    end, pointer = start, False
+    while end and (text[end - 1].isspace() or text[end - 1] == "*"):
+        pointer |= text[end - 1] == "*"
+        end -= 1
+    if not end or text[end - 1] != "]":
+        return False
+    if not pointer:
+        return True
+    # Before '*', the bracket may instead belong to an indexed expression.
+    while end and text[end - 1] == "]":
+        opening, depth = end - 1, 1
+        while opening and depth:
+            opening -= 1
+            if text[opening] == "[":
+                depth -= 1
+            elif text[opening] == "]":
+                depth += 1
+        if depth:
+            return False
+        end = opening
+        while end and text[end - 1].isspace():
+            end -= 1
+    if end and text[end - 1] in ")]}":
+        return False
+    start = end
+    while start and (text[start - 1].isalnum() or text[start - 1] == "_"):
+        start -= 1
+    return start == end or text[start:end] in {
+        "map", "return", "go", "defer", "case", "range", "if", "for", "switch",
+    }
+
+
+def _call_bindings(signature: str, receiver: str | None, body: str) -> set[str]:
+    # Over-approximate bindings across the callable instead of guessing lexical scopes.
+    names = _signature_names(signature) | _parameter_names(receiver or "")
+    for parameters in re.findall(r"\[([^\]]*)\]", receiver or ""):
+        names.update(re.findall(r"[A-Za-z_]\w*", parameters))
+    signature_end = 0
+    for match in re.finditer(r"\bfunc\s*(?=\()", body):
+        if match.start() < signature_end:
+            continue
+        signature_end = _nested_signature_end(body, match.end())
+        opening = signature_end
+        while opening < len(body) and body[opening] in " \t\r":
+            opening += 1
+        if (body[opening:opening + 1] == "{"
+                and not _container_function_type(body, match.start())):
+            names.update(_signature_names(body, match.end()))
+    for match in re.finditer(":=", body):
+        end = match.start()
+        while end:
+            while end and body[end - 1].isspace():
+                end -= 1
+            start = end
+            while start and (body[start - 1].isalnum() or body[start - 1] == "_"):
+                start -= 1
+            name = body[start:end]
+            if not _IDENTIFIER.fullmatch(name):
+                break
+            names.add(name)
+            end = start
+            while end and body[end - 1].isspace():
+                end -= 1
+            if not end or body[end - 1] != ",":
+                break
+            end -= 1
+    for match in re.finditer(r"\b(?:var|const|type)\s+", body):
+        declaration = body[match.end():]
+        fields = (_split_fields(declaration[1:_delimiter_end(declaration, 0) - 1], ";\r\n")
+                  if declaration.startswith("(") else [declaration])
+        for field in fields:
+            declared = re.match(r"\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)", field)
+            if declared:
+                names.update(re.findall(r"[A-Za-z_]\w*", declared.group(1)))
+    return names
 
 
 def _receiver(value: str | None) -> str | None:
@@ -170,7 +320,7 @@ def parse_go(path: str, raw: bytes) -> tuple[GoFile | None, str | None]:
     covered = []
     for match in _FUNC.finditer(masked):
         opening = match.end() - 1
-        end = _brace_end(masked, opening)
+        end = _delimiter_end(masked, opening)
         owner = _receiver(match.group(1))
         name = match.group(2)
         qualname = f"{owner}.{name}" if owner else name
@@ -189,10 +339,11 @@ def parse_go(path: str, raw: bytes) -> tuple[GoFile | None, str | None]:
             "complexity": complexity,
         }
         file.symbols.append(symbol)
-        covered.append((match.start(), end, symbol))
+        bindings = _call_bindings(match.group(3), match.group(1), masked[opening + 1:end - 1])
+        covered.append((opening, end, symbol, bindings))
     for match in _TYPE.finditer(masked):
         opening = masked.find("{", match.start(), match.end())
-        end = _brace_end(masked, opening) if opening >= 0 else source.find("\n", match.start())
+        end = _delimiter_end(masked, opening) if opening >= 0 else source.find("\n", match.start())
         end = len(source) if end < 0 else end
         name, declared = match.group(1), match.group(2)
         kind = declared or "type"
@@ -218,9 +369,16 @@ def parse_go(path: str, raw: bytes) -> tuple[GoFile | None, str | None]:
         alias, target = item.groups()
         file.imports.append({"alias": alias or target.rsplit("/", 1)[-1], "target": target,
                              "line": _line(source, item.start())})
-    for start, end, owner in covered:
-        for call in _CALL.finditer(masked, start, end):
-            if call.start() < masked.find("{", start, end) or call.group("name") in _KEYWORDS:
+    for opening, end, owner, bindings in covered:
+        for call in _CALL.finditer(masked, opening + 1, end - 1):
+            if call.group("name") in _KEYWORDS:
+                continue
+            previous = call.start() - 1
+            while previous > opening and masked[previous].isspace():
+                previous -= 1
+            if masked[previous] == ".":
+                continue
+            if (call.group("prefix") or call.group("name")) in bindings:
                 continue
             file.calls.append({"owner": owner["id"], "prefix": call.group("prefix"),
                                "name": call.group("name"), "line": _line(source, call.start())})
@@ -322,10 +480,11 @@ def analyze_go(baseline_files: dict[str, bytes], current_files: dict[str, bytes]
 
     def side_edges(files: dict[str, GoFile], declared: set[str]) -> list[dict[str, Any]]:
         edges = []
-        side_symbols: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
+        side_functions: dict[str, dict[str, list[str]]] = defaultdict(lambda: defaultdict(list))
         for parsed in files.values():
             for symbol in parsed.symbols:
-                side_symbols[parsed.package][symbol["name"]].append(symbol["id"])
+                if symbol["kind"] == "function":
+                    side_functions[parsed.package][symbol["name"]].append(symbol["id"])
         for path, file in files.items():
             aliases = {item["alias"]: item["target"] for item in file.imports if item["alias"] not in ("_", ".")}
             for item in file.imports:
@@ -344,9 +503,11 @@ def analyze_go(baseline_files: dict[str, bytes], current_files: dict[str, bytes]
                                   "path": path, "line": item["line"], "detail": item["target"]})
             for call in file.calls:
                 target_package = file.package
-                if call["prefix"] in aliases:
+                if call["prefix"] is not None:
+                    if call["prefix"] not in aliases:
+                        continue
                     target_package = import_packages.get(aliases[call["prefix"]])
-                candidates = side_symbols.get(target_package, {}).get(call["name"], [])
+                candidates = side_functions.get(target_package, {}).get(call["name"], [])
                 if len(candidates) == 1:
                     edges.append({"kind": "calls", "source": call["owner"], "target": candidates[0],
                                   "path": path, "line": call["line"],
