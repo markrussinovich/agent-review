@@ -774,7 +774,19 @@ that location. Content, compiler/extractor and parse configuration invalidate
 facts; semantic compilation, relationships and test links are rebuilt for
 each snapshot. `--no-cache` disables the scan's persistent .NET facts cache.
 C# code paths and test links are produced by that same compiler pass and
-reused by the provider. Long-running compiler work reports elapsed progress.
+reused by the provider. Source-only comparisons compile changed projects,
+their transitive consumers (including tests), and their dependency closure,
+retaining every supplied source and TFM in those contexts. Unrelated contexts
+are omitted before parsing and explicitly reported as limited; the graph is
+not a complete repository architecture view. Configuration changes and unknown
+source/reference membership retain the full supplied graph. Identical snapshots
+compile once while preserving unchanged identities. Progress identifies the
+project, TFM, stage, snapshot, and context count; long stages retain that detail
+alongside elapsed time. Helper progress goes to stderr, never the stdout JSON.
+Compiler error reporting samples declaration and source-tree diagnostics until
+the existing ten-error display budget is filled, rather than eagerly diagnosing
+every method body in an already-incomplete project. Relationship and test
+analysis still traverses all sources in the selected contexts.
 
 Each saved C# snapshot supports up to **32 Mi source characters**. The helper's
 separate **128 Mi-character JSON request limit** accommodates both snapshots and

@@ -1,5 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Xml;
+using System.Xml.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -31,6 +34,7 @@ internal sealed class Snapshot
     public List<EdgeRecord> Edges { get; } = [];
     public List<ProjectState> Projects { get; } = [];
     public bool Limited { get; set; }
+    public bool ScopeOmitted { get; set; }
 }
 
 internal static class Analyzer
@@ -58,8 +62,24 @@ internal static class Analyzer
             "Build Configuration, implicit DEBUG/TRACE constants, generated sources and original assembly identity/friend access are not inferred. Only literal snapshot configuration is applied."
         };
         SyntaxFactsCache.Begin(warnings, request.UseCache);
-        var before = Build(Normalize(request.Baseline), warnings, "baseline");
-        var after = Build(Normalize(request.Current), warnings, "current");
+        var baseline = Normalize(request.Baseline);
+        var current = Normalize(request.Current);
+        var baselineWarnings = new List<string>();
+        var currentWarnings = new List<string>();
+        var baselineConfigs = ProjectConfig.Read(baseline.Count > MaxFiles
+            ? baseline.Take(MaxFiles).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)
+            : baseline, baselineWarnings);
+        var currentConfigs = ProjectConfig.Read(current.Count > MaxFiles
+            ? current.Take(MaxFiles).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)
+            : current, currentWarnings);
+        var scope = SelectProjects(baseline, current, baselineConfigs, currentConfigs, warnings);
+        var before = Build(baseline, baselineConfigs, baselineWarnings, warnings, "baseline", scope, request.Progress);
+        var identical = baseline.Count == current.Count &&
+            baseline.All(pair => current.TryGetValue(pair.Key, out var text) && text == pair.Value);
+        var after = identical ? before :
+            Build(current, currentConfigs, currentWarnings, warnings, "current", scope, request.Progress);
+        if (identical && request.Progress)
+            ReportProgress("Reusing identical baseline compilation for current snapshot");
         var symbols = new List<SymbolRecord>();
         foreach (var (id, entity) in after.Entities.OrderBy(e => e.Key, StringComparer.Ordinal))
         {
@@ -85,6 +105,8 @@ internal static class Analyzer
         SyntaxFactsCache.Flush(warnings);
         if (before.Limited || after.Limited)
             paths = paths with { Limited = true, Warnings = paths.Warnings.Append("Snapshot size limits omitted source or symbols.").ToList() };
+        if (before.ScopeOmitted || after.ScopeOmitted)
+            paths = paths with { Limited = true, Warnings = paths.Warnings.Append("Unrelated project contexts were not analyzed; test links and relationships cover the selected project graph only.").ToList() };
         return new AnalysisResult(symbols.OrderBy(s => s.Id, StringComparer.Ordinal).ToList(),
             DiffEdges(before.Edges, after.Edges),
             warnings.Distinct(StringComparer.Ordinal).ToList(), paths);
@@ -108,9 +130,122 @@ internal static class Analyzer
         return result;
     }
 
-    private static Snapshot Build(Dictionary<string, string> files, List<string> allWarnings, string label)
+    private static HashSet<string>? SelectProjects(Dictionary<string, string> baseline,
+        Dictionary<string, string> current, List<ProjectConfig> before, List<ProjectConfig> after,
+        List<string> warnings)
     {
-        var warnings = new List<string>();
+        var changed = baseline.Keys.Union(current.Keys, StringComparer.Ordinal)
+            .Where(path => !baseline.TryGetValue(path, out var old) ||
+                !current.TryGetValue(path, out var text) || old != text).ToArray();
+        if (changed.Length == 0) return null;
+        if (changed.Any(path => !path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)))
+        {
+            warnings.Add("Project scope: source/configuration comparison requires the full supplied project graph.");
+            return null;
+        }
+        var configs = before.Concat(after).ToArray();
+        if (baseline.Count > MaxFiles || current.Count > MaxFiles ||
+            configs.Any(config => config.Path == "<unassigned>" &&
+                config.Sources.Intersect(changed, StringComparer.Ordinal).Any()) ||
+            changed.Any(path => !configs.Any(config => config.Sources.Contains(path, StringComparer.Ordinal))) ||
+            MembershipUnknown(baseline) || MembershipUnknown(current))
+        {
+            warnings.Add("Project scope: source membership or project references are uncertain; retaining the full supplied project graph.");
+            return null;
+        }
+        var selected = configs.Where(config => config.Sources.Intersect(changed, StringComparer.Ordinal).Any())
+            .Select(config => config.Path).ToHashSet(StringComparer.Ordinal);
+        // Consumer closure precedes dependency closure: a sibling that merely shares a dependency
+        // does not become a consumer of the changed project.
+        bool added;
+        do
+        {
+            added = false;
+            foreach (var config in configs)
+                if (config.References.Any(selected.Contains)) added |= selected.Add(config.Path);
+        } while (added);
+        do
+        {
+            added = false;
+            foreach (var config in configs.Where(config => selected.Contains(config.Path)))
+                foreach (var reference in config.References) added |= selected.Add(reference);
+        } while (added);
+        var omitted = configs.Where(config => !selected.Contains(config.Path)).Select(config => config.Scope)
+            .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+        if (omitted.Length != 0)
+            warnings.Add($"Project scope: omitted {omitted.Length} unrelated project/TFM contexts before parsing and compilation: " +
+                string.Join(", ", omitted.Take(12)) + (omitted.Length > 12 ? ", ..." : "") +
+                ". Changed projects, transitive consumers/tests and dependency closure retain all supplied sources and TFMs; unrelated architecture is not analyzed.");
+        return selected;
+    }
+
+    private static bool MembershipUnknown(Dictionary<string, string> files)
+    {
+        foreach (var (path, text) in files.Where(pair =>
+            pair.Key.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) ||
+            pair.Key.EndsWith(".props", StringComparison.OrdinalIgnoreCase) ||
+            pair.Key.EndsWith(".targets", StringComparison.OrdinalIgnoreCase)))
+        {
+            XDocument document;
+            try
+            {
+                using var reader = XmlReader.Create(new StringReader(text), new XmlReaderSettings
+                {
+                    DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null,
+                    MaxCharactersInDocument = MaxSnapshotChars
+                });
+                document = XDocument.Load(reader);
+            }
+            catch (XmlException) { return true; }
+            if (document.Root?.Name.LocalName != "Project") return true;
+            var project = path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase);
+            foreach (var element in document.Descendants())
+            {
+                var name = element.Name.LocalName;
+                if (name == "Import")
+                {
+                    var include = element.Attribute("Project")?.Value;
+                    if (include is null || include.Contains("$(", StringComparison.Ordinal) ||
+                        include.Contains("*", StringComparison.Ordinal)) return true;
+                    try
+                    {
+                        if (!files.ContainsKey(ProjectConfig.Normalize(ProjectConfig.DirectoryPart(path) + include)))
+                            return true;
+                    }
+                    catch (InvalidDataException) { return true; }
+                }
+                if (name is "Compile" or "ProjectReference")
+                {
+                    if (!project || element.Ancestors().Any(parent => parent.Name.LocalName is "Target" or "Choose") ||
+                        (name == "ProjectReference" && element.Elements().Any()) ||
+                        element.Attribute("Update") is not null ||
+                        element.Attributes().Any(attribute => attribute.Value.Contains("$(", StringComparison.Ordinal) ||
+                            attribute.Value.Contains("@(", StringComparison.Ordinal)) ||
+                        element.AncestorsAndSelf().Any(parent => parent.Attribute("Condition") is { } condition &&
+                            !System.Text.RegularExpressions.Regex.IsMatch(condition.Value.Trim(),
+                                """^['"]\$\(TargetFramework\)['"]\s*(==|!=)\s*['"]([^'"]+)['"]$""",
+                                System.Text.RegularExpressions.RegexOptions.IgnoreCase)))
+                        return true;
+                }
+                if (name is "EnableDefaultCompileItems" or "EnableDefaultItems" or
+                    "DefaultItemExcludes" or "DefaultExcludesInProjectFolder" or
+                    "DirectoryBuildPropsPath" or "DirectoryBuildTargetsPath")
+                    if (!project || name is not ("EnableDefaultCompileItems" or "EnableDefaultItems") ||
+                        element.Value.Contains("$(", StringComparison.Ordinal) ||
+                        element.AncestorsAndSelf().Any(parent => parent.Attribute("Condition") is not null))
+                        return true;
+            }
+        }
+        return false;
+    }
+
+    private static void ReportProgress(string message) =>
+        Console.Error.WriteLine("AGENT_REVIEW_DOTNET_PROGRESS " +
+            JsonSerializer.Serialize(new { message }, Program.Json));
+
+    private static Snapshot Build(Dictionary<string, string> files, List<ProjectConfig> configurations,
+        List<string> warnings, List<string> allWarnings, string label, HashSet<string>? scope, bool progress)
+    {
         var snapshot = new Snapshot();
         if (files.Count > MaxFiles)
         {
@@ -118,11 +253,14 @@ internal static class Analyzer
             warnings.Add($"Snapshot capped at {MaxFiles} files.");
             snapshot.Limited = true;
         }
-        var configurations = ProjectConfig.Read(files, warnings);
+        var omitted = scope is not null && configurations.Any(config => !scope.Contains(config.Path));
+        if (scope is not null) configurations = configurations.Where(config => scope.Contains(config.Path)).ToList();
+        snapshot.ScopeOmitted = omitted;
         snapshot.Limited |= warnings.Any(w => w.Contains("capped", StringComparison.Ordinal));
         long contextCharacters = 0;
         foreach (var config in configurations.Take(128))
         {
+            if (progress) ReportProgress($"Parsing {config.Scope} ({snapshot.Projects.Count + 1}/{Math.Min(configurations.Count, 128)}, {label})");
             var runtimeTfm = $"net{Environment.Version.Major}.{Environment.Version.Minor}";
             if (config.Path != "<unassigned>" && config.Tfm != runtimeTfm)
                 warnings.Add($"{config.Scope}: runtime-reference target mismatch: supplied target {config.Tfm}, helper TPA target {runtimeTfm}; target-framework API compatibility is incomplete.");
@@ -153,6 +291,7 @@ internal static class Analyzer
             snapshot.Limited = true;
             warnings.Add("Project/TFM contexts capped at 128.");
         }
+        var compiled = 0;
         CSharpCompilation Compile(ProjectState project)
         {
             if (project.Compilation is not null) return project.Compilation;
@@ -171,13 +310,24 @@ internal static class Analyzer
                 }
                 references.Add(Compile(dependency).ToMetadataReference());
             }
+            if (progress) ReportProgress($"Compiling {project.Config.Scope} ({++compiled}/{snapshot.Projects.Count}, {label})");
             project.Compilation = CSharpCompilation.Create(project.AssemblyName, project.Trees, references,
                 project.Config.CompilationOptions);
             project.Building = false;
             if (project.Config.Path != "<unassigned>")
             {
-                var errors = project.Compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error)
-                    .Take(11).ToArray();
+                // GetDiagnostics binds every method body before returning, even though the
+                // protocol retains only ten errors. Stop sampling once that output is full.
+                IEnumerable<Diagnostic> Errors()
+                {
+                    foreach (var diagnostic in project.Compilation.GetParseDiagnostics()
+                        .Concat(project.Compilation.GetDeclarationDiagnostics()))
+                        if (diagnostic.Severity == DiagnosticSeverity.Error) yield return diagnostic;
+                    foreach (var tree in project.Trees)
+                        foreach (var diagnostic in project.Compilation.GetSemanticModel(tree).GetDiagnostics())
+                            if (diagnostic.Severity == DiagnosticSeverity.Error) yield return diagnostic;
+                }
+                var errors = Errors().Distinct().Take(11).ToArray();
                 foreach (var error in errors.Take(10))
                 {
                     var location = error.Location.IsInSource ? error.Location.GetLineSpan() : default;
@@ -193,6 +343,7 @@ internal static class Analyzer
         foreach (var project in snapshot.Projects) Compile(project);
         foreach (var project in snapshot.Projects)
         {
+            if (progress) ReportProgress($"Resolving symbols in {project.Config.Scope} ({snapshot.Projects.IndexOf(project) + 1}/{snapshot.Projects.Count}, {label})");
             if (project.Config.Path != "<unassigned>")
             {
                 var projectId = $"{project.Config.Scope}::project";
@@ -285,6 +436,7 @@ internal static class Analyzer
         }
         foreach (var project in snapshot.Projects.Where(p => p.Config.Path != "<unassigned>"))
         {
+            if (progress) ReportProgress($"Resolving relationships in {project.Config.Scope} ({snapshot.Projects.IndexOf(project) + 1}/{snapshot.Projects.Count}, {label})");
             foreach (var tree in project.Trees)
             {
                 var model = project.Compilation!.GetSemanticModel(tree);

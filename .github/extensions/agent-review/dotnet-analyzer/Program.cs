@@ -62,7 +62,11 @@ namespace AgentReview;
 // Unassigned sources are syntax-only. Lambdas, dynamic/reflection dispatch, generators, arbitrary
 // expression effects, interprocedural exception/flow analysis and execution coverage are omitted.
 // The bounded process-local syntax LRU (256 trees/64 Mi estimated bytes) is keyed by content, path,
-// parse configuration and compiler version. Semantic compilations are always rebuilt snapshot-wide.
+// parse configuration and compiler version. Source-only comparisons select changed projects,
+// transitive consumers/tests and their dependency closure before parsing/compilation, across both
+// snapshots and all TFMs. Unrelated contexts are explicitly omitted/limited. Configuration changes
+// and uncertain source/reference membership retain the full graph. Identical snapshots reuse one
+// compilation without changing identity output. progress=true emits project/stage messages on stderr.
 // AGENT_REVIEW_DOTNET_CACHE sets the caller-owned persistent root. Otherwise default to
 // AGENT_REVIEW_CACHE_DIR\dotnet-facts, or <home>\.copilot\agent-review\file-cache\dotnet-facts.
 // request.use_cache=false disables persistence regardless of env; an empty explicit root also
@@ -73,7 +77,8 @@ namespace AgentReview;
 // SHA256 keys include supplied source content, path, parse options, Roslyn MVID/version and helper
 // extractor MVID/schema version. Cache hits reuse syntax decisions, not semantic relationships,
 // symbol IDs, diffs or test links. Roslyn trees are not serialized; parsing and all semantic
-// compilations/relationships are always rebuilt. Bad/unavailable entries fall back to fresh facts.
+// selected compilations/relationships are rebuilt (identical snapshot pairs share one build).
+// Bad/unavailable entries fall back to fresh facts.
 internal static class Program
 {
     internal const int MaxRequestChars = 128 * 1024 * 1024;
@@ -125,7 +130,7 @@ internal static class Program
 }
 
 internal sealed record Request(Dictionary<string, string>? Baseline, Dictionary<string, string>? Current,
-    string? Mode = null, bool UseCache = true);
+    string? Mode = null, bool UseCache = true, bool Progress = false);
 internal sealed record SymbolRecord(string Id, string Name, string Qualname, string Path, int Line,
     int EndLine, string Kind, string Module, string Classification, string Language = "csharp",
     string Ecosystem = "nuget", string? ParentId = null, List<DeclarationSpan>? Declarations = null,
