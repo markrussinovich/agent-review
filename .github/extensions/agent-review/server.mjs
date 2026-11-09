@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile, readdir, realpath } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { reviewSnapshotKey } from "./web/review-ledger.mjs";
@@ -22,33 +23,23 @@ export function browserSnapshot(snapshot) {
     return { ...snapshot, model: cached.value };
 }
 
-const webRoot = join(dirname(fileURLToPath(import.meta.url)), "web");
-const staticFiles = new Map([
-    ["/", "index.html"],
-    ["/index.html", "index.html"],
-    ["/theme.js", "theme.js"],
-    ["/app.js", "app.js"],
-    ["/graph.js", "graph.js"],
-    ["/findings.mjs", "findings.mjs"],
-    ["/symbol-links.mjs", "symbol-links.mjs"],
-    ["/package-presentation.mjs", "package-presentation.mjs"],
-    ["/source-references.mjs", "source-references.mjs"],
-    ["/diff-context.mjs", "diff-context.mjs"],
-    ["/impact-model.mjs", "impact-model.mjs"],
-    ["/item-discussion-ui.mjs", "item-discussion-ui.mjs"],
-    ["/ai-activity.mjs", "ai-activity.mjs"],
-    ["/review-location.mjs", "review-location.mjs"],
-    ["/review-presentation.mjs", "review-presentation.mjs"],
-    ["/review-workspace.mjs", "review-workspace.mjs"],
-    ["/decision-map.mjs", "decision-map.mjs"],
-    ["/count-format.mjs", "count-format.mjs"],
-    ["/review-plan.mjs", "review-plan.mjs"],
-    ["/review-ledger.mjs", "review-ledger.mjs"],
-    ["/languages.mjs", "languages.mjs"],
-    ["/connection-feedback.mjs", "connection-feedback.mjs"],
-    ["/analysis-limitations.mjs", "analysis-limitations.mjs"],
-    ["/styles.css", "styles.css"],
-]);
+const extensionRoot = dirname(fileURLToPath(import.meta.url));
+const webRoot = join(extensionRoot, "web");
+const webFilePattern = /^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:html|js|mjs|css)$/;
+
+async function sourceBuild() {
+    const runtimeFiles = (await readdir(extensionRoot)).filter((name) => name.endsWith(".mjs")).sort();
+    const webFiles = (await readdir(webRoot, { withFileTypes: true }))
+        .filter((entry) => entry.isFile() && webFilePattern.test(entry.name)).map((entry) => entry.name).sort();
+    const files = [...runtimeFiles.map((name) => [name, join(extensionRoot, name)]),
+        ...webFiles.map((name) => [`web/${name}`, join(webRoot, name)])];
+    const hash = createHash("sha256");
+    for (const [name, path] of files) hash.update(name).update("\0").update(await readFile(path)).update("\0");
+    return hash.digest("hex");
+}
+
+// Capture the loaded provider's source, not the source at the next canvas open.
+const providerBuild = await sourceBuild();
 const contentTypes = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -115,9 +106,20 @@ export function startReviewServer(state, options = {}) {
                     return;
                 }
             }
-            if (req.method === "GET" && staticFiles.has(pathname)) {
-                const filename = staticFiles.get(pathname);
-                const body = await readFile(join(webRoot, filename));
+            const filename = pathname === "/" ? "index.html" : pathname.slice(1);
+            if (req.method === "GET" && webFilePattern.test(filename)) {
+                let path;
+                try { path = await realpath(join(webRoot, filename)); }
+                catch (error) {
+                    if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+                    sendJson(res, { error: "not_found" }, 404);
+                    return;
+                }
+                if (dirname(path) !== await realpath(webRoot)) {
+                    sendJson(res, { error: "not_found" }, 404);
+                    return;
+                }
+                const body = await readFile(path);
                 res.writeHead(200, {
                     "Content-Type": contentTypes[extname(filename)],
                     "Cache-Control": "no-store",
@@ -125,6 +127,11 @@ export function startReviewServer(state, options = {}) {
                     "X-Content-Type-Options": "nosniff",
                 });
                 res.end(body);
+                return;
+            }
+            if (req.method === "GET" && pathname === "/api/build") {
+                const source = await sourceBuild();
+                sendJson(res, { provider: providerBuild, source, compatible: providerBuild === source });
                 return;
             }
             if (req.method === "GET" && pathname === "/api/state") {

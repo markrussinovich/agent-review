@@ -198,6 +198,7 @@ body.review-ready #review-target-label, body.review-ready .repository-row, body.
   background: var(--cp-success);
 }
 .status.working::before { background: var(--cp-warning); }
+.status.startup-failed::before { background: var(--cp-danger); }
 #refresh, #cancel-analysis, .zoom-out, .tab, .source-close {
   padding: 8px 12px;
   border: 1px solid var(--cp-border);
@@ -216,6 +217,10 @@ main { width: 100%; max-width: none; padding: 20px 20px 36px; }
   background: var(--cp-surface);
 }
 .error { border-color: var(--cp-danger); color: var(--cp-danger); white-space: pre-wrap; }
+.startup-error { color: var(--cp-text); white-space: normal; }
+.startup-error > strong { color: var(--cp-danger); }
+.startup-error details { margin-top: 12px; }
+.startup-error pre { max-height: 16rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .analysis-progress { border-color: var(--cp-accent); }
 #progress-percent { color: var(--cp-accent); font: 700 .8125rem Consolas, "Courier New", Courier, monospace; }
 .progress-copy strong { font-size: .75rem; }
