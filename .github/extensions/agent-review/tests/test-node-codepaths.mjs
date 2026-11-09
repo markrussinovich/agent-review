@@ -191,6 +191,35 @@ test("writes anywhere in the saved scope invalidate a throwing binding, includin
     assert.ok(annexB.callables[0].entries.every((entry) => entry.decision.outcome !== "raise"));
 });
 
+test("production helper proof checks executable nested binding defaults and computed keys", () => {
+    for (const helper of [
+        "function fail({ x = fail() } = {}) { throw 1; }",
+        "function fail([x = fail()] = []) { throw 1; }",
+        "function fail({outer: {x = fail()} = {}} = {}) { throw 1; }",
+        "function fail([{x = fail()} = {}] = [{}]) { throw 1; }",
+        "function fail({[fail()]: x} = {}) { throw 1; }",
+        "function fail({outer: {[fail()]: x} = {}} = {}) { throw 1; }",
+        "function fail(x = {[fail()]() {}}) { throw 1; }",
+        "function fail(x = class {[fail()]() {}}) { throw 1; }",
+        "const fail = ({x = fail()} = {}) => {throw 1;};",
+        "const fail = function ({x = fail()} = {}) {throw 1;};",
+        "function unsafe({x = unsafe()} = {}) {throw 1;} function fail() {unsafe();}",
+        "function fail() {const {x = fail()} = {}; throw 1;}",
+        "function fail() {const {[fail()]: x} = {}; throw 1;}",
+        "function fail() {const [x = fail()] = []; throw 1;}",
+    ]) {
+        const result = map(`${helper} export function f(x) { if (!x) fail(); return x; }`);
+        assert.ok(result.callables[0].entries.every((entry) => entry.decision.outcome !== "raise"), helper);
+        assert.equal(result.incomplete, true, helper);
+        assert.ok(result.warnings.some((warning) => /counts are partial/.test(warning)), helper);
+    }
+    for (const parameters of ["{x = 1} = {}", "[[x = 1] = []] = []", '{["x"]: x = 1} = {}', "callback = () => fail()"]) {
+        const result = map(`function fail(${parameters}) {throw 1;} export function f(x) {if (!x) fail(); return x;}`);
+        assert.equal(result.callables[0].entries[0].decision.outcome, "raise", parameters);
+        assert.equal(result.incomplete, false, parameters);
+    }
+});
+
 test("helper raises participate in block termination, switch fallthrough, catches and finally overrides", () => {
     const prefix = "function fail(m) {throw m;}\n";
     const value = (body) => map(`${prefix}function f(x) {\n${body}\n}`).callables[0].entries.map((entry) => entry.decision);

@@ -182,10 +182,18 @@ function localThrowingCalls(source) {
     };
     const pure = (node) => {
         let safe = true;
-        walk(node, (child) => {
+        const inspect = (child) => {
+            if (!child) return;
+            if (isCallable(child)) {
+                // Creating a method evaluates its computed name, not its body or parameters.
+                if (child.name && ts.isComputedPropertyName(child.name)) inspect(child.name.expression);
+                return;
+            }
             if (ts.isCallExpression(child) || ts.isNewExpression(child) || ts.isAwaitExpression(child)
                 || ts.isYieldExpression(child) || ts.isTaggedTemplateExpression(child)) safe = false;
-        }, true);
+            ts.forEachChild(child, inspect);
+        };
+        inspect(node);
         return safe;
     };
     const isThrowingCall = (node, depth = 0) => {
@@ -196,7 +204,7 @@ function localThrowingCalls(source) {
         const binding = symbol(node.expression), helper = helpers.get(binding);
         if (!helper || written.has(binding) || ts.isVariableDeclaration(helper.declaration)
             && helper.declaration.getStart() >= node.getStart()) return false;
-        if (helper.fn.parameters.some((parameter) => parameter.initializer && !pure(parameter.initializer))) return false;
+        if (helper.fn.parameters.some((parameter) => !pure(parameter.name) || !pure(parameter.initializer))) return false;
         if (proof.has(helper.fn)) return proof.get(helper.fn);
         // A visiting helper is not proof: recursive cycles may never throw.
         proof.set(helper.fn, false);
@@ -238,7 +246,10 @@ function localThrowingCalls(source) {
             }
             return pending;
         }
-        if (ts.isVariableStatement(node)) return sequence(node.declarationList.declarations.map((item) => item.initializer).filter(Boolean), depth);
+        if (ts.isVariableStatement(node)) {
+            if (node.declarationList.declarations.some((item) => !pure(item.name))) return new Set(["unknown"]);
+            return sequence(node.declarationList.declarations.map((item) => item.initializer).filter(Boolean), depth);
+        }
         if (ts.isFunctionDeclaration(node) || ts.isEmptyStatement(node)) return new Set(["normal"]);
         if (ts.isExpression(node)) return effect(node, depth);
         // Loops, switches, labels and other unsupported control flow cannot prove a helper always raises.

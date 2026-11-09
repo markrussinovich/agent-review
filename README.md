@@ -1211,7 +1211,9 @@ outcomes when their saved bodies provably always throw, including transitive
 calls and immutable arrow/function bindings. Compiler binding identity keeps
 shadowed names separate; reassigned bindings, recursive cycles, optional calls,
 conditional helpers that can return, and unsupported control flow are not
-assumed to throw. Proof is bounded to 60 helper levels and does not infer
+assumed to throw. Executable defaults and computed keys in parameter and local
+binding patterns must also be modelled before a helper is proven. Proof is
+bounded to 60 helper levels and does not infer
 semantics from names such as `fail`, `check`, or `assert`. Unmodelled calls
 produce analysis notes and a **Partial path model** label instead of a
 zero-without-test-evidence claim. Known exits and their test links remain
