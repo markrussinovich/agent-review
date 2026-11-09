@@ -45,10 +45,11 @@ function projectLine(hunks, line, side, end) {
 
 function hunkRanges(hunks, source, side) {
     if (typeof source !== "string" || !source.length) return [];
-    const count = source.split(/\r?\n/).length, ranges = [];
+    const lineCount = source.split(/\r?\n/).length;
+    const ranges = [];
     for (const hunk of hunks) {
         const start = Math.max(1, hunk[side] - 5);
-        const end = Math.min(count, hunk[side] + Math.max(1, hunk[`${side}Count`]) - 1 + 5);
+        const end = Math.min(lineCount, hunk[side] + Math.max(1, hunk[`${side}Count`]) - 1 + 5);
         const previous = ranges.at(-1);
         if (previous && start <= previous[1] + 1) previous[1] = Math.max(previous[1], end);
         else if (start <= end) ranges.push([start, end]);
@@ -57,15 +58,16 @@ function hunkRanges(hunks, source, side) {
 }
 
 function changedLines(hunks, side) {
-    const result = [];
+    const lines = [];
     for (const hunk of hunks) {
         let line = hunk[side];
+        const prefix = side === "base" ? "-" : "+";
         for (const text of hunk.lines) {
-            if (text.startsWith(side === "base" ? "-" : "+")) result.push(line++);
+            if (text.startsWith(prefix)) lines.push(line++);
             else if (text.startsWith(" ")) line++;
         }
     }
-    return result;
+    return lines;
 }
 
 function excerpts(source, requested, budget, points = [], changes = []) {
@@ -138,6 +140,7 @@ export async function annotationCodeContext(model, context, sourceForPath) {
             : "Before/current ranges aligned using saved diff coordinates.",
         diff: "", diff_error: snapshot.diff_error || null, base_error: snapshot.base_error || null, usages: [], tests: [], declarations: [],
         evidence_limits: { omitted_diff_hunks: 0, omitted_related_symbols: 0,
+            scope: fileScope && hunks.length ? "Changed file hunks with surrounding context." : "Selected source ranges.",
             note: "Omitted excerpts are available saved source, not absent files. Identical bounded excerpts do not establish that the file is unchanged. Static examples are not executed tests." },
     };
     if (!projected.length && typeof snapshot[otherSide] === "string" && !(fileScope && hunks.length)) {

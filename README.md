@@ -163,8 +163,8 @@ remain explicit. **Focus code** also hides the decision footer while reading.
 
 File explanations select saved changed hunks and surrounding context, including
 for source languages without a symbol analyzer. Changed lines take priority
-within excerpt budgets. Omitted source ranges and diff hunks remain explicit;
-identical partial excerpts do not establish that the file is unchanged.
+within excerpt budgets; omitted source ranges and diff hunks remain explicit.
+Identical partial excerpts do not establish that the file is unchanged.
 
 Whole-file review decisions have a clear finish line: **Not reviewed**,
 **Reviewed**, or **Needs follow-up**. **Mark file reviewed & next** records a
@@ -754,8 +754,11 @@ the extension's own trusted tool once (not a project under review):
 dotnet build .github\extensions\agent-review\dotnet-analyzer\AgentReview.DotnetAnalyzer.csproj -c Release -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false -p:UseSharedCompilation=false -nodeReuse:false
 ```
 
-The helper references Roslyn bundled with the SDK, without a NuGet package
-dependency. Copy its Release binaries, dependency/runtime configuration and
+Source builds reference Roslyn bundled with the SDK, without a NuGet package
+dependency. The release bundle instead uses the pinned portable
+`Microsoft.CodeAnalysis.CSharp` package, because the SDK's copy is precompiled
+for the build machine's OS and CPU. For a source build, copy the helper's
+Release binaries, dependency/runtime configuration and
 Roslyn assemblies with the extension (not its cache), or set
 `AGENT_REVIEW_DOTNET_HELPER` to the built `AgentReview.Dotnet.dll`.
 Prepare it in a trusted development checkout or a separate owned tooling
