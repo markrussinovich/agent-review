@@ -719,9 +719,11 @@ toolchain and Cargo; Rust is not required for static analysis.
 
 ### Open and use
 
-The canvas follows the Copilot app's ambient light/dark mode and semantic
-surface, text, border, and focus colors, including changes while it is open.
-When opened outside the app, it follows the OS preference instead. Explicit
+The canvas follows the Copilot app's ambient theme, including custom app
+themes. Surfaces, text, borders, accent and status colors, primary buttons,
+focus rings, fonts, diff lines, and menus all come from the app's theme tokens,
+including changes while it is open. When opened outside the app, it follows
+the OS preference with GitHub Primer colors instead. Explicit
 `?scoutTheme=light` or `?scoutTheme=dark` URLs retain the GitHub Primer preview
 palette for development and screenshot checks.
 
@@ -1350,6 +1352,14 @@ light/dark and narrow layouts, keyboard cancellation, and completion; it does
 not replace verification of an actual owned analyzer launch. Keep that launch's
 configured `workspacePath` directory present until it finishes: the ownership
 guard deliberately stops analysis when its owner directory disappears.
+
+The Copilot app injects its theme as inline `<style>` tokens and sets
+`data-theme-tone` on `<html>`, so the canvas and preparation-screen CSPs allow
+inline styles while scripts stay same-origin. `tests/browser/theme.mjs` replays
+that injection with custom dark and light themes, including diff and menu
+colors and the `?scoutTheme` override. It reviews this repository
+against `main`, so it needs a reviewable change outside
+`.github/extensions/agent-review`, which the analyzer excludes.
 
 Before merging changes to annotation rendering or Evidence-panel navigation,
 run `node .github/extensions/agent-review/tests/browser/annotation-updates.mjs`

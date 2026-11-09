@@ -63,7 +63,35 @@ try {
             await page.close();
         }
     }
-    console.log("Bootstrap UI passed progress, error, keyboard retry, light/dark, and narrow-layout checks.");
+    {
+        // The Copilot app prepends inline :root theme styles and sets data-theme-tone; both must apply under the CSP.
+        state = { ...state, phase: "download", message: "Preparation failed.", error: "Bundle download failed: HTTP 503." };
+        const page = await browser.newPage({ viewport: { width: 390, height: 900 }, colorScheme: "light" });
+        const errors = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        page.on("console", (event) => { if (event.type() === "error") errors.push(event.text()); });
+        await page.goto(server.url);
+        await page.evaluate(() => {
+            const style = document.createElement("style");
+            style.textContent = ":root{--background-color-default:#371d32;--background-color-muted:#3b2439;"
+                + "--text-color-default:#f2e2f1;--background-color-button-primary-rest:#bfe9c9;--text-color-button-primary-rest:#371d32}";
+            document.head.prepend(style);
+            document.documentElement.setAttribute("data-theme-tone", "dark");
+        });
+        await page.waitForFunction(() => document.documentElement.dataset.theme === "dark" && !document.querySelector("#retry").hidden);
+        const colors = await page.evaluate(() => Object.fromEntries(["body", ".setup", "#retry"].map((selector) => {
+            const style = getComputedStyle(document.querySelector(selector));
+            return [selector, [style.backgroundColor, style.color]];
+        })));
+        assert.deepEqual(colors, { body: ["rgb(59, 36, 57)", "rgb(242, 226, 241)"], ".setup": ["rgb(55, 29, 50)", "rgb(242, 226, 241)"],
+            "#retry": ["rgb(191, 233, 201)", "rgb(55, 29, 50)"] }, "Preparation screen follows the app theme");
+        if (process.env.AGENT_REVIEW_SCREENSHOT_DIR) {
+            await page.screenshot({ path: join(process.env.AGENT_REVIEW_SCREENSHOT_DIR, "bootstrap-copilot-dark-390.png"), fullPage: true });
+        }
+        assert.deepEqual(errors, [], "No Content-Security-Policy or page errors");
+        await page.close();
+    }
+    console.log("Bootstrap UI passed progress, error, keyboard retry, light/dark, Copilot app theme, and narrow-layout checks.");
 } finally {
     await browser?.close();
     await server.close();
