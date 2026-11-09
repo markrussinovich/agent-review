@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from language_adapters import AnalysisSnapshot
+from language_adapters import AdapterUnavailable, AnalysisSnapshot
 from node_packages import package_diff, parse_locked_packages, parse_packages
 from review_model import ReviewModel
 
@@ -81,7 +81,7 @@ class NodeAdapter:
     ) -> dict[str, Any]:
         executable = shutil.which("node")
         if not executable:
-            raise RuntimeError("Node.js is unavailable; Node analysis is unknown.")
+            raise AdapterUnavailable("Node.js is unavailable; Node analysis is unknown.")
         arguments = [executable, str(Path(__file__).parent.parent / script)]
         with ThreadPoolExecutor(max_workers=1, thread_name_prefix="agent-review-node") as executor:
             future = executor.submit(
@@ -98,10 +98,13 @@ class NodeAdapter:
                     if on_wait:
                         on_wait(time.monotonic() - started)
         if result.returncode:
-            raise RuntimeError(f"{script} failed: {result.stderr.strip() or result.stdout.strip()}")
-        report = json.loads(result.stdout)
+            raise AdapterUnavailable(f"{script} failed: {result.stderr.strip() or result.stdout.strip()}")
+        try:
+            report = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise AdapterUnavailable(f"{script} returned invalid JSON: {error}") from error
         if not isinstance(report, dict):
-            raise ValueError(f"{script} returned a non-object report")
+            raise AdapterUnavailable(f"{script} returned a non-object report")
         return report
 
     def scan(
@@ -119,40 +122,36 @@ class NodeAdapter:
             progress("Node dependency declarations analyzed; no source graph to compile", 67)
             return
         progress(self.graph_message, 42)
-        try:
-            source_count = len({
-                path for path in set(snapshot.baseline) | set(snapshot.current)
-                if (pure := _reviewed_path(path)) and pure.suffix.lower() in EXTENSIONS
-            })
-            facts = self._invoke("node-compiler.mjs", {
-                "baseline": _texts(snapshot.baseline), "current": _texts(snapshot.current),
-                "use_cache": snapshot.use_cache,
-                "include_cache_stats": True,
-            }, on_wait=lambda elapsed: progress(
-                f"TypeScript compiler is still resolving {source_count:,} saved source "
-                f"file{'s' if source_count != 1 else ''} · {round(elapsed):,}s elapsed",
-                66,
-            ), environment={
-                "AGENT_REVIEW_NODE_CACHE": str(
-                    Path(os.environ.get("AGENT_REVIEW_CACHE_DIR")
-                         or Path.home() / ".copilot" / "agent-review" / "file-cache")
-                    / "node-facts"
-                ),
-            } if snapshot.use_cache else None)
-            for key in ("symbols", "edges", "evidence", "warnings"):
-                getattr(model, key).extend(facts.get(key, []))
-            for key, values in facts.get("aggregates", {}).items():
-                model.aggregates.setdefault(key, []).extend(values)
-            cache = facts.get("cache", {})
-            reuse = int(cache.get("persistent_hits", 0))
-            progress(
-                f"Resolved {len(facts.get('symbols', [])):,} Node symbols"
-                f"{f' · reused {reuse:,} parser facts from earlier reviews' if reuse else ''}",
-                67,
-            )
-        except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as error:
-            model.warnings.append(f"Node compiler analysis unavailable: {error}")
-            progress(model.warnings[-1], 67)
+        source_count = len({
+            path for path in set(snapshot.baseline) | set(snapshot.current)
+            if (pure := _reviewed_path(path)) and pure.suffix.lower() in EXTENSIONS
+        })
+        facts = self._invoke("node-compiler.mjs", {
+            "baseline": _texts(snapshot.baseline), "current": _texts(snapshot.current),
+            "use_cache": snapshot.use_cache,
+            "include_cache_stats": True,
+        }, on_wait=lambda elapsed: progress(
+            f"TypeScript compiler is still resolving {source_count:,} saved source "
+            f"file{'s' if source_count != 1 else ''} · {round(elapsed):,}s elapsed",
+            66,
+        ), environment={
+            "AGENT_REVIEW_NODE_CACHE": str(
+                Path(os.environ.get("AGENT_REVIEW_CACHE_DIR")
+                     or Path.home() / ".copilot" / "agent-review" / "file-cache")
+                / "node-facts"
+            ),
+        } if snapshot.use_cache else None)
+        for key in ("symbols", "edges", "evidence", "warnings"):
+            getattr(model, key).extend(facts.get(key, []))
+        for key, values in facts.get("aggregates", {}).items():
+            model.aggregates.setdefault(key, []).extend(values)
+        cache = facts.get("cache", {})
+        reuse = int(cache.get("persistent_hits", 0))
+        progress(
+            f"Resolved {len(facts.get('symbols', [])):,} Node symbols"
+            f"{f' · reused {reuse:,} parser facts from earlier reviews' if reuse else ''}",
+            67,
+        )
 
     def resolve_package_usage(self, model: ReviewModel, dependencies: dict[str, Any]) -> None:
         evidence = {item["id"]: item for item in model.evidence}
@@ -176,14 +175,10 @@ class NodeAdapter:
         if not any(path in snapshot.current or (not snapshot.historical and (snapshot.repo / path).is_file())
                    for path in inputs):
             return {"available": False, "files": [], "changed_lines": {}}
-        try:
-            return self._invoke("node-coverage.mjs", {
-                "repo": str(snapshot.repo), "baseline": _texts(snapshot.baseline),
-                "current": _texts(snapshot.current), "historical": snapshot.historical,
-            })
-        except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as error:
-            return {"available": False, "files": [], "changed_lines": {},
-                    "warnings": [f"Node coverage unavailable: {error}"]}
+        return self._invoke("node-coverage.mjs", {
+            "repo": str(snapshot.repo), "baseline": _texts(snapshot.baseline),
+            "current": _texts(snapshot.current), "historical": snapshot.historical,
+        })
 
 
 NODE_ADAPTER = NodeAdapter()

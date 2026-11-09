@@ -263,7 +263,9 @@ pub fn unicode<'\u03bb>(value: &'\u03bb str) -> &'\u03bb str { value }
         self.assertRegex(report["warnings"][0], "revision")
 
     def test_invalid_current_manifest_fails_closed(self):
-        with self.assertRaisesRegex(ValueError, "invalid Cargo"):
+        from language_adapters import AdapterUnavailable
+
+        with self.assertRaisesRegex(AdapterUnavailable, "invalid Cargo"):
             RUST_ADAPTER.dependencies(self.snapshot({}, {"Cargo.toml": b"[package"}), [])
 
 

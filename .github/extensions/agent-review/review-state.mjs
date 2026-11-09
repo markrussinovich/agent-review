@@ -1201,7 +1201,13 @@ export class ReviewState {
                     const map = await this.runDecisions(request, { signal: controller.signal, workspacePath: this.workspacePath });
                     maps.push({ ...map, adapter_id: request.adapter_id });
                 }
-                return mergeCodePathMaps(maps);
+                const result = mergeCodePathMaps(maps);
+                const unavailable = model.metadata?.unavailable_languages || [];
+                if (!unavailable.length) return result;
+                return { ...result, limited: true,
+                    warnings: [...result.warnings || [], ...unavailable.map((item) =>
+                        `${item.language} code paths unavailable: ${item.phase} failed: ${item.reason}`)],
+                    verification: { ...result.verification, limited: true } };
             })
             .then((result) => attachCoverage({ ...result, status: "complete", total_ms: Date.now() - started }, model),
                 (error) => ({ status: "error", error: `Decision extraction failed: ${error.message}` }))

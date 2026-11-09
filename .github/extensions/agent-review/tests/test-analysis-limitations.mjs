@@ -64,6 +64,21 @@ test("unavailable source links never invent a path and unrecognized diagnostics 
     assert.equal(builtin.reference.side, "current");
 });
 
+test("adapter failures name the missing language and phase without inventing a source finding", () => {
+    const note = describeAnalysisWarning(
+        "C# facts unavailable: scan failed: Roslyn snapshot analysis failed (exit 42): helper failure Graph, package usage and coverage facts for this language were omitted; source diffs remain available.",
+        model,
+    );
+    assert.equal(note.kind, "Language facts unavailable");
+    assert.equal(note.adapter_unavailable, true);
+    assert.equal(note.subject, "C#");
+    assert.equal(note.message, "scan failed: Roslyn snapshot analysis failed (exit 42): helper failure");
+    assert.equal(note.reference, null);
+    assert.match(note.explanation, /omitted together.*other languages and saved source diffs/);
+    assert.match(note.explanation, /not successful zero-usage or zero-coverage/);
+    assert.equal(describeAnalysisWarning("Unknown compiler note", model).adapter_unavailable, undefined);
+});
+
 test("Node warning locations retain their actual snapshot without duplicating identical notes", () => {
     const baseline = { "main.js": "export function trim(value) { return value.title.trim(); }\n" };
     const current = { "main.js": "export function trim(value) {\n  return value.title.trim();\n}\n" };

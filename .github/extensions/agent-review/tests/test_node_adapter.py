@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "analyzer"))
-from language_adapters import AnalysisSnapshot
+from language_adapters import AdapterUnavailable, AnalysisSnapshot
 from node_adapter import NODE_ADAPTER, NodeAdapter
 from node_packages import package_diff, parse_locked_packages, parse_packages
 from review_model import ReviewModel
@@ -222,14 +222,24 @@ class NodeAdapterTests(unittest.TestCase):
         adapter.resolve_package_usage(model, dependencies)
         self.assertEqual(dependencies["current"][0]["used_by"], [])
 
-    def test_missing_compiler_reports_unknown_without_losing_other_language_graph(self):
+    def test_missing_compiler_propagates_to_transactional_orchestrator(self):
         adapter = NodeAdapter()
         model = ReviewModel({})
         model.symbols.append({"id": "foreign"})
-        with patch.object(adapter, "_invoke", side_effect=RuntimeError("missing typescript")):
-            adapter.scan(snapshot(current={"app.ts": b"export function run(){}"}), model, {}, lambda *_: None)
+        with patch.object(adapter, "_invoke", side_effect=AdapterUnavailable("missing typescript")):
+            with self.assertRaisesRegex(AdapterUnavailable, "missing typescript"):
+                adapter.scan(snapshot(current={"app.ts": b"export function run(){}"}), model, {}, lambda *_: None)
         self.assertEqual(model.symbols, [{"id": "foreign"}])
-        self.assertTrue(any("missing typescript" in message for message in model.warnings))
+        self.assertEqual(model.warnings, [])
+
+    def test_expected_helper_protocol_failures_are_typed(self):
+        adapter = NodeAdapter()
+        for output in ("not JSON", "[]"):
+            with self.subTest(output=output), patch("node_adapter.shutil.which", return_value="node"), patch(
+                "node_adapter.subprocess.run", return_value=subprocess.CompletedProcess([], 0, output, "")
+            ):
+                with self.assertRaises(AdapterUnavailable):
+                    adapter._invoke("node-compiler.mjs", {})
 
     def test_manifest_only_analysis_never_loads_the_compiler_or_coverage_process(self):
         adapter = NodeAdapter()

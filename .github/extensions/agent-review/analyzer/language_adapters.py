@@ -8,6 +8,10 @@ from typing import Any, Protocol
 from review_model import ReviewModel
 
 
+class AdapterUnavailable(RuntimeError):
+    """Expected tooling or saved-input failure; not a scanner programming error."""
+
+
 @dataclass(frozen=True)
 class AnalysisSnapshot:
     repo: Path

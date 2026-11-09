@@ -183,7 +183,9 @@ def parse_cargo_packages(
         except (UnicodeDecodeError, tomllib.TOMLDecodeError, ValueError) as error:
             message = f"{path}: invalid Cargo manifest/lockfile: {error}"
             if strict and name == "Cargo.toml":
-                raise ValueError(message) from error
+                from language_adapters import AdapterUnavailable
+
+                raise AdapterUnavailable(message) from error
             warnings.append(message)
 
     workspace_dependencies: dict[str, Any] = {}

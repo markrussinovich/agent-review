@@ -1183,7 +1183,8 @@ function renderSummary(model) {
     elements.overview_limitation.replaceChildren();
     elements.overview_limitation.classList.toggle("hidden", !qualityIssues.length);
     if (qualityIssues.length) {
-        const title = !model.coverage?.available && !warnings.length ? "Coverage unavailable" : "Analysis limitation";
+        const title = meta.analysis_incomplete ? "Analysis incomplete"
+            : !model.coverage?.available && !warnings.length ? "Coverage unavailable" : "Analysis limitation";
         const openLimitations = () => {
             state.selected = {
                 id: "analysis-quality", kind: "analysis", name: "Analysis limitations",
@@ -3532,10 +3533,14 @@ function clearSelection() {
 }
 
 function setDetailVisible(visible) {
+    const restoreFocus = !visible && matchMedia("(max-width: 900px)").matches
+        && elements.detail.querySelector(".analysis-adapter-unavailable")
+        && elements.detail.parentElement.contains(document.activeElement);
     state.detailVisible = visible;
     document.querySelector(".workspace").classList.toggle("detail-collapsed", !visible);
     elements.detail_toggle.textContent = visible ? "Hide details" : "Show details";
     elements.detail_toggle.setAttribute("aria-pressed", String(visible));
+    if (restoreFocus) elements.detail_toggle.focus({ preventScroll: true });
     detectHostResize();
 }
 
@@ -4274,6 +4279,10 @@ function analysisWarningItem(warning) {
     if (note.snapshot) heading.append(el("span", "muted", note.snapshot));
     if (note.framework) heading.append(el("span", "muted", note.framework));
     row.append(heading);
+    if (note.adapter_unavailable) {
+        row.classList.add("analysis-adapter-unavailable");
+        row.append(el("p", "analysis-warning-explanation", note.message));
+    }
     if (note.reference) row.append(sourceReferenceButton(
         `${note.reference.path}${note.reference.lines[0] ? `:${note.reference.lines[0]}` : ""}`, note.reference));
     row.append(el("p", "analysis-warning-explanation", note.explanation || note.message));
@@ -7420,6 +7429,13 @@ window.addEventListener("keydown", (event) => {
         return;
     }
     if (document.querySelector("dialog[open]")) return;
+    if (event.key === "Escape" && state.detailVisible && matchMedia("(max-width: 900px)").matches
+        && elements.source_panel.classList.contains("hidden") && elements.detail.querySelector(".analysis-adapter-unavailable")) {
+        event.preventDefault();
+        setDetailVisible(false);
+        elements.detail_toggle.focus({ preventScroll: true });
+        return;
+    }
     if (event.key === "Escape" && state.sourceFocused) {
         event.preventDefault();
         setSourceFocus(false);
