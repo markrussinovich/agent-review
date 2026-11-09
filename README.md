@@ -1341,6 +1341,16 @@ node --test .github\extensions\agent-review\tests\test-*.mjs
 existing `playwright-core` installation (`AGENT_REVIEW_BROWSER_PACKAGE`) and Edge
 on Windows, or `AGENT_REVIEW_BROWSER_EXECUTABLE` for another browser.
 
+For C# project-progress rendering, set `AGENT_REVIEW_PROGRESS_MODEL` and
+`AGENT_REVIEW_PROGRESS_EVENTS` to a real successful run's saved ReviewModel and
+recorded progress JSON, then run
+`node .github\extensions\agent-review\tests\browser\dotnet-progress.mjs`.
+This explicitly labeled replay checks project/TFM/count/snapshot/elapsed text,
+light/dark and narrow layouts, keyboard cancellation, and completion; it does
+not replace verification of an actual owned analyzer launch. Keep that launch's
+configured `workspacePath` directory present until it finishes: the ownership
+guard deliberately stops analysis when its owner directory disappears.
+
 Before merging changes to annotation rendering or Evidence-panel navigation,
 run `node .github/extensions/agent-review/tests/browser/annotation-updates.mjs`
 with those browser settings. This required pre-merge check covers background
