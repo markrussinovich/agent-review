@@ -941,6 +941,23 @@ directories are excluded. Later edits show **Worktree changed — Reanalyze**,
 without automatically restarting analysis. **Cancel** stops active analysis.
 Returning to a target reuses its results while the provider remains running.
 
+Agent Review includes its own extension source when the target Git index or
+saved review trees contain the tracked product layout (the root distribution
+build/verification scripts and extension manifest). This also works in offline
+forks and arbitrarily named worktrees, and a marker deletion in the comparison
+does not change the policy between Base and Current. In other repositories,
+installed `.github/extensions/agent-review` files remain excluded, even when
+tracked. Dependencies, caches, and explicit `--exclude` rules still apply.
+When exclusions leave no reviewable changes, the empty state reports the changed
+file count and matching default/explicit rules; it does not read excluded contents
+or offer a blanket override that would expose installed tooling.
+The [self-repository browser regression](.github/extensions/agent-review/tests/browser/self-repository.mjs)
+consumes full production analyzer outputs for the same real Git comparison:
+set `AGENT_REVIEW_SELF_REPORT` to the normal JSON output and
+`AGENT_REVIEW_EXCLUDED_REPORT` to a second output with all changed paths explicitly
+excluded. It checks exact Git changed-file coverage, saved Base/Current navigation,
+exclusion reasons, empty-state controls, themes, narrow layout, and keyboard focus.
+
 ## Limits and data
 
 - Structural analysis supports Python, Node.js/TypeScript, C#/.NET, Go, Rust, and C/C++; individual

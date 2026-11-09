@@ -206,6 +206,8 @@ class ReviewModel:
                 "head_sha": self.repository.get("head"),
                 "generated_at": self.repository.get("generated_at"),
                 "python_loc": self.repository.get("python_loc", 0),
+                **({"snapshot_exclusions": self.repository["snapshot_exclusions"]}
+                   if "snapshot_exclusions" in self.repository else {}),
                 **({"node_loc": self.repository["node_loc"]} if "node_loc" in self.repository else {}),
                 **({"csharp_loc": self.repository["csharp_loc"]} if "csharp_loc" in self.repository else {}),
                 **({"go_loc": self.repository["go_loc"]} if "go_loc" in self.repository else {}),

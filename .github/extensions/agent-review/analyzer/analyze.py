@@ -52,6 +52,10 @@ def build_review(
             "base_ref": base_ref,
             "base_commit": base_commit,
             "generated_at": generated_at,
+            **({"snapshot_exclusions": {
+                "changed_files": sum(int(rule["count"]) for rule in snapshot.excluded_changes),
+                "rules": list(snapshot.excluded_changes),
+            }} if snapshot.excluded_changes else {}),
             "python_loc": sum(
                 len(content.decode("utf-8", errors="replace").splitlines())
                 for path, content in snapshot.current.items() if path.endswith(".py")
