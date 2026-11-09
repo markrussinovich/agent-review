@@ -117,7 +117,7 @@ export async function annotationCodeContext(model, context, sourceForPath) {
     const fileScope = ["file", "module"].includes(subject.kind) || !subject.start_line;
     const changes = { base: changedLines(hunks, "base"), current: changedLines(hunks, "current") };
     const symbols = (model.nodes || []).filter((node) => node.path === path && node.start_line
-        && ["function", "method", "constructor", "class"].includes(node.kind));
+        && ["function", "method", "constructor", "destructor", "operator", "lambda", "class"].includes(node.kind));
     const ranges = fileScope && hunks.length ? hunkRanges(hunks, snapshot[subjectSide], subjectSide)
         : subject.start_line ? [[subject.start_line, subject.end_line || subject.start_line + 40]]
         : symbols.filter((node) => node.change !== "unchanged").slice(0, 6)

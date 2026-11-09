@@ -1249,7 +1249,7 @@ export class ReviewState {
         // Say "no linked tests" only when none exist; otherwise keep the runner's own reason (for example an unsupported test shape).
         const linked = (map?.verification?.tests || []).filter((test) => test.link !== "name-only").length;
         let reason = scope && map?.status === "complete" && !linked ? "No linked tests reach this layer's changed code."
-            : plan.reason || (!plan.tests.length ? "No runnable linked tests were planned." : null);
+            : plan.reason || python.error || (!plan.tests.length ? "No runnable linked tests were planned." : null);
         if (this.loading) reason = "Wait for the analysis to finish.";
         else if (worktree && this.worktreeChanged) reason = "The worktree changed since this review. Reanalyze before running linked tests.";
         else if (!worktree && !this.reviewTarget.currentRef) reason = "This snapshot has no commit to export for testing.";

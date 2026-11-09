@@ -42,6 +42,7 @@ for (const [name, path] of [
     ["node-demo", "packages/core/src/resolver.js"],
     ["coverage-demo", "shipping.py"],
     ["dotnet-demo", "src/ReviewPolicy/ReviewPolicy.cs"],
+    ["cpp-demo", "include/policy.hpp"],
 ]) {
     test(`${name} recreates a standalone baseline with the real feature left uncommitted`, async (t) => {
         const root = await workspace(t);

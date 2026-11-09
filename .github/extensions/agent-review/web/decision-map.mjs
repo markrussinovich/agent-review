@@ -227,11 +227,11 @@ export function decisionTotals(map) {
 export function callablesForSubject(map, model, subject) {
     if (!map?.callables?.length || !subject) return [];
     const path = subject.path;
-    if (["function", "method", "property", "accessor"].includes(subject.kind) || ["function", "method", "property", "accessor"].includes(subject.type)) {
+    if (["function", "method", "property", "accessor", "constructor", "destructor", "operator", "lambda"].includes(subject.kind || subject.type)) {
         return map.callables.filter((item) => item.id === subject.id);
     }
-    if (["class", "interface", "struct", "enum", "trait", "record", "namespace", "type"].includes(subject.kind || subject.type)) {
-        if (["csharp", "rust"].includes(subject.language)) {
+    if (["class", "interface", "struct", "union", "enum", "trait", "record", "namespace", "type"].includes(subject.kind || subject.type)) {
+        if (["csharp", "rust", "cpp"].includes(subject.language)) {
             const descendants = new Set([subject.id]);
             let size;
             do {

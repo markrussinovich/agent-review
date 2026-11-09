@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 const execute = promisify(execFile);
 const samples = dirname(fileURLToPath(import.meta.url));
 const project = dirname(samples);
-export const sampleNames = ["large-repo", "node-demo", "coverage-demo", "dotnet-demo"];
+export const sampleNames = ["large-repo", "node-demo", "coverage-demo", "dotnet-demo", "cpp-demo"];
 
 function inside(parent, child) {
     const path = relative(parent, child);
@@ -60,7 +60,7 @@ export async function prepareSample(name, destination) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
     try {
         if (process.argv.length !== 4) {
-            throw new Error("Usage: node test-repos\\prepare.mjs <large-repo|node-demo|coverage-demo|dotnet-demo> <new-directory>");
+            throw new Error(`Usage: node test-repos\\prepare.mjs <${sampleNames.join("|")}> <new-directory>`);
         }
         const result = await prepareSample(process.argv[2], process.argv[3]);
         console.log(JSON.stringify(result, null, 2));

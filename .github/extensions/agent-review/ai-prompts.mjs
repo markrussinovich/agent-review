@@ -105,6 +105,7 @@ export function buildAnnotationPrompt(context) {
         "Cite saved `path:line` or `path:start-end` ranges for the mechanism and example. Separate demonstrated source behavior, likely downstream consequences, and unverified runtime impact.",
         "code_context contains bounded current/base ranges, source-backed consumer/dependency excerpts and supplied tests. Read the actual implementations and assertions. Describe partial ranges and omitted related symbols as context limits, not absent saved code or missing tests.",
         EXCERPT_RULE,
+        "For C/C++, preprocessor guards are configuration conditions, not evaluated runtime branches; macros, overloads and dynamic dispatch are not compiler resolved.",
         "An opposite-side diff-aligned range may include neighboring edit context, especially for added/removed symbols; do not claim identical callable identity from alignment alone.",
         "## Why it changed",
         "1-2 bullets. If session_attribution or session_intent states the goal, start with **Stated intent:** and quote at most 15 words of it.",
