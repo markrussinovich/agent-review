@@ -3,7 +3,7 @@ import test from "node:test";
 import { generateIsolatedExplanation } from "../ai-explainer.mjs";
 import { currentAnnotations } from "../review-state.mjs";
 
-test("saved item explanations from an older prompt are regenerated; overview and layer summaries are kept", async () => {
+test("saved explanations, overviews and derived layers from the previous intent policy are regenerated", async () => {
     const { ANNOTATION_PROMPT_VERSION } = await import("../ai-prompts.mjs");
     const kept = currentAnnotations({
         "node:old": { body: "terse" },
@@ -12,7 +12,14 @@ test("saved item explanations from an older prompt are regenerated; overview and
         overview: { body: "overview" },
         layers: { intents: {} },
     });
-    assert.deepEqual(Object.keys(kept).sort(), ["layers", "node:new", "overview"]);
+    assert.deepEqual(Object.keys(kept), ["node:new"]);
+    const current = currentAnnotations({
+        "node:new": { body: "full", prompt_version: ANNOTATION_PROMPT_VERSION },
+        overview: { body: "overview", refining: true, prompt_version: ANNOTATION_PROMPT_VERSION },
+        layers: { intents: {}, prompt_version: ANNOTATION_PROMPT_VERSION },
+    });
+    assert.deepEqual(Object.keys(current).sort(), ["layers", "node:new", "overview"]);
+    assert.equal(current.overview.refining, false);
 });
 
 import { ExplanationValidationError, selectedModelFromEvents, validateExplanation } from "../ai-response.mjs";

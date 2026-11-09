@@ -223,7 +223,7 @@ test("excludes Agent Review internal model requests from attribution", () => {
     assert.deepEqual(findSessionAttribution(context, "src/workflow_service/rules.py"), []);
 });
 
-test("ranks authoring intent above later inspection of the same file", () => {
+test("ranks visible authoring edits above later inspection of the same file", () => {
     const context = buildSessionContext([
         {
             id: "authoring-user",
@@ -236,7 +236,7 @@ test("ranks authoring intent above later inspection of the same file", () => {
             type: "tool.execution_start",
             timestamp: "2026-10-03T09:01:00Z",
             data: {
-                toolName: "rg",
+                toolName: "apply_patch",
                 arguments: { path: "src\\workflow_service\\rules.py" },
             },
         },
@@ -293,7 +293,7 @@ test("splits multiple file paths from one command argument", () => {
     assert.equal(findSessionAttribution(context, "src/workflow_service/rules.py")[0].prompt, "Add workflow rules and scheduling features.");
 });
 
-test("treats explicit file creation as authoring even when review is mentioned", () => {
+test("explicit file creation wording alone remains a possible reference, not authoring", () => {
     const context = buildSessionContext([
         {
             id: "user-create-review",
@@ -305,9 +305,80 @@ test("treats explicit file creation as authoring even when review is mentioned",
         },
     ], ROOT);
     const match = findSessionAttribution(context, "src/workflow_service/health.py")[0];
-    assert.equal(match.confidence, "likely");
-    assert.equal(match.review_intent, false);
-    assert.match(match.reason, /authoring prompt/);
+    assert.equal(match.confidence, "possible");
+    assert.equal(match.review_intent, true);
+    assert.match(match.reason, /no file edit was observed/);
+    assert.deepEqual(findSessionAttribution(context, "src/workflow_service/health.py", { authoringOnly: true }), []);
+});
+
+test("only visible file edits establish intent, independently of prompt verbs", () => {
+    const before = "2026-10-03T10:00:00Z";
+    for (const prompt of ["Land the fix once you have confidence.", "Review app.py and create a summary.",
+        "app.py", "Yes, that's the one."]) {
+        for (const toolName of ["view", "rg", "powershell", "create_session", "edit_pr_review_comment"]) {
+            const context = buildSessionContext([
+                { id: "u", type: "user.message", timestamp: "2026-10-03T09:00:00Z", data: { content: prompt } },
+                { id: "t", type: "tool.execution_start", timestamp: "2026-10-03T09:01:00Z",
+                    data: { toolName, arguments: { path: "src/app.py", description: "Implement the fix in app.py" } } },
+            ], ROOT);
+            const match = findSessionAttribution(context, "src/app.py", { before })[0];
+            assert.equal(match.confidence, "possible", toolName);
+            assert.equal(match.write_activity_count, 0, toolName);
+            assert.deepEqual(findSessionAttribution(context, "src/app.py", { before, authoringOnly: true }), [], toolName);
+        }
+        const authored = buildSessionContext([
+            { id: "u", type: "user.message", timestamp: "2026-10-03T09:00:00Z", data: { content: prompt } },
+            { id: "t", type: "tool.execution_start", timestamp: "2026-10-03T09:01:00Z",
+                data: { toolName: "apply_patch", arguments: { patch: "*** Update File: src/app.py\n+value = 2" } } },
+        ], ROOT);
+        assert.equal(findSessionAttribution(authored, "src/app.py", { before, authoringOnly: true })[0].prompt, prompt);
+    }
+});
+
+test("an older filename mention with future writes cannot establish snapshot origin", () => {
+    const context = buildSessionContext([
+        { id: "u", type: "user.message", timestamp: "2026-10-03T09:00:00Z",
+            data: { content: "Fix src/app.py." } },
+        { id: "r", type: "tool.execution_start", timestamp: "2026-10-03T09:01:00Z",
+            data: { toolName: "view", arguments: { path: "src/app.py" } } },
+        { id: "w", type: "tool.execution_start", timestamp: "2026-10-03T11:00:00Z",
+            data: { toolName: "apply_patch", arguments: { path: "src/app.py" } } },
+    ], ROOT);
+    const options = { before: "2026-10-03T10:00:00Z", authoringOnly: true };
+    assert.deepEqual(findSessionAttribution(context, "src/app.py", options), []);
+    assert.equal(findSessionAttribution(context, "src/app.py", { ...options, before: "2026-10-03T11:00:00Z" }).length, 1);
+    context.turns[0].agent_activity[1].timestamp = undefined;
+    assert.deepEqual(findSessionAttribution(context, "src/app.py", options), [], "undated writes cannot establish historical origin");
+});
+
+test("write tool descriptions and content cannot turn references into edit targets", () => {
+    const context = buildSessionContext([
+        { id: "u", type: "user.message", timestamp: "2026-10-03T09:00:00Z",
+            data: { content: "Document the app.py fix." } },
+        { id: "patch", type: "tool.execution_start", timestamp: "2026-10-03T09:01:00Z",
+            data: { toolName: "apply_patch", arguments: {
+                patch: "*** Update File: README.md\n+Reference src/app.py.",
+                description: "Explain the fix in src/app.py",
+            } } },
+    ], ROOT);
+    const options = { before: "2026-10-03T10:00:00Z", authoringOnly: true };
+    assert.deepEqual(findSessionAttribution(context, "src/app.py", options), []);
+    assert.equal(findSessionAttribution(context, "README.md", options).length, 1);
+});
+
+test("original authoring comes from the first visible edit, not earlier read-only fix wording", () => {
+    const activity = (operation, timestamp) => [{ operation, timestamp, referenced_files: ["src/app.py"] }];
+    const context = { turns: [
+        { id: "triage", session_id: "same", prompt: "Merge the fix in app.py.", started_at: "2026-10-03T08:00:00Z",
+            agent_activity: activity("read", "2026-10-03T08:01:00Z") },
+        { id: "original", session_id: "same", prompt: "Why does this fail?", started_at: "2026-10-03T09:00:00Z",
+            agent_activity: activity("write", "2026-10-03T09:01:00Z") },
+        { id: "follow-up", session_id: "same", prompt: "Now handle empty input.", started_at: "2026-10-03T09:30:00Z",
+            agent_activity: activity("write", "2026-10-03T09:31:00Z") },
+    ] };
+    const matches = findSessionAttribution(context, "src/app.py", { before: "2026-10-03T10:00:00Z", authoringOnly: true });
+    assert.equal(matches.length, 2);
+    assert.equal(matches.find((item) => item.turn_id === "follow-up").original_prompt, "Why does this fail?");
 });
 
 test("tool events carry a concise detail for transcript display", () => {

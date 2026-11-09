@@ -409,6 +409,14 @@ available or be reconstructed before an older link can be opened.
 When matching Copilot session history is available, source views show the
 authoring request, follow-up activity, and a linked transcript. Provenance is
 repository- and snapshot-scoped: later work cannot explain an earlier commit.
+Only turns with visible write/edit activity targeting the changed file at or
+before the head commit or saved worktree can supply originating intent.
+Filename mentions, read-only review/merge chatter, shell descriptions, and
+repository-wide prompts are not authoring evidence, even when they say "fix".
+When origin is unknown, reviews use the PR description or commit message where
+available, without copying unrelated session prompts into change summaries.
+Older cached explanations and derived layer summaries are regenerated so they
+cannot retain intent selected under the previous attribution policy.
 Commit reviews show the full commit message, and PR reviews show the PR
 description and commit messages; Copilot compares their claims with the code.
 The review heading uses the commit subject or PR title, followed by a two-line
@@ -420,6 +428,12 @@ Session file references use the repository's Windows or POSIX path semantics
 regardless of the host OS, so in-repository paths remain repository-relative for
 transcript details and attribution. Outside-repository paths are excluded from
 attribution.
+
+Run `node .github\extensions\agent-review\tests\browser\authoring-intent.mjs`
+from a checkout with changed `README.md` to exercise edit-backed and unknown
+provenance against actual analyzed documentation in light/dark and narrow
+layouts. It uses controlled, non-private session events and explanation text;
+the repository snapshot and provenance selection are production code.
 
 ### Check repository rules
 
