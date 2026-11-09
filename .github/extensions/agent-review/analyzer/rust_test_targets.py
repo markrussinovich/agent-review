@@ -33,11 +33,12 @@ def _targets(files: dict[str, bytes]) -> list[dict[str, Any]]:
         name = package.get("name")
         if not isinstance(name, str):
             continue
-        directory = str(PurePosixPath(manifest).parent)
+        manifest_directory = PurePosixPath(manifest).parent
+        directory = str(manifest_directory)
         edition = package.get("edition", "2015")
         if isinstance(edition, dict):
             edition = None
-            for parent in PurePosixPath(manifest).parent.parents:
+            for parent in (manifest_directory, *manifest_directory.parents):
                 workspace = manifests.get(str(parent / "Cargo.toml"), {}).get("workspace", {})
                 inherited = workspace.get("package", {}).get("edition")
                 if isinstance(inherited, str):

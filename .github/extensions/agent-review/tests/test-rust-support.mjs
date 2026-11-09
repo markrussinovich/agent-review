@@ -250,12 +250,18 @@ test("generated Cargo exact selectors execute root and declared-module tests in 
         await assert.rejects(runCargoTests({ repoRoot: root, python: runtime, plan }), /source changed: Cargo.toml/);
         const customRoot = join(root, "custom-library");
         const customFiles = {
-            "Cargo.toml": '[package]\nname="custom-library"\nversion="0.1.0"\nedition="2021"\n'
-                + '[lib]\nname="renamed_library"\npath="roots/entry.rs"\n',
+            "Cargo.toml": '[workspace.package]\nedition="2021"\n'
+                + '[package]\nname="custom-library"\nversion="0.1.0"\nedition.workspace=true\n'
+                + '[lib]\nname="renamed_library"\npath="roots/entry.rs"\n'
+                + '[[bin]]\nname="explicit"\npath="roots/custom_bin.rs"\n',
             "Cargo.lock": 'version=4\n[[package]]\nname="custom-library"\nversion="0.1.0"\n',
             "roots/entry.rs": "pub fn changed() -> bool { true }\nmod worker;\n"
                 + "#[test]\nfn root_checks() { assert!(changed()); }\n",
             "roots/worker.rs": "#[test]\nfn module_checks() { assert!(crate::changed()); }\n",
+            "roots/custom_bin.rs": "fn main() {}\n#[test]\n"
+                + "fn custom_bin_checks() { assert!(renamed_library::changed()); }\n",
+            "src/bin/auto.rs": "fn main() {}\n#[test]\n"
+                + "fn auto_bin_checks() { assert!(renamed_library::changed()); }\n",
         };
         for (const [path, source] of Object.entries(customFiles)) {
             await mkdir(dirname(join(customRoot, path)), { recursive: true });
@@ -270,10 +276,14 @@ test("generated Cargo exact selectors execute root and declared-module tests in 
             ["-c", script, join(extension, "analyzer"), input], { windowsHide: true });
         const customPlan = cargoTestPlan({ ...JSON.parse(custom.stdout), status: "complete" }, customRoot);
         assert.equal(customPlan.reason, null);
-        assert.deepEqual(customPlan.rust_tests.map((test) => test.name).sort(), ["root_checks", "worker::module_checks"]);
+        assert.deepEqual(customPlan.rust_tests.map((test) => test.name).sort(),
+            ["auto_bin_checks", "custom_bin_checks", "root_checks", "worker::module_checks"]);
+        const autoBin = customPlan.rust_tests.find((test) => test.name === "auto_bin_checks");
+        assert.deepEqual(autoBin.cargo_target, { kind: "bin", name: "auto", path: "src/bin/auto.rs" });
         const customResult = await runCargoTests({ repoRoot: customRoot, python: runtime, plan: customPlan });
         assert.equal(customResult.exit_code, 0, customResult.output);
-        assert.equal(Object.values(customResult.trace.tests).filter((test) => test.outcome === "passed").length, 2, customResult.output);
+        assert.equal(Object.values(customResult.trace.tests).filter((test) => test.outcome === "passed").length, 4, customResult.output);
+        assert.equal((customResult.output.match(/running 1 test\b/g) || []).length, 4, customResult.output);
     } finally {
         await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }

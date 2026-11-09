@@ -132,6 +132,21 @@ class RustTargetTests(unittest.TestCase):
             })}
             self.assertEqual(tests["member/src/bin/auto.rs"].get("selector_error") is None, edition == "2021")
 
+    def test_root_package_inherits_its_own_workspace_edition(self):
+        for edition in ("2015", "2021"):
+            with self.subTest(edition=edition):
+                tests = {test["path"]: test for test in self._tests_for({
+                    "Cargo.toml": MANIFEST.replace('edition="2021"', 'edition.workspace=true') +
+                        f'[workspace.package]\nedition="{edition}"\n'
+                        '[[bin]]\nname="explicit"\npath="custom.rs"\n',
+                    "custom.rs": TEST, "src/bin/auto.rs": TEST,
+                })}
+                self.assertIsNone(tests["custom.rs"]["selector_error"])
+                self.assertEqual(tests["src/bin/auto.rs"].get("selector_error") is None, edition == "2021")
+                if edition == "2021":
+                    self.assertEqual(tests["src/bin/auto.rs"]["cargo_target"],
+                                     {"kind": "bin", "name": "auto", "path": "src/bin/auto.rs"})
+
     def test_resolution_limit_does_not_leave_partial_executable_selectors(self):
         tests = self._tests_for({
             "Cargo.toml": MANIFEST,
@@ -212,6 +227,13 @@ class RustTargetTests(unittest.TestCase):
              '[[bin]]\nname="explicit"\npath="custom.rs"\n', ["custom.rs", "src/lib.rs", "src/bin/auto.rs"]),
             (MANIFEST + '[lib]\nname="other"\npath="custom.rs"\n', ["custom.rs", "src/lib.rs"]),
         ]
+        for edition in ("2015", "2021"):
+            cases.append((
+                MANIFEST.replace('edition="2021"', 'edition.workspace=true') +
+                f'[workspace.package]\nedition="{edition}"\n'
+                '[[bin]]\nname="explicit"\npath="custom.rs"\n',
+                ["custom.rs", "src/bin/auto.rs"],
+            ))
         for manifest, sources in cases:
             with self.subTest(manifest=manifest), tempfile.TemporaryDirectory(prefix="rust-target-metadata-") as directory:
                 root = Path(directory)
