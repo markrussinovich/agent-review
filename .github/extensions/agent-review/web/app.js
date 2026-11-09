@@ -1211,6 +1211,7 @@ function renderSummary(model) {
     if (meta.node_loc !== undefined) coverageOptions.push("source-matched LCOV/Istanbul JSON");
     if (meta.go_loc !== undefined) coverageOptions.push("a Go coverprofile with coverage.sources.json hashes");
     if (meta.rust_loc !== undefined) coverageOptions.push("LCOV plus rust-coverage.json with the exact revision and SHA-256 source hashes");
+    if (meta.cpp_loc !== undefined) coverageOptions.push("LCOV plus cpp-coverage.json with the exact revision and SHA-256 source hashes");
     if (meta.python_loc || !coverageOptions.length) coverageOptions.push("Python coverage.json/coverage.xml");
     if (meta.csharp_loc !== undefined) coverageOptions.push("saved Coverlet Cobertura XML");
     const coveragePrerequisite = `Provide ${coverageOptions.join(" or ")}`;
@@ -1252,7 +1253,7 @@ function renderSummary(model) {
         details.addEventListener("click", openLimitations);
         elements.overview_limitation.append(el("strong", "", title), el("span", "", qualityIssues.join(" ")), details);
     }
-    elements.summary.title = `${meta.base_ref || "base"} @ ${(meta.base_sha || "").slice(0, 8)} → ${(meta.head_sha || "").slice(0, 8)} · ${meta.python_loc || 0} Python LOC${meta.node_loc !== undefined ? ` · ${meta.node_loc} JavaScript/TypeScript LOC` : ""}${meta.csharp_loc != null ? ` · ${meta.csharp_loc} C# LOC` : ""}${meta.go_loc != null ? ` · ${meta.go_loc} Go LOC` : ""}${meta.rust_loc != null ? ` · ${meta.rust_loc} Rust LOC` : ""}`;
+    elements.summary.title = `${meta.base_ref || "base"} @ ${(meta.base_sha || "").slice(0, 8)} → ${(meta.head_sha || "").slice(0, 8)} · ${meta.python_loc || 0} Python LOC${meta.node_loc !== undefined ? ` · ${meta.node_loc} JavaScript/TypeScript LOC` : ""}${meta.csharp_loc != null ? ` · ${meta.csharp_loc} C# LOC` : ""}${meta.go_loc != null ? ` · ${meta.go_loc} Go LOC` : ""}${meta.rust_loc != null ? ` · ${meta.rust_loc} Rust LOC` : ""}${meta.cpp_loc != null ? ` · ${meta.cpp_loc} C/C++ LOC` : ""}`;
 }
 
 function evidenceLabel(id) {
@@ -2453,7 +2454,7 @@ elements.source_impact.addEventListener("click", () => {
     const source = state.source;
     const symbol = state.payload?.model?.nodes.filter((node) => node.path === source?.path
         && node.start_line <= source.start_line && node.end_line >= source.start_line
-        && ["function", "method", "constructor"].includes(node.kind))
+        && ["function", "method", "constructor", "destructor", "operator", "lambda"].includes(node.kind))
         .sort((a, b) => (a.end_line - a.start_line) - (b.end_line - b.start_line))[0];
     openImpact(symbol || { id: `file:${source?.path}` });
 });
@@ -5178,7 +5179,7 @@ function layerVerifyBlock(layer) {
         actions.append(cancel);
     }
     block.append(actions);
-    const traced = plan && !["csharp", "rust"].includes(plan.adapter_id);
+    const traced = plan && !["csharp", "rust", "cpp"].includes(plan.adapter_id);
     if (traced && status.ran && !status.stale) {
         const legend = el("p", "muted layer-verify-note trace-legend");
         for (const [kind, text] of [["passed", "a linked test ran this changed path"], ["missed", "no linked test reached it"], ["failing", "only failing tests ran it"]]) {
@@ -6205,7 +6206,7 @@ function renderVerificationBar(map, { compact = false, callables = null } = {}) 
     const button = el("button", "verification-run-button", run?.status === "running" ? "Running…" : "Run linked tests");
     button.type = "button";
     button.disabled = run?.status === "running" || !plan?.available;
-    button.title = plan?.available ? `Runs ${countLabel(plan.tests.length, "linked test")}${["csharp", "rust"].includes(plan.adapter_id) ? " with test outcomes (no per-test path tracing)" : " with line tracing"}: ${plan.command}` : plan?.reason || "Checking linked tests…";
+    button.title = plan?.available ? `Runs ${countLabel(plan.tests.length, "linked test")}${["csharp", "rust", "cpp"].includes(plan.adapter_id) ? " with test outcomes (no per-test path tracing)" : " with line tracing"}: ${plan.command}` : plan?.reason || "Checking linked tests…";
     button.addEventListener("click", async () => {
         button.disabled = true;
         try {

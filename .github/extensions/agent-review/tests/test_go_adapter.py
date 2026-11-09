@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -159,6 +160,224 @@ class GoAdapterTests(unittest.TestCase):
             "coverage.sources.json": json.dumps({"demo.go": {"sha256": "0" * 64}}).encode()})
         self.assertFalse(load_go_coverage(stale)["available"])
 
+    def test_receiver_and_expression_calls_do_not_guess_package_targets(self):
+        declarations = (
+            "type Closer interface { Close() error }\n"
+            "type Resource struct { child Closer }\n"
+            "func Close() {}\n"
+        )
+        cases = {
+            "interface receiver": "func Run(c Closer) { c.Close() }\n",
+            "selector chain": "func Run(c Resource) { c.child.Close() }\n",
+            "spaced selector chain": "func Run(c Resource) { c . child . Close() }\n",
+            "call result": "func factory() Closer { return nil }\nfunc Run() { factory().Close() }\n",
+            "indexed receiver": "func Run(items []Closer) { items[0].Close() }\n",
+            "parenthesized receiver": "func Run(c *Closer) { (*c).Close() }\n",
+        }
+        for label, body in cases.items():
+            with self.subTest(case=label):
+                files = {"demo.go": ("package demo\n" + declarations + body).encode()}
+                model = ReviewModel({})
+                analyze_go(files, files, model, set())
+                names = {symbol["id"]: symbol["qualname"] for symbol in model.symbols}
+                self.assertIn("Run", names.values())
+                self.assertIn("Close", names.values())
+                self.assertEqual([], [
+                    edge for edge in model.edges
+                    if edge["kind"] == "calls" and names[edge["target"]] == "Close"
+                ])
+
+    def test_calls_do_not_resolve_to_methods_or_type_conversions(self):
+        cases = {
+            "bare method name": (
+                "type Resource struct{}\nfunc (r Resource) Close() {}\n",
+                "func Run() { Close() }\n",
+            ),
+            "receiver method deferred": (
+                "type Resource struct{}\nfunc (r Resource) Close() {}\n",
+                "func (r Resource) Run() { r.Close() }\n",
+            ),
+            "method expression deferred": (
+                "type Resource struct{}\nfunc (r Resource) Close() {}\n",
+                "func Run(r Resource) { Resource.Close(r) }\n",
+            ),
+            "type conversion": (
+                "type Close int\n",
+                "func Run() { _ = Close(1) }\n",
+            ),
+        }
+        for label, (declarations, body) in cases.items():
+            with self.subTest(case=label):
+                files = {"demo.go": ("package demo\n" + declarations + body).encode()}
+                model = ReviewModel({})
+                analyze_go(files, files, model, set())
+                self.assertEqual([], [edge for edge in model.edges if edge["kind"] == "calls"])
+
+    def test_calls_do_not_resolve_shadowed_imports_or_package_functions(self):
+        cases = {
+            "import parameter": "func Run(m Caller) { m.Target() }\n",
+            "compact pointer parameter": "func Run(m*Resource) { m.Target() }\n",
+            "compact grouped parameters": "func Run(other, m*Resource) { m.Target() }\n",
+            "compact named result": "func Run() (m*Resource) { m.Target(); return }\n",
+            "grouped parameters": "func Run(m, other Caller) { m.Target() }\n",
+            "receiver": "func (m Resource) Run() { m.Target() }\n",
+            "receiver type parameter": (
+                "type Box[Target ~int] struct{}\n"
+                "func (b Box[Target]) Run(value int) { _ = Target(value) }\n"
+            ),
+            "named result": "func Run() (m Caller) { m.Target(); return }\n",
+            "short declaration": "func Run(value Caller) { m := value; m.Target() }\n",
+            "multiple short names": "func Run(value Caller) { _, m := 0, value; m.Target() }\n",
+            "range variable": "func Run(values []Caller) { for _, m := range values { m.Target() } }\n",
+            "type switch": "func Run(value any) { switch m := value.(type) { case Caller: m.Target() } }\n",
+            "variable": "func Run(value Caller) { var m = value; m.Target() }\n",
+            "grouped variable": "func Run(value Caller) { var (\n m = value\n); m.Target() }\n",
+            "type alias": "func Run(value Resource) { type m = Resource; m.Target(value) }\n",
+            "nested parameter": "func Run(value Caller) { func(m Caller) { m.Target() }(value) }\n",
+            "nested pointer result": (
+                "func Run(value Caller) { func(m Caller)*Resource { m.Target(); return nil }(value) }\n"
+            ),
+            "nested struct result": (
+                "func Run(value Caller) { "
+                "func(m Caller)struct{ Value int } { m.Target(); return struct{ Value int }{} }(value) }\n"
+            ),
+            "nested function result": (
+                "func Run(value Caller) { func(m Caller)func() { m.Target(); return nil }(value) }\n"
+            ),
+            "literal multiplied by indexed expression": (
+                "func Run(value Caller) { values := []int{1}; "
+                "result := values[0] * func(m Caller) int { m.Target(); return 1 }(value); "
+                "_ = result }\n"
+            ),
+            "literal multiplied by nested indexed expression": (
+                "func Run(value Caller) { values := [][]int{{1}}; "
+                "result := values[0][0] * func(m Caller) int { m.Target(); return 1 }(value); "
+                "_ = result }\n"
+            ),
+            "literal inside function slice": (
+                "func Run() { callbacks := []func(Caller){func(m Caller) { m.Target() }}; "
+                "_ = callbacks }\n"
+            ),
+            "function parameter": "func Run(Target func()) { Target() }\n",
+            "function variable": "func Run(callback func()) { Target := callback; Target() }\n",
+        }
+        for label, body in cases.items():
+            with self.subTest(case=label):
+                files = {
+                    "go.mod": b"module example.com/demo\n",
+                    "model/model.go": b"package model\nfunc Target() {}\n",
+                    "app/app.go": (
+                        'package app\nimport m "example.com/demo/model"\n'
+                        "type Caller interface { Target() }\n"
+                        "type Resource struct{}\nfunc (r Resource) Target() {}\n"
+                        "func Target() {}\n" + body
+                    ).encode(),
+                }
+                model = ReviewModel({})
+                analyze_go(files, files, model, set())
+                names = {symbol["id"]: symbol["qualname"] for symbol in model.symbols}
+                self.assertTrue(any(name.endswith("Run") for name in names.values()))
+                self.assertEqual([], [
+                    edge for edge in model.edges if edge["kind"] == "calls"
+                    and names[edge["target"]] == "Target"
+                ])
+
+    def test_function_type_names_do_not_shadow_package_calls(self):
+        cases = {
+            "named parameter": "var callback func(m int); _ = callback",
+            "named result": "var callback func() (m int); _ = callback",
+            "nested function type": "var callback func(callback func(m int)); _ = callback",
+            "slice of function types": "var callbacks []func(m int); _ = callbacks",
+            "function slice literal": "callbacks := []func(m int){}; _ = callbacks",
+            "function array literal": "callbacks := [0]func(m int){}; _ = callbacks",
+            "function map literal": "callbacks := map[string]func(m int){}; _ = callbacks",
+            "pointer function slice literal": "callbacks := []*func(m int){}; _ = callbacks",
+            "pointer function array literal": "callbacks := [0]*func(m int){}; _ = callbacks",
+            "pointer function map literal": "callbacks := map[string]*func(m int){}; _ = callbacks",
+            "nested pointer function slice literal": "callbacks := [][]*func(m int){}; _ = callbacks",
+            "range over pointer function slice": "for range []*func(m int){} {}",
+            "literal returning pointer function slice": (
+                "callback := func() any { return []*func(m int){} }; _ = callback"
+            ),
+            "function field": "var holder struct{ callback func(m int) }; _ = holder",
+            "function type result": "var callback func()func(m int); _ = callback",
+            "literal returning function type": "callback := func()func(m int) { return nil }; _ = callback",
+            "literal with function-type parameter": "func(callback func(m int)) { m.Target() }(nil)",
+        }
+        for label, body in cases.items():
+            with self.subTest(case=label):
+                files = {
+                    "go.mod": b"module example.com/demo\n",
+                    "model/model.go": b"package model\nfunc Target() {}\n",
+                    "app/app.go": (
+                        'package app\nimport m "example.com/demo/model"\n'
+                        "func Run() { " + body + "; m.Target() }\n"
+                    ).encode(),
+                }
+                model = ReviewModel({})
+                analyze_go(files, files, model, set())
+                identities = {symbol["id"]: symbol["identity"] for symbol in model.symbols}
+                calls = [
+                    (identities[edge["source"]], identities[edge["target"]])
+                    for edge in model.edges if edge["kind"] == "calls"
+                ]
+                self.assertTrue(calls)
+                self.assertEqual({("go:app:app:Run", "go:model:model:Target")}, set(calls))
+
+    def test_binding_scan_handles_large_identifier_lists(self):
+        source = (
+            "package demo\nfunc Target() {}\nfunc Run() { values := []int{"
+            + ", ".join(f"v{index}" for index in range(40_000))
+            + "}; _ = values; Target() }\n"
+        )
+        analyzer = str(Path(__file__).parents[1] / "analyzer")
+        process = subprocess.run(
+            [sys.executable, "-c",
+             "import sys; sys.path.insert(0, sys.argv[1]); from go_graph import parse_go; "
+             "file, warning = parse_go('demo.go', sys.stdin.buffer.read()); "
+             "assert warning is None; print([call['name'] for call in file.calls])",
+             analyzer],
+            input=source.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            check=True, timeout=10,
+        )
+        self.assertEqual([b"['Target']"], process.stdout.splitlines())
+
+    def test_import_qualified_calls_do_not_resolve_to_methods(self):
+        files = {
+            "go.mod": b"module example.com/demo\n",
+            "model/model.go": b"package model\ntype Value struct{}\nfunc (v Value) Target() {}\n",
+            "app/app.go": b'package app\nimport m "example.com/demo/model"\nfunc Run() { m.Target() }\n',
+        }
+        model = ReviewModel({})
+        analyze_go(files, files, model, set())
+        self.assertEqual([], [edge for edge in model.edges if edge["kind"] == "calls"])
+
+    def test_function_calls_remain_resolved_when_methods_share_the_name(self):
+        files = {
+            "go.mod": b"module example.com/demo\n",
+            "model/model.go": (
+                b"package model\ntype Value struct{}\n"
+                b"func Target() {}\nfunc (v Value) Target() {}\n"
+            ),
+            "app/app.go": (
+                b'package app\nimport m "example.com/demo/model"\n'
+                b"type Resource struct{}\nfunc (r Resource) Target() {}\n"
+                b"func Target() {}\nfunc Recur() { Recur() }\n"
+                b"func Run(arg m . Value, callback func(m int)) { Target()\n m.Target() }\n"
+            ),
+        }
+        model = ReviewModel({})
+        analyze_go(files, files, model, set())
+        identities = {symbol["id"]: symbol["identity"] for symbol in model.symbols}
+        self.assertEqual({
+            ("go:app:app:Run", "go:app:app:Target", "Target", "unchanged"),
+            ("go:app:app:Run", "go:model:model:Target", "m.Target", "unchanged"),
+            ("go:app:app:Recur", "go:app:app:Recur", "Recur", "unchanged"),
+        }, {
+            (identities[edge["source"]], identities[edge["target"]], edge["detail"], edge["change"])
+            for edge in model.edges if edge["kind"] == "calls"
+        })
+
     def test_local_package_imports_files_types_and_cross_file_calls_are_linked(self):
         current = {
             "go.mod": b"module example.com/demo\n",
@@ -173,7 +392,11 @@ class GoAdapterTests(unittest.TestCase):
         self.assertTrue(any(node["kind"] == "interface" and node["name"] == "Reader"
                             for node in payload["nodes"]))
         self.assertTrue(any(edge["type"] == "imports" for edge in payload["edges"]))
-        self.assertTrue(any(edge["type"] == "calls" for edge in payload["edges"]))
+        identities = {symbol["id"]: symbol["identity"] for symbol in model.symbols}
+        self.assertEqual([("go:app:app:Run", "go:model:model:Value")], [
+            (identities[edge["source"]], identities[edge["target"]])
+            for edge in payload["edges"] if edge["type"] == "calls"
+        ])
         self.assertTrue(any(edge["level"] == "component" and edge["kind"] == "imports"
                             for edge in payload["aggregate_edges"]))
 

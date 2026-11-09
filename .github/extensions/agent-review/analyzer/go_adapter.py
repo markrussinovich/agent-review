@@ -44,7 +44,8 @@ class GoAdapter:
         )
         model.warnings.append(
             "Go saved-source analysis does not evaluate build tags, cgo, generated code, "
-            "interface dispatch, reflection, or generic type inference; unresolved relationships remain unknown."
+            "interface dispatch, reflection, or generic type inference. "
+            "Call edges without a resolved target are omitted."
         )
         analyze_go(snapshot.baseline, snapshot.current, model,
                    {item["name"] for item in dependencies["current"]},

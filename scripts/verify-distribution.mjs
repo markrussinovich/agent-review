@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { extensionPath } from "./build-distribution.mjs";
@@ -21,8 +21,22 @@ export async function verifyDistribution(extension) {
         "app.ts": "export function run(): number { const values = new Map<string, number>(); return values.size; }",
     } });
     assert(node.symbols.some((symbol) => symbol.name === "run"), "Bundled TypeScript did not analyze the snapshot.");
+    const { analyzeCppSnapshot } = await import(pathToFileURL(join(extension, "cpp-analyzer.mjs")));
+    const cpp = await analyzeCppSnapshot({ baseline: { "app.c": "int run(void) { return 1; }" },
+        current: { "app.c": "int run(void) { return 2; }",
+            "item.hpp": "struct Item { int get() { return 3; } };" } });
+    assert(cpp.symbols.some((symbol) => symbol.name === "run" && symbol.classification === "modified"),
+        "Bundled C grammar did not analyze the snapshot.");
+    assert(cpp.symbols.some((symbol) => symbol.kind === "method" && symbol.qualname === "Item::get"),
+        "Bundled C++ grammar did not analyze the snapshot.");
 
     const helper = join(extension, "dotnet-analyzer", "bin", "Release", "net10.0", "AgentReview.Dotnet.dll");
+    for (const name of ["Microsoft.CodeAnalysis.dll", "Microsoft.CodeAnalysis.CSharp.dll"]) {
+        const image = await readFile(join(dirname(helper), name));
+        // Portable IL reports i386; ReadyToRun images report the build machine's OS and CPU.
+        assert.equal(image.readUInt16LE(image.readUInt32LE(0x3c) + 4), 0x14c,
+            `${name} is precompiled for one platform; the release bundle must run on every OS and CPU.`);
+    }
     const { stdout } = await execute("dotnet", [helper, "--self-test"], options);
     assert.match(stdout, /PASS:/);
 
@@ -49,7 +63,7 @@ print("Bundled Python-to-Roslyn bridge passed.")
     assert(python, "Python 3.11+ was not found.");
     console.log(stdout.trim());
     console.log(python.stdout.trim());
-    console.log("Prepared distribution passed Node, C#, and Python bridge checks.");
+    console.log("Prepared distribution passed Node, C/C++, C#, and Python bridge checks.");
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

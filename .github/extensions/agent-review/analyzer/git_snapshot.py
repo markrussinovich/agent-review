@@ -247,7 +247,8 @@ class Snapshot:
     def source_files(self, changes: list[dict[str, object]], generated: set[str] | frozenset[str] = frozenset()) -> dict[str, dict[str, object]]:
         result: dict[str, dict[str, object]] = {}
         retain_baseline = any(
-            path.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".go", ".rs", ".md"))
+            path.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".go", ".rs", ".md",
+                                  ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".ipp", ".tpp", ".inl"))
             or path.rsplit("/", 1)[-1] in {"package.json", "go.mod", "go.sum", "Cargo.toml", "Cargo.lock"}
             for path in set(self.baseline) | set(self.current)
         )

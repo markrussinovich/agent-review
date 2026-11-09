@@ -11,9 +11,11 @@ namespace AgentReview;
 // dotnet build <trusted-extension>\dotnet-analyzer\AgentReview.DotnetAnalyzer.csproj -c Release
 //   /p:ImportDirectoryBuildProps=false /p:ImportDirectoryBuildTargets=false
 // The project disables those imports BEFORE explicit SDK props/targets imports, plus ancestor
-// Directory.Packages.props and NuGet feed auditing (no package dependencies). Preparation must
-// still run outside reviewed repositories (SDK/global.json/NuGet configuration/environment
-// resolution belongs to the trusted build host); deploy copied compiled output to the scanner.
+// Directory.Packages.props and NuGet feed auditing (source builds have no package dependencies;
+// release bundles set AgentReviewPortableRoslyn to use the pinned portable Roslyn package).
+// Preparation must still run outside reviewed repositories (SDK/global.json/NuGet
+// configuration/environment resolution belongs to the trusted build host); deploy copied
+// compiled output to the scanner.
 // Protocol: one JSON document on stdin or --input <request.json>, one JSON document on stdout.
 // Only the explicitly supplied request file is read; never reads reviewed source/project files.
 // --self-test runs dependency-free protocol, graph, configuration and decision regression tests.

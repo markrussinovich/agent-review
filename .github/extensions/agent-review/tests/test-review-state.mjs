@@ -42,6 +42,40 @@ test("annotation prefetch and foreground callers share a generation, persist its
     assert.equal(calls, 3);
 });
 
+test("committed unsupported files and their sections send late saved edits to the explanation provider", async () => {
+    const requests = [];
+    const state = new ReviewState("C:\\repo", {
+        generateAnnotation: async (context) => {
+            requests.push(context);
+            return "The saved return value changes from 10 to 20.";
+        },
+    });
+    const baseline = Array.from({ length: 300 }, (_, index) => `// line ${index + 1}`);
+    const current = [...baseline];
+    baseline[249] = "int limit() { return 10; }";
+    current[249] = "int limit() { return 20; }";
+    state.reviewTarget = { mode: "commit", currentRef: "saved-current" };
+    state.model = {
+        metadata: { base_sha: "saved-base", head_sha: "saved-current" }, summary: {}, warnings: [], coverage: {},
+        nodes: [], edges: [], evidence: {},
+        changes: [{ path: "src/native.cpp", status: "modified", lines_added: 1, lines_removed: 1,
+            current_lines: 300, baseline_lines: 300 }],
+        source_files: { "src/native.cpp": {
+            baseline: baseline.join("\n"), current: current.join("\n"),
+            diff: "@@ -250 +250 @@\n-int limit() { return 10; }\n+int limit() { return 20; }\n",
+        } },
+    };
+    for (const id of ["file:src/native.cpp", "section:file:src/native.cpp"]) {
+        const annotation = await state.annotationFor(id);
+        const code = requests.at(-1).code_context;
+        assert.match(code.base.ranges.map((range) => range.excerpt).join("\n"), /return 10/);
+        assert.match(code.current.ranges.map((range) => range.excerpt).join("\n"), /return 20/);
+        assert.match(code.diff, /\+int limit/);
+        assert.equal(annotation.source_scope.limits.unrelated_diff_hunks, 0);
+    }
+    assert.equal(requests.length, 2);
+});
+
 test("missing managed CLI reports a history error without discarding analysis or current context", async () => {
     const state = new ReviewState("C:\\repo", {
         currentSessionId: "current-session",

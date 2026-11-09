@@ -12,7 +12,8 @@ export function resolveSymbolReference(model, value, subject = null) {
             }
         };
         for (const node of model.nodes) {
-            if (!["class", "interface", "property", "function", "method"].includes(node.kind) || !node.path || !node.start_line) continue;
+            if (!["class", "interface", "property", "function", "method", "constructor", "destructor",
+                "operator", "lambda", "struct", "union", "enum", "type", "namespace"].includes(node.kind) || !node.path || !node.start_line) continue;
             add(node, [node.display_name, node.name, node.qualified_name]);
             for (const field of node.fields || []) {
                 add({ ...node, kind: "field", name: field.name, parent_id: node.id, start_line: field.line,

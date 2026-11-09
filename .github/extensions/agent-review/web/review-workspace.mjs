@@ -136,7 +136,7 @@ export function workspaceNavigation(model, data) {
         }
     }
     const roleOrder = { changed: 0, consumer: 1, "import-linked": 2, related: 3, test: 4, "name-matched test": 5, "unlinked test": 6, supporting: 7, generated: 8 };
-    const callable = new Set(["function", "method", "constructor", "class", "interface"]);
+    const callable = new Set(["function", "method", "constructor", "destructor", "operator", "lambda", "class", "interface"]);
     const changedSymbols = (path) => (model?.nodes || [])
         .filter((node) => node.path === path && node.change && node.change !== "unchanged" && callable.has(node.kind))
         .sort((a, b) => ((b.metrics?.lines_added || 0) + (b.metrics?.lines_removed || 0)) - ((a.metrics?.lines_added || 0) + (a.metrics?.lines_removed || 0)))
