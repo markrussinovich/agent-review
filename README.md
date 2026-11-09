@@ -1225,12 +1225,22 @@ Rust decision extraction identifies changed returns, panic-style exits, `?`
 propagation, loop breaks/continues, nearby conditions, and numeric thresholds.
 It statically links `#[test]` functions through resolved saved-source calls.
 **Run linked tests** is an explicit opt-in action that displays and invokes
-`cargo test --manifest-path <Cargo.toml> --locked -- <name> --exact --nocapture`
-for each linked test. Configure `test_cargo` in `.agent-review.json` or
+`cargo test --manifest-path <Cargo.toml> --locked <target> -- <name> --exact --nocapture`
+for each linked test. The target is pinned with `--lib`, `--bin <name>`,
+`--test <name>`, `--example <name>`, or `--bench <name>`. Executable names follow
+saved Cargo crate roots and declared inline/file modules, including literal
+`#[path]` overrides; source evidence IDs remain unchanged. Missing or ambiguous
+target/module mappings, conditional path attributes, required target features,
+and non-libtest harnesses disable execution with an explanation rather than
+guessing a filename prefix. Configure `test_cargo` in `.agent-review.json` or
 `AGENT_REVIEW_TEST_CARGO` when Cargo is not on PATH. Worktree source hashes are
 rechecked before every test; commit/PR runs use the disposable exact-snapshot
 export. Rust test fingerprints ignore a leading UTF-8 BOM and normalize CRLF
 to LF, matching Rust source loading; all other source content must match.
+Saved Cargo manifests are fingerprinted too, so target edits require reanalysis.
+The focused Rust regression suites (`test_rust*.py` and `test-rust-support.mjs`)
+include opt-in Cargo metadata and real selector execution checks; set
+`AGENT_REVIEW_EXECUTE_CARGO_TESTS=1` to run those checks locally (CI enables them).
 Runs are cancellable and report per-test outcomes. Cargo may download
 dependencies, compile and execute build scripts/procedural macros, build code,
 and execute repository tests; snapshot isolation is **not a sandbox**. Cargo

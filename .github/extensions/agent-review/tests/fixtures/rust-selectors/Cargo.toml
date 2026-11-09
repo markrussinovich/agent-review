@@ -1,0 +1,12 @@
+[package]
+name = "selectors"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "custom-cli"
+path = "custom/entry.rs"
+
+[[test]]
+name = "custom-test"
+path = "custom/test_entry.rs"

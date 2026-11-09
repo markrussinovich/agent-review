@@ -178,7 +178,12 @@ def build(payload: dict[str, Any]) -> dict[str, Any]:
         "verification": {"tests": verification_tests, "omitted_tests": 0,
                          "test_files_examined": len({test["path"] for test in new["tests"]}),
                          "limited": False},
-        "source_hashes": payload.get("source_hashes", {}),
+        "source_hashes": {
+            **payload.get("source_hashes", {}),
+            **{path: hashlib.sha256(text.removeprefix("\ufeff").replace("\r\n", "\n").encode()).hexdigest()
+               for path, text in payload.get("current", {}).items()
+               if Path(path).name == "Cargo.toml"},
+        },
     }
 
 

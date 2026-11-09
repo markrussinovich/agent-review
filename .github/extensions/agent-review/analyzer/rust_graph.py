@@ -13,6 +13,7 @@ from pathlib import PurePosixPath
 from typing import Any, Iterator
 
 from review_model import ReviewModel, stable_id
+from rust_test_targets import resolve_test_selectors
 
 
 ITEM_START = re.compile(
@@ -168,6 +169,27 @@ def _name(kind: str, head: str) -> str:
     return NAME.match(head.strip()).group(0)
 
 
+def _attributes(source: str, masked: str, start: int, kind_start: int) -> str:
+    # Include attached attributes separated from the item by whitespace/comments,
+    # not attributes belonging to an earlier function.
+    while True:
+        end = start
+        while end and masked[end - 1].isspace():
+            end -= 1
+        if not end or masked[end - 1] != "]":
+            break
+        depth, begin = 1, end - 2
+        while begin >= 0 and depth:
+            depth += (masked[begin] == "]") - (masked[begin] == "[")
+            begin -= 1
+        while begin >= 0 and masked[begin].isspace():
+            begin -= 1
+        if depth or begin < 0 or masked[begin] != "#":
+            break
+        start = begin
+    return source[start:kind_start]
+
+
 def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> dict[str, Any]:
     crates = _crates(files)
     symbols: dict[str, dict[str, Any]] = {}
@@ -209,7 +231,8 @@ def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> d
                         parent = candidate
             if kind == "impl":
                 item = {"kind": kind, "name": _name(kind, head), "head": head, "start": item_start,
-                        "open": open_brace, "end": end_offset, "parent": parent}
+                        "open": open_brace, "end": end_offset, "parent": parent,
+                        "kind_start": kind_start}
                 items.append(item)
                 continue
             symbol_kind = {"fn": "method" if parent and parent["kind"] in {"impl", "trait"} else "function",
@@ -227,7 +250,7 @@ def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> d
             signature_end = open_brace if open_brace is not None else header_end
             signature = " ".join(source[item_start:signature_end].split())
             snippet = source[item_start:end_offset + (1 if open_brace is not None else 0)]
-            attributes = source[max(0, source.rfind("\n", 0, item_start - 1)):item_start]
+            attributes = _attributes(source, masked, item_start, kind_start)
             record = {
                 "id": identifier, "identity": identity, "kind": symbol_kind, "name": name,
                 "qualname": qualname, "module": module, "path": path,
@@ -246,12 +269,12 @@ def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> d
                 owners.setdefault((module, name), identity)
             modules[module]["symbol_ids"].append(identifier)
             item = {"kind": kind, "name": name, "head": head, "start": item_start, "open": open_brace,
-                    "end": end_offset, "parent": parent, "identity": identity, "id": identifier}
+                    "end": end_offset, "parent": parent, "identity": identity, "id": identifier,
+                    "kind_start": kind_start, "attributes": attributes}
             items.append(item)
             if symbol_kind in {"function", "method"}:
-                attribute_source = source[max(0, item_start - 300):kind_start]
                 is_test = bool(re.search(r"#\s*\[\s*(?:tokio::)?test(?:\s*\([^]]*\))?\s*\]",
-                                         attribute_source))
+                                         attributes))
                 record["test"] = is_test
                 if is_test:
                     tests.append({"id": f"{path}::{qualname}", "name": qualname, "path": path,
@@ -259,6 +282,8 @@ def _scan_side(files: dict[str, bytes], dependencies: list[dict[str, Any]]) -> d
                                   "source_hash": hashlib.sha256(source.encode()).hexdigest()})
         parsed.append({"path": path, "source": source, "masked": masked, "module": module,
                        "module_id": module_id, "items": items, "crate": crate, "line": line})
+
+    resolve_test_selectors(files, parsed, tests)
 
     for file in parsed:
         local_modules = {

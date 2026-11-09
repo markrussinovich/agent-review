@@ -20,7 +20,7 @@ function buildCodePathRequest(model) {
         if (typeof saved.baseline === "string") baseline[path] = saved.baseline;
         if (typeof saved.current === "string") {
             current[path] = saved.current;
-            if (rust) source_hashes[path] = rustSourceHash(saved.current);
+            source_hashes[path] = rustSourceHash(saved.current);
         }
     }
     return { baseline, current, callables, source_hashes };

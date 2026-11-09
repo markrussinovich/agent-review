@@ -80,6 +80,14 @@ jobs:
         run: python -m unittest discover -s .github/extensions/agent-review/tests -p test_snapshot.py
       - name: Check Markdown structure and instruction evidence
         run: python -m unittest discover -s .github/extensions/agent-review/tests -p test_markdown_adapter.py
+      - name: Check Rust saved-syntax analysis and Cargo target mapping
+        env:
+          AGENT_REVIEW_EXECUTE_CARGO_TESTS: "1"
+        run: python -m unittest discover -s .github/extensions/agent-review/tests -p "test_rust*.py"
+      - name: Execute generated Rust exact selectors
+        env:
+          AGENT_REVIEW_EXECUTE_CARGO_TESTS: "1"
+        run: node --test .github/extensions/agent-review/tests/test-rust-support.mjs
       - name: Check document roles, prompts, and reviewer corrections
         run: node --test .github/extensions/agent-review/tests/test-markdown.mjs .github/extensions/agent-review/tests/test-language-adapters.mjs
       - name: Prepare locked language tooling
