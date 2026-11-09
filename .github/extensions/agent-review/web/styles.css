@@ -382,6 +382,7 @@ main { width: 100%; max-width: none; padding: 20px 20px 36px; }
 body.reviewing .review-navigation:not(.hidden) + .nav-pane-resize { display: block; top: var(--workflow-height); bottom: 0; left: calc(var(--workspace-navigation-width) - 4px); }
 body.reviewing.review-source-focus .nav-pane-resize { display: none !important; }
 body.reviewing .side-pane-resize:not(.hidden) { display: block; position: absolute; top: 0; bottom: 0; z-index: 6; }
+.side-pane-resize::after { inset: 0 auto 0 0; width: 1px; }
 .resizing-pane, .resizing-pane * { cursor: col-resize !important; user-select: none !important; }
 @media (max-width: 900px) { .pane-resize { display: none !important; } }
 .detail { border-left: 1px solid var(--cp-border); }
@@ -2299,13 +2300,13 @@ body.reviewing #source-panel { top: var(--workspace-top, var(--workflow-height))
 /* The originating-session transcript occupies the reading area beside the rail, so it is centered in what is visible. */
 body.reviewing #session-history-panel { top: var(--workspace-top, var(--workflow-height)); left: var(--workspace-navigation-width); z-index: 110; border-left: 1px solid var(--cp-border); }
 body.reviewing.review-source-focus #session-history-panel { left: 0; border-left: 0; }
-.file-review-footer { flex: 0 0 auto; display: grid; grid-template-columns: auto minmax(100px, 1fr) auto auto minmax(0, auto); gap: 6px; align-items: center; padding: 6px 12px; border-top: 1px solid var(--cp-border); background: var(--cp-surface); }
+.file-review-footer { flex: 0 0 auto; display: grid; grid-template-columns: auto minmax(100px, 1fr) auto auto minmax(0, auto) minmax(0, auto); gap: 6px; align-items: center; padding: 6px 12px; border-top: 1px solid var(--cp-border); background: var(--cp-surface); }
 .file-review-footer label { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
 #file-review-label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--cp-text-muted); }
 .file-review-footer input, .file-review-footer select, .file-review-footer button { min-width: 0; min-height: 32px; padding: 5px 8px; border: 1px solid var(--cp-border); border-radius: 6px; background: var(--cp-surface); color: var(--cp-text); }
 .file-review-footer button { cursor: pointer; }
 .file-review-footer button:disabled { opacity: .5; cursor: default; }
-#file-review-next { background: var(--cp-primary); border-color: var(--cp-primary); color: #fff; font-weight: 600; }
+#file-review-next { background: var(--cp-primary); border-color: var(--cp-primary); color: #fff; font-weight: 600; overflow-wrap: anywhere; }
 #file-review-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 #file-review-retry { grid-column: 1 / -1; justify-self: start; }
 .review-finish { margin: 16px auto; max-width: 1100px; padding: 20px; border: 1px solid var(--cp-border); border-radius: 6px; background: var(--cp-surface); }
@@ -2377,6 +2378,7 @@ body.reviewing.review-source-focus .source-body { grid-template-columns: minmax(
   body.reviewing #error:not(.hidden), body.reviewing #connection-notice:not(.hidden), body.reviewing #worktree-notice:not(.hidden) { left: 8px; right: 8px; }
   .file-review-footer { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .file-review-footer label, .file-review-footer input, #file-review-status { grid-column: 1 / -1; }
+  #file-review-next { grid-column: 1 / -1; }
   .file-review-footer label select { flex: 1; }
   #file-review-status:empty, #file-review-status[data-quiet="true"] { display: none; }
 }
@@ -2442,4 +2444,49 @@ body.reviewing.review-source-focus .source-body { grid-template-columns: minmax(
 
 .markdown-evidence button + button {
     margin-left: 8px;
+}
+
+/* Every view keeps its return control on the left and its exit on the right. */
+.graph-panel > .panel-heading, .source-panel > .panel-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+}
+body.reviewing .graph-panel > .panel-heading { display: grid; align-items: center; }
+body.reviewing:not(.workspace-exploring) .graph-panel > .panel-heading { display: none; }
+.view-toolbar, .source-panel > .panel-heading > .tablist { grid-column: 1 / -1; }
+.view-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.view-toolbar .graph-controls { flex: 1 1 auto; justify-content: flex-end; }
+.view-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.view-heading h2 { flex: 1; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.view-close, .view-back { flex: 0 0 auto; width: auto; min-height: 32px; padding: 5px 10px; white-space: nowrap; }
+.view-close, .view-back { margin-left: 0; border: 1px solid var(--cp-border); border-radius: 6px; background: var(--cp-surface); color: var(--cp-text); cursor: pointer; }
+.view-close { justify-self: end; }
+.view-close:hover, .view-back:hover { background: var(--cp-surface-soft); border-color: var(--cp-border-strong); }
+.source-heading { gap: 8px; width: auto; }
+.source-heading > div:last-child { flex: 1; }
+.graph-heading { width: auto; }
+.annotation-heading { align-items: flex-start; }
+.annotation-heading strong { flex: 1; min-width: 0; overflow-wrap: anywhere; text-align: left; }
+.annotation-heading > :not(strong) { flex-shrink: 0; }
+.detail-top h2, .custom-heading h2, .package-title-row h2 { min-width: 0; overflow-wrap: anywhere; }
+.custom-heading { gap: 12px; }
+.custom-heading > button { flex: 0 0 auto; }
+.session-history-panel .panel-heading { align-items: flex-start; gap: 8px; }
+.session-history-panel .panel-heading > div { flex: 1; min-width: 0; }
+.session-history-panel h2 { overflow-wrap: anywhere; }
+.detail-pane-heading { position: sticky; top: 0; z-index: 2; display: flex; justify-content: space-between; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--cp-border); background: var(--cp-surface); }
+.package-title-row .view-close { margin-left: auto; }
+.prompt-manager > .custom-heading { position: sticky; top: -20px; z-index: 2; padding-block: 8px; background: var(--cp-surface); }
+@media (max-width: 900px) {
+    body.reviewing .workspace:not(.detail-collapsed) .detail {
+        display: block;
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        overflow: auto;
+        background: var(--cp-surface);
+    }
+    .view-toolbar .graph-controls { justify-content: flex-start; }
 }

@@ -60,6 +60,8 @@ const state = {
     annotationDisclosures: new Map(),
     annotationView: null,
     annotationGeneration: null,
+    viewHistory: [],
+    sourceReturnView: null,
 };
 const elements = Object.fromEntries([
     "source-coverage", "source-position", "diff-layout", "source-strip", "source-strip-toggle", "source-strip-body", "overview-layers", "overview-stats", "overview-limitation",
@@ -71,8 +73,8 @@ const elements = Object.fromEntries([
     "workspace-discuss", "workspace-comment", "source-review-context", "source-origin",
     "explore-priorities", "explore-concerns", "explore-groups", "explore-architecture", "explore-paths", "explore-packages",
     "review-progress-status", "review-progress-retry", "review-progress-backup", "file-review-form", "file-review-label",
-    "file-review-disposition", "file-review-note", "file-review-save", "file-review-next", "file-review-status", "file-review-retry",
-    "group-review-dialog", "group-review-title", "group-review-scope", "group-review-error", "group-review-confirm", "group-review-cancel",
+    "file-review-disposition", "file-review-note", "file-review-save", "file-review-open-next", "file-review-next", "file-review-status", "file-review-retry",
+    "group-review-dialog", "group-review-title", "group-review-scope", "group-review-error", "group-review-confirm", "group-review-cancel", "group-review-close",
     "review-handoff", "handoff-close", "handoff-status", "handoff-error", "handoff-refresh", "handoff-markdown",
     "handoff-markdown-save", "handoff-state-save", "handoff-state-preview", "handoff-import-file", "handoff-import-preview",
     "handoff-import-confirm", "handoff-import-error", "handoff-provider", "handoff-provider-section", "handoff-verdict", "handoff-confirm-text", "handoff-provider-status", "handoff-provider-error", "handoff-confirm", "handoff-submit", "handoff-summary",
@@ -80,7 +82,7 @@ const elements = Object.fromEntries([
     "progress-bar", "summary", "breadcrumbs", "attention", "attention-count", "packages", "rail-resize", "workspace-nav-resize", "source-side-resize", "impact-view", "source-impact",
     "show-evidence", "show-discussion", "item-discussion", "sections-view", "source-section",
     "source-focus", "source-location", "review-command-open", "review-command-palette", "review-command-close", "review-command-query", "review-command-count", "review-command-results",
-    "graph", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail-toggle", "detail", "detail-close", "source-panel", "source-title",
+    "graph", "graph-close", "level-label", "graph-title", "zoom-out", "changed-only", "review-search", "detail-toggle", "detail", "detail-back", "detail-close", "source-panel", "source-title",
     "source-provenance", "source-decisions", "source-annotation", "source-risk", "source-close", "source", "source-ruler", "source-back", "source-forward",
     "session-history-panel", "session-history-title", "session-history-meta", "session-history-close", "session-transcript",
     "custom-analyses", "custom-results", "custom-manage", "prompt-manager", "prompt-manager-close",
@@ -160,6 +162,96 @@ function sourceScrollPosition() {
     return state.source?.scrollPosition || { top: 0, left: 0 };
 }
 
+function captureReturnFocus() {
+    let active = document.activeElement;
+    if (active?.closest(".workspace-explore")) active = document.querySelector(".workspace-explore > summary");
+    const selector = active?.id ? `#${CSS.escape(active.id)}`
+        : active?.dataset.nodeId ? `[data-node-id="${CSS.escape(active.dataset.nodeId)}"]`
+            : active?.dataset.reviewId ? `[data-review-id="${CSS.escape(active.dataset.reviewId)}"]` : null;
+    const tag = active?.tagName, className = active?.getAttribute("class"), text = active?.textContent;
+    return () => {
+        const visible = (element) => element?.isConnected && element.getClientRects().length;
+        const target = visible(active) ? active : (selector && document.querySelector(selector))
+            || (tag && [...document.querySelectorAll(tag)].find((element) => visible(element)
+                && element.getAttribute("class") === className && element.textContent === text));
+        if (visible(target)) target.focus({ preventScroll: true });
+    };
+}
+
+const RETURN_FIELDS = ["reviewPage", "exploring", "mode", "selected", "source", "sourceTab", "readingPane", "discussionMode",
+    "sourceFocused", "sourceFocusReturn", "areaGroup", "activeReviewGroup", "navigationMode", "navigationQuery", "navigationOpen", "navigationCursor",
+    "query", "changedOnly", "detailVisible", "attribution", "attributionStatus", "attributionMessage", "workspaceReturn", "sourceReturnView",
+    "packageSelectionClosed", "sectionFocus", "sourceReturnFocus", "sourceOriginItemId"];
+function captureViewReturn(kind = "view") {
+    const visibleSource = !elements.source_panel.classList.contains("hidden");
+    return {
+        kind, generation: state.payload?.review_generation,
+        values: Object.fromEntries(RETURN_FIELDS.map((key) => [key, state[key]])),
+        stack: [...state.stack], impact: state.impact && { ...state.impact },
+        sourceHistory: { ...state.sourceHistory, entries: [...state.sourceHistory.entries] },
+        visibleSource, focus: captureReturnFocus(),
+        scroll: [elements.graph, elements.review_navigation, elements.detail.parentElement, elements.source,
+            elements.source_panel.querySelector(".source-side")].map((element) => ({ element, top: element.scrollTop, left: element.scrollLeft })),
+        windowScroll: scrollY,
+        label: visibleSource ? state.source?.path : state.reviewPage === "overview" ? "Overview"
+            : state.reviewPage === "finish" ? "Finish" : state.stack.at(-1)?.name || collectionTitle(state.mode),
+    };
+}
+function rememberViewReturn(kind = "view") {
+    state.viewHistory.push(captureViewReturn(kind));
+}
+async function restoreViewReturn(saved) {
+    if (!saved || saved.generation !== state.payload?.review_generation) {
+        state.viewHistory = [];
+        elements.workflow_overview.click();
+        return;
+    }
+    state.selectionEpoch++;
+    sourceRenderVersion++;
+    Object.assign(state, saved.values);
+    state.stack = [...saved.stack];
+    state.impact = saved.impact && { ...saved.impact };
+    state.sourceHistory = { ...saved.sourceHistory, entries: [...saved.sourceHistory.entries] };
+    elements.workspace_search.value = state.navigationQuery || "";
+    elements.review_search.value = state.query || "";
+    elements.changed_only.checked = state.changedOnly;
+    elements.source_panel.classList.toggle("hidden", !saved.visibleSource);
+    setDiscussionMode(Boolean(saved.values.discussionMode));
+    setDetailVisible(Boolean(saved.values.detailVisible));
+    render();
+    if (state.selected && saved.values.detailVisible && state.mode !== "impact" && state.mode !== "packages") renderDetail(state.selected);
+    const epoch = state.selectionEpoch;
+    if (saved.visibleSource) {
+        if (!await renderSource() || epoch !== state.selectionEpoch) return;
+        if (saved.values.discussionMode && state.selected) {
+            await discussionPane.open(state.selected, state.payload.review_generation);
+            if (epoch !== state.selectionEpoch) return;
+        }
+        setSourceFocus(Boolean(saved.values.sourceFocused));
+    }
+    for (const { element, top, left } of saved.scroll) { element.scrollTop = top; element.scrollLeft = left; }
+    window.scrollTo({ top: saved.windowScroll, behavior: "instant" });
+    saved.focus();
+}
+function returnPreviousView({ close = false } = {}) {
+    if (close) while (state.viewHistory.at(-1)?.kind === "level") state.viewHistory.pop();
+    return restoreViewReturn(state.viewHistory.pop()).catch(showError);
+}
+function rememberSourceOrigin({ overview = false } = {}) {
+    if ((state.exploring || (overview && state.reviewPage !== "review")) && elements.source_panel.classList.contains("hidden")) {
+        state.sourceReturnView = captureViewReturn();
+        state.sourceHistory = { entries: [], index: -1, pending: -1 };
+    }
+}
+
+for (const dialog of document.querySelectorAll("dialog")) {
+    let restoreFocus;
+    dialog.addEventListener("beforetoggle", (event) => {
+        if (event.newState === "open") restoreFocus = captureReturnFocus();
+    });
+    dialog.addEventListener("close", () => restoreFocus?.());
+}
+
 function rememberWorkspaceSource() {
     if (!state.source || elements.source_panel.classList.contains("hidden")) return;
     state.workspaceReturn = {
@@ -180,6 +272,8 @@ async function returnWorkspaceSource({ code = false } = {}) {
         return;
     }
     state.reviewPage = "review";
+    state.viewHistory = [];
+    state.sourceReturnView = null;
     state.exploring = false;
     state.mode = "walkthrough";
     state.source = saved.source;
@@ -213,6 +307,8 @@ elements.workflow_overview.addEventListener("click", () => {
     state.selectionEpoch++;
     sourceRenderVersion++;
     rememberWorkspaceSource();
+    state.viewHistory = [];
+    state.sourceReturnView = null;
     setSourceFocus(false);
     state.reviewPage = "overview";
     state.navigationOpen = false;
@@ -270,12 +366,14 @@ document.querySelector(".workspace-explore").addEventListener("toggle", (event) 
 for (const [button, mode] of [[elements.explore_priorities, "walkthrough"], [elements.explore_concerns, "findings"], [elements.explore_groups, "sections"], [elements.explore_architecture, "graph"],
     [elements.explore_paths, "decisions"], [elements.explore_packages, "packages"]]) {
     button.addEventListener("click", () => {
+        rememberViewReturn();
         rememberWorkspaceSource();
         setSourceFocus(false);
         state.reviewPage = "review";
         state.exploring = true;
         state.mode = mode;
         state.stack = [];
+        clearSelection();
         state.source = null;
         elements.source_panel.classList.add("hidden");
         button.closest("details").open = false;
@@ -587,6 +685,9 @@ function renderWorkspaceNavigation() {
 }
 
 async function openWorkspaceFile(file, group = null) {
+    rememberCurrentSource();
+    state.viewHistory = [];
+    state.sourceReturnView = null;
     state.reviewPage = "review";
     state.exploring = false;
     state.readingPane = "code";
@@ -669,13 +770,20 @@ function setSourceFocus(active) {
         showError(new Error("Open a saved source range before focusing code."));
         return;
     }
+    const wasActive = Boolean(state.sourceFocused);
+    if (active && !wasActive) state.sourceFocusReturn = {
+        source: state.source, pane: state.readingPane, side: elements.source_panel.querySelector(".source-side").scrollTop,
+    };
+    const previous = !active && wasActive && state.sourceFocusReturn?.source === state.source ? state.sourceFocusReturn : null;
     state.sourceFocused = active;
     document.body.classList.toggle("review-source-focus", active);
     elements.source_focus.setAttribute("aria-pressed", String(active));
     elements.source_focus.textContent = active ? "Exit focus" : "Focus code";
     elements.source_focus.title = active ? "Exit focus mode (F or Esc)" : "Hide the rail and context; keep Mark & next (F)";
     if (active) state.readingPane = "code";
+    else if (previous) state.readingPane = previous.pane;
     renderWorkspaceShell();
+    if (previous) elements.source_panel.querySelector(".source-side").scrollTop = previous.side;
 }
 
 elements.source_focus.addEventListener("click", () => setSourceFocus(!state.sourceFocused));
@@ -1003,6 +1111,7 @@ function metric(label, value, detail, mode) {
     card.type = "button";
     card.append(el("strong", "", value ?? 0), el("span", "", label), el("small", "", detail));
     card.addEventListener("click", () => {
+        rememberViewReturn();
         rememberWorkspaceSource();
         state.reviewPage = "review";
         state.exploring = true;
@@ -1041,6 +1150,7 @@ function deltaMetric(label, added, removed, detail, mode, modified = null) {
     card.type = "button";
     card.append(value, el("span", "", label), el("small", "", detail));
     card.addEventListener("click", () => {
+        rememberViewReturn();
         rememberWorkspaceSource();
         state.reviewPage = "review";
         state.exploring = true;
@@ -1116,6 +1226,7 @@ function renderSummary(model) {
     if (qualityIssues.length) {
         const title = !model.coverage?.available && !warnings.length ? "Coverage unavailable" : "Analysis limitation";
         const openLimitations = () => {
+            if (state.reviewPage !== "review" || !state.exploring) rememberViewReturn();
             state.selected = {
                 id: "analysis-quality", kind: "analysis", name: "Analysis limitations",
                 reason: qualityIssues.join("\n"),
@@ -1771,10 +1882,12 @@ function renderFileReview() {
     }
     // A decision can only apply to a file whose source has finished loading.
     const disabled = !state.progressReady || savingDecision() || Boolean(state.pendingSource) || Boolean(state.advancing);
-    for (const element of [elements.file_review_disposition, elements.file_review_note, elements.file_review_save, elements.file_review_next]) element.disabled = Boolean(disabled);
+    for (const element of [elements.file_review_disposition, elements.file_review_note, elements.file_review_save, elements.file_review_open_next, elements.file_review_next]) element.disabled = Boolean(disabled);
     const verb = elements.file_review_disposition.value === "pending" ? "Mark reviewed"
         : elements.file_review_disposition.value === "follow-up" ? "Save follow-up" : "Save";
     const target = state.pendingSource || !state.sectionData ? undefined : nextFileLabel();
+    elements.file_review_open_next.textContent = target === null ? "Review summary" : "Next file";
+    elements.file_review_open_next.title = `${target ? `Opens ${target}` : target === null ? "Opens the review summary" : "Opens the next file"} without changing your review decision. Unsaved edits stay in this view's draft.`;
     elements.file_review_next.textContent = target === undefined ? `${verb} & next`
         : target ? `${verb} & next: ${target.split("/").at(-1)}` : `${verb} & finish`;
     elements.file_review_next.title = target ? `Then opens ${target} (M)` : target === null ? "Then opens the review summary (M)" : "Save and open the next file (M)";
@@ -1802,6 +1915,20 @@ function keepFileDraft() {
 }
 elements.file_review_disposition.addEventListener("change", keepFileDraft);
 elements.file_review_note.addEventListener("input", keepFileDraft);
+async function openNextFile() {
+    const source = state.source;
+    if (!source || elements.file_review_open_next.disabled || state.pendingSource || state.advancing) return;
+    state.advancing = true;
+    renderFileReview();
+    try {
+        await readySectionData();
+        if (state.source !== source) return;
+        await openFileReview(nextReviewEntry());
+    } finally {
+        setTimeout(() => { state.advancing = false; renderFileReview(); }, 350);
+    }
+}
+elements.file_review_open_next.addEventListener("click", () => openNextFile().catch(showError));
 async function saveCurrentFile(advance) {
     const source = state.source;
     if (!source || state.pendingSource || state.advancing) return;
@@ -1834,6 +1961,7 @@ elements.file_review_form.addEventListener("submit", (event) => {
     saveCurrentFile(true).catch(showError);
 });
 elements.group_review_cancel.addEventListener("click", () => elements.group_review_dialog.close());
+elements.group_review_close.addEventListener("click", () => elements.group_review_dialog.close());
 elements.group_review_confirm.addEventListener("click", async () => {
     const group = state.bulkReviewGroup;
     if (!group) return;
@@ -1854,6 +1982,7 @@ elements.group_review_confirm.addEventListener("click", async () => {
 });
 
 function openFinishReview() {
+    if (state.reviewPage !== "finish") rememberViewReturn();
     state.selectionEpoch++;
     sourceRenderVersion++;
     rememberWorkspaceSource();
@@ -1871,8 +2000,16 @@ function renderFinishReview() {
     if (!model || state.reviewPage !== "finish") return;
     const progress = fileReviewProgress(model, state.reviewLedger);
     const panel = elements.review_finish;
-    panel.replaceChildren(el("p", "eyebrow", "HUMAN REVIEW SUMMARY"),
-        el("h2", "", progress.pending || progress.followUp ? "Review has remaining work" : "Changed files marked reviewed"),
+    const heading = el("div", "view-heading");
+    const back = el("button", "view-back", "← Back");
+    back.type = "button";
+    back.addEventListener("click", () => returnPreviousView());
+    const close = el("button", "view-close", "Close");
+    close.type = "button";
+    close.setAttribute("aria-label", "Close review summary");
+    close.addEventListener("click", () => returnPreviousView());
+    heading.append(back, el("h2", "", progress.pending || progress.followUp ? "Review has remaining work" : "Changed files marked reviewed"), close);
+    panel.replaceChildren(el("p", "eyebrow", "HUMAN REVIEW SUMMARY"), heading,
         el("p", "", `${progress.reviewed} of ${countLabel(progress.total, "changed file")} reviewed · ${progress.pending} not reviewed · ${progress.followUp} need follow-up`),
         el("p", "muted", "Human review decisions do not prove correctness, resolve concerns, complete AI analysis or establish test coverage."));
     const navigation = layeredNavigation();
@@ -2188,6 +2325,7 @@ function markSelectedCards() {
 }
 
 function openImpact(item = state.selected) {
+    rememberViewReturn();
     rememberWorkspaceSource();
     setSourceFocus(false);
     state.reviewPage = "review";
@@ -2256,7 +2394,7 @@ function renderImpact(model, focus = null) {
     for (const gap of slice.gaps) controls.append(el("p", "muted", gap));
     const graph = el("div", "impact-graph");
     elements.graph.append(controls, graph);
-    renderGraph(graph, slice.nodes, slice.edges, (item) => {
+    const selectImpact = (item) => {
         if (state.selected?.id !== item.id) setDiscussionMode(false);
         state.selected = item;
         renderDetail(item);
@@ -2290,9 +2428,11 @@ function renderImpact(model, focus = null) {
         evidence.append(actions);
         if (item.impact_role === "Related test") evidence.append(el("p", "muted", "Static test relationship. Execution of this affected behavior is not established by this graph."));
         elements.detail.append(evidence);
-    }, { viewport: true, focusId: options.seed,
+    };
+    renderGraph(graph, slice.nodes, slice.edges, selectImpact, { viewport: true, focusId: options.seed,
         emptyText: `No saved static relationships were found for ${model.nodes.find((node) => node.id === options.seed)?.name
             || String(options.seed || "this item").replace(/^file:/, "")}. Non-code files and isolated changes have no impact graph.` });
+    if (state.selected && state.detailVisible) selectImpact(state.selected);
     if (focus === "direction" || (focus === "expand" && expand.disabled)) direction.focus({ preventScroll: true });
     else if (focus === "expand") expand.focus({ preventScroll: true });
     else if (options.pendingFocus) {
@@ -2302,7 +2442,7 @@ function renderImpact(model, focus = null) {
 }
 
 elements.impact_view.addEventListener("click", () => {
-    if (state.mode === "impact") { state.mode = "graph"; render(); }
+    if (state.mode === "impact") returnPreviousView();
     else openImpact();
 });
 elements.source_impact.addEventListener("click", () => {
@@ -2347,6 +2487,7 @@ function openSections(location = null) {
         (current || layer.querySelector("summary")).focus({ preventScroll: true });
         return;
     }
+    rememberViewReturn();
     state.sectionFocus = location;
     state.mode = "sections";
     state.query = "";
@@ -2568,7 +2709,7 @@ function renderSections(model) {
 }
 
 elements.sections_view.addEventListener("click", () => {
-    if (state.mode === "sections") { state.mode = "walkthrough"; render(); }
+    if (state.mode === "sections") returnPreviousView();
     else openSections();
 });
 elements.source_section.addEventListener("click", () => {
@@ -2578,6 +2719,7 @@ elements.source_section.addEventListener("click", () => {
 
 function openReviewItem(item) {
     if (item.collect_mode) {
+        rememberViewReturn();
         state.mode = item.collect_mode;
         state.stack = [];
         clearSelection();
@@ -2678,6 +2820,7 @@ function renderScopeFindings(model, parent, findings) {
 }
 
 function resetToGraph() {
+    rememberViewReturn();
     state.mode = "graph";
     state.stack = [];
     clearSelection();
@@ -2687,6 +2830,7 @@ function resetToGraph() {
 }
 
 function resetToWalkthrough() {
+    rememberViewReturn();
     state.mode = "walkthrough";
     state.stack = [];
     clearSelection();
@@ -2717,6 +2861,7 @@ function renderBreadcrumbs() {
         const button = el("button", "", item.name || item.qualified_name);
         button.type = "button";
         button.addEventListener("click", () => {
+            rememberViewReturn("level");
             state.stack = state.stack.slice(0, index + 1);
             clearSelection();
             render();
@@ -2743,6 +2888,7 @@ function maybeDrill(item) {
             selectItem(item, true);
             return;
         }
+        rememberViewReturn("level");
         state.stack.push(item);
         clearSelection();
         render();
@@ -3249,9 +3395,11 @@ function ruleCitations(content, path) {
 }
 
 async function openRuleFile(path, ranges, side = "current") {
+    rememberSourceOrigin({ overview: true });
+    rememberCurrentSource();
     const epoch = ++state.selectionEpoch;
     try {
-        await loadSource(`path=${encodeURIComponent(path)}&side=${side}`, epoch, side, "reset", { highlights: ranges });
+        await loadSource(`path=${encodeURIComponent(path)}&side=${side}`, epoch, side, "push", { highlights: ranges });
     } catch (error) {
         if (epoch === state.selectionEpoch) showError(error);
     }
@@ -3460,6 +3608,7 @@ function clearSelection() {
     state.areaGroup = null;
     markSelectedCards();
     renderEmptyDetail();
+    setDetailVisible(false);
 }
 
 function setDetailVisible(visible) {
@@ -3470,26 +3619,44 @@ function setDetailVisible(visible) {
     detectHostResize();
 }
 
-async function loadSource(query, epoch, preferredTab = null, nav = "reset", extras = {}) {
+async function loadSource(query, epoch, preferredTab = null, nav = "push", extras = {}, { preserveContext = false } = {}) {
     const source = await api(`/api/source?${query}`);
     if (epoch !== state.selectionEpoch) return false;
     const attribution = await fetchAttribution(source.path, epoch);
     if (epoch !== state.selectionEpoch) return false;
+    const side = elements.source_panel.querySelector(".source-side");
+    const contextScroll = preserveContext ? { top: side.scrollTop, left: side.scrollLeft } : null;
+    const preserveAnnotation = preserveContext && state.source?.path === source.path;
     state.source = { ...source, ...extras, reviewItem: state.selected };
-    state.readingPane = "code";
+    if (!preserveContext) state.readingPane = "code";
     state.attribution = attribution;
     state.sourceTab = source.declaration_highlight?.side === "base" ? "base"
         : preferredTab || (source.diff ? "diff" : "current");
     recordSourceNavigation(nav, { query, extras, tab: state.sourceTab, label: `${source.path}${source.start_line ? `:${source.start_line}` : ""}` });
-    if (!await renderSource() || epoch !== state.selectionEpoch) return false;
+    if (!await renderSource({ preserveAnnotation }) || epoch !== state.selectionEpoch) return false;
     if (state.clientError) {
         state.clientError = null;
         if (!state.payload?.error) elements.error.classList.add("hidden");
     }
-    const side = elements.source_panel.querySelector(".source-side");
-    side.scrollTop = 0;
-    side.scrollLeft = 0;
+    if (contextScroll) {
+        side.scrollTop = contextScroll.top;
+        side.scrollLeft = contextScroll.left;
+    } else {
+        side.scrollTop = 0;
+        side.scrollLeft = 0;
+    }
     return true;
+}
+
+function rememberCurrentSource() {
+    const entry = state.sourceHistory.entries[state.sourceHistory.index];
+    if (!entry || !state.source || elements.source_panel.classList.contains("hidden")) return;
+    entry.reading = {
+        source: state.source, selected: state.source.reviewItem, tab: state.sourceTab,
+        pane: state.readingPane, discussion: state.discussionMode, group: state.activeReviewGroup,
+        attribution: state.attribution, attributionStatus: state.attributionStatus, attributionMessage: state.attributionMessage,
+        scroll: { ...sourceScrollPosition(), side: elements.source_panel.querySelector(".source-side").scrollTop },
+    };
 }
 
 function recordSourceNavigation(mode, entry) {
@@ -3524,10 +3691,35 @@ async function navigateSource(delta) {
     const target = history.index + delta;
     const entry = history.entries[target];
     if (!entry) return;
+    rememberCurrentSource();
     history.pending = target;
     const epoch = ++state.selectionEpoch;
     try {
-        await loadSource(entry.query, epoch, entry.tab, "replay", entry.extras || {});
+        if (!entry.reading) {
+            await loadSource(entry.query, epoch, entry.tab, "replay", entry.extras || {});
+            return;
+        }
+        const saved = entry.reading;
+        state.source = saved.source;
+        state.selected = saved.selected;
+        state.sourceTab = saved.tab;
+        state.readingPane = saved.pane;
+        state.activeReviewGroup = saved.group;
+        state.attribution = saved.attribution;
+        state.attributionStatus = saved.attributionStatus;
+        state.attributionMessage = saved.attributionMessage;
+        history.index = target;
+        history.pending = -1;
+        setDiscussionMode(Boolean(saved.discussion));
+        render();
+        if (!await renderSource() || epoch !== state.selectionEpoch) return;
+        if (saved.discussion && saved.selected) {
+            await discussionPane.open(saved.selected, state.payload.review_generation);
+            if (epoch !== state.selectionEpoch) return;
+        }
+        elements.source.scrollTop = saved.scroll.top;
+        elements.source.scrollLeft = saved.scroll.left;
+        elements.source_panel.querySelector(".source-side").scrollTop = saved.scroll.side;
     } catch (error) {
         if (epoch === state.selectionEpoch) showError(error);
     }
@@ -3561,6 +3753,8 @@ async function refreshAttribution() {
 }
 
 async function selectFile(change, annotate = true) {
+    rememberSourceOrigin();
+    rememberCurrentSource();
     rememberSourceReturnFocus();
     setDiscussionMode(false);
     const epoch = ++state.selectionEpoch;
@@ -3594,6 +3788,8 @@ function focusStillAtOpener(opener) {
 }
 
 async function selectItem(item, notify = true, annotate = true) {
+    rememberSourceOrigin();
+    rememberCurrentSource();
     const sourceOpener = document.activeElement;
     const keepSourceFocus = elements.source_panel.contains(sourceOpener);
     rememberSourceReturnFocus();
@@ -3733,9 +3929,13 @@ function renderProvenance() {
 }
 
 async function openSessionHistory(attribution) {
+    const restoreFocus = captureReturnFocus();
+    const epoch = state.selectionEpoch;
     try {
         const history = await api(`/api/session-history?session_id=${encodeURIComponent(attribution.session_id)}`);
+        if (epoch !== state.selectionEpoch) return;
         state.highlightedPromptEventId = attribution.prompt_event_id;
+        state.sessionHistoryReturnFocus = restoreFocus;
         elements.session_history_title.textContent = history.summary || "Session transcript";
         elements.session_history_meta.textContent = [
             history.working_directory,
@@ -3793,6 +3993,7 @@ async function openSessionHistory(attribution) {
         flushTools();
         elements.session_transcript.replaceChildren(fragment);
         elements.session_history_panel.classList.remove("hidden");
+        elements.session_history_close.focus({ preventScroll: true });
         requestAnimationFrame(() => highlighted?.scrollIntoView({ block: "center" }));
     } catch (error) {
         showError(error);
@@ -3878,6 +4079,8 @@ function sourceReferenceButton(label, reference, title = null) {
 }
 
 async function openSourceReference(reference, { focus = false, tab = reference.side || "current", nav = "push" } = {}) {
+    rememberSourceOrigin({ overview: true });
+    rememberCurrentSource();
     rememberSourceReturnFocus();
     const epoch = ++state.selectionEpoch;
     const query = new URLSearchParams({ path: reference.path });
@@ -4222,11 +4425,7 @@ function renderDetail(item) {
     const panel = elements.detail;
     panel.replaceChildren();
     const top = el("div", "detail-top");
-    const back = el("button", "link-button detail-back", "← Change brief");
-    back.type = "button";
-    back.addEventListener("click", clearSelection);
     top.append(
-        back,
         el("p", "eyebrow", String(item.kind || item.type || "EVIDENCE").replaceAll("_", " ").toUpperCase()),
         el("h2", "", item.display_name || item.name || item.title || item.id),
     );
@@ -4709,7 +4908,7 @@ async function cachedSourceRows(source, tab, isCurrent) {
     return entry;
 }
 
-async function renderSource({ preserveScroll = false } = {}) {
+async function renderSource({ preserveScroll = false, preserveAnnotation = false } = {}) {
     if (!state.source) return;
     state.reviewPage = "review";
     if (!state.readingPane) state.readingPane = "code";
@@ -4724,6 +4923,7 @@ async function renderSource({ preserveScroll = false } = {}) {
     state.navigationCursor = { path: source.path, group: state.activeReviewGroup || null };
     renderWorkspaceShell();
     elements.source_title.textContent = `${state.source.path}${state.source.start_line ? `:${state.source.start_line}` : ""}`;
+    elements.source_title.title = elements.source_title.textContent;
     renderSourcePosition(state.source.path);
     elements.source_section.classList.toggle("hidden", !(state.payload?.model?.changes || [])
         .some((change) => change.path === state.source.path && change.status !== "unchanged"));
@@ -4822,10 +5022,12 @@ async function renderSource({ preserveScroll = false } = {}) {
     const annotation = state.payload?.annotations?.[state.selected?.id];
     const selectedPath = state.selected?.path || state.payload?.model?.nodes?.find((node) =>
         node.id === (state.selected?.node_id || state.selected?.id))?.path;
-    if (annotation && selectedPath === state.source.path) renderAnnotation(state.selected, annotation);
-    else if (selectedPath === state.source.path && state.annotationRequests.has(`${state.payload.review_generation}:${state.selected?.id}`)) {
-        renderAnnotation(state.selected, null, true);
-    } else if (!renderSectionEvidence()) elements.source_annotation.classList.add("hidden");
+    if (!preserveAnnotation) {
+        if (annotation && selectedPath === state.source.path) renderAnnotation(state.selected, annotation);
+        else if (selectedPath === state.source.path && state.annotationRequests.has(`${state.payload.review_generation}:${state.selected?.id}`)) {
+            renderAnnotation(state.selected, null, true);
+        } else if (!renderSectionEvidence()) elements.source_annotation.classList.add("hidden");
+    }
     renderSourceRisk();
     renderSourceCoverage();
     renderSourceDecisions();
@@ -4936,9 +5138,11 @@ function layerVerifyBlock(layer) {
             open.type = "button";
             open.title = `Open ${test.path}:${test.line}`;
             open.addEventListener("click", async () => {
+                rememberSourceOrigin();
+                rememberCurrentSource();
                 const epoch = ++state.selectionEpoch;
                 try {
-                    if (await loadSource(`path=${encodeURIComponent(test.path)}&line=${test.line}&side=current`, epoch, "current", "reset")
+                    if (await loadSource(`path=${encodeURIComponent(test.path)}&line=${test.line}&side=current`, epoch, "current", "push")
                         && epoch === state.selectionEpoch) elements.source.focus({ preventScroll: true });
                 } catch (error) { if (epoch === state.selectionEpoch) showError(error); }
             });
@@ -5817,6 +6021,8 @@ function decisionCounts(item) {
 }
 
 async function openDecision(callable, entry, { select = true, focus = false } = {}) {
+    rememberSourceOrigin();
+    rememberCurrentSource();
     const node = state.payload?.model?.nodes.find((candidate) => candidate.id === callable.id);
     if (select && node) {
         state.selected = node;
@@ -5828,8 +6034,8 @@ async function openDecision(callable, entry, { select = true, focus = false } = 
     const side = entry.status === "removed" ? "base" : "current";
     const query = `path=${encodeURIComponent(callable.path)}&line=${decision.line}&end=${decision.end_line || decision.line}&side=${side}`;
     try {
-        const loaded = await loadSource(query, epoch, side, select ? "reset" : "push");
-        if (loaded && state.selected) ensureAnnotation(state.selected, epoch);
+        const loaded = await loadSource(query, epoch, side, "push", {}, { preserveContext: !select });
+        if (loaded && select && state.selected) ensureAnnotation(state.selected, epoch);
         if (loaded && focus && epoch === state.selectionEpoch) elements.source.focus({ preventScroll: true });
     } catch (error) {
         if (epoch === state.selectionEpoch) showError(error);
@@ -6069,8 +6275,10 @@ function renderLinkedTests(map) {
         const outcome = outcomeFor(test.id);
         if (outcome) row.append(el("span", `label test-outcome outcome-${outcome}`, outcome));
         row.addEventListener("click", async () => {
+            rememberSourceOrigin();
+            rememberCurrentSource();
             const epoch = ++state.selectionEpoch;
-            try { await loadSource(`path=${encodeURIComponent(test.path)}&line=${test.line}&side=current`, epoch, "current", "reset"); }
+            try { await loadSource(`path=${encodeURIComponent(test.path)}&line=${test.line}&side=current`, epoch, "current", "push"); }
             catch (error) { if (epoch === state.selectionEpoch) showError(error); }
         });
         list.append(row);
@@ -6417,6 +6625,7 @@ function packageEntry(item) {
 }
 
 function openPackage(item) {
+    if (state.mode !== "packages") rememberViewReturn();
     state.mode = "packages";
     state.stack = [];
     state.query = "";
@@ -6427,6 +6636,7 @@ function openPackage(item) {
 }
 
 function selectPackage(item) {
+    state.packageSelectionClosed = false;
     state.selectionEpoch += 1;
     state.selected = item;
     markSelectedCards();
@@ -6526,8 +6736,10 @@ function renderPackageView(model) {
     const current = changes.find((item) => item.id === state.selected?.id);
     if (current) {
         renderPackagePanel();
-    } else {
+    } else if (!state.packageSelectionClosed) {
         selectPackage(changes[0]);
+    } else {
+        renderPackagePanel();
     }
     restoreControlFocus(elements.graph, focused);
 }
@@ -6602,6 +6814,18 @@ function renderPackagePanel() {
     const header = el("header", "package-header");
     const titleRow = el("div", "package-title-row");
     titleRow.append(el("h2", "", item.name), el("span", `label label-${item.change}`, item.change));
+    const close = el("button", "view-close", "Close");
+    close.type = "button";
+    close.setAttribute("aria-label", "Close package details");
+    close.addEventListener("click", () => {
+        state.selected = null;
+        state.packageSelectionClosed = true;
+        renderPackagePanel();
+        const row = [...elements.graph.querySelectorAll(".package-row")].find((row) => row.dataset.package === item.id);
+        row?.classList.remove("is-selected");
+        row?.focus({ preventScroll: true });
+    });
+    titleRow.append(close);
     const declared = (item.declared_current?.[0] || item.declared_base?.[0]);
     header.append(
         titleRow,
@@ -7149,13 +7373,14 @@ function renderView() {
     workspace.classList.toggle("walkthrough-mode", state.mode === "walkthrough");
     workspace.classList.toggle("impact-mode", state.mode === "impact");
     workspace.classList.toggle("sections-mode", state.mode === "sections");
-    elements.zoom_out.disabled = state.mode === "graph" && state.stack.length === 0;
-    elements.zoom_out.title = state.mode !== "graph" ? "Back to architecture" : parent ? `Back from ${parent.name}` : "Already at architecture level";
-    elements.zoom_out.textContent = state.mode === "walkthrough" ? "Architecture" : "← Back";
+    elements.zoom_out.disabled = !state.viewHistory.length && state.stack.length === 0;
+    elements.zoom_out.title = state.viewHistory.length ? `Back to ${state.viewHistory.at(-1).label} (Alt+←)` : "Back (Alt+←)";
+    elements.zoom_out.textContent = "← Back";
+    elements.graph_close.title = `Close ${collectionTitle(state.mode)} and return to ${state.viewHistory.findLast((entry) => entry.kind !== "level")?.label || "Overview"}`;
     elements.impact_view.setAttribute("aria-pressed", String(state.mode === "impact"));
-    elements.impact_view.textContent = state.mode === "impact" ? "Structure" : "Impact";
+    elements.impact_view.textContent = "Impact";
     elements.sections_view.setAttribute("aria-pressed", String(state.mode === "sections"));
-    elements.sections_view.textContent = state.mode === "sections" ? "Attention" : "Sections";
+    elements.sections_view.textContent = "Sections";
     renderWorkspaceNavigation();
     renderWorkspaceShell();
     if (state.reviewPage === "review" && state.exploring && state.mode === "findings") {
@@ -7317,7 +7542,9 @@ elements.cancel_analysis.addEventListener("click", async () => {
     }
 });
 elements.zoom_out.addEventListener("click", () => {
-    if (state.mode !== "graph") {
+    if (state.viewHistory.length) {
+        returnPreviousView();
+    } else if (state.mode !== "graph") {
         resetToGraph();
     } else if (state.stack.length) {
         state.stack.pop();
@@ -7329,12 +7556,18 @@ elements.zoom_out.addEventListener("click", () => {
         render();
     }
 });
+elements.graph_close.addEventListener("click", () => returnPreviousView({ close: true }));
 elements.changed_only.addEventListener("change", () => {
     state.changedOnly = elements.changed_only.checked;
     clearSelection();
     render();
 });
-elements.detail_close.addEventListener("click", () => setDetailVisible(false));
+elements.detail_close.addEventListener("click", () => {
+    setDetailVisible(false);
+    const node = [...elements.graph.querySelectorAll(".node")].find((node) => node.dataset.nodeId === state.selected?.id);
+    (node || elements.detail_toggle).focus({ preventScroll: true });
+});
+elements.detail_back.addEventListener("click", () => elements.detail_close.click());
 elements.detail_toggle.addEventListener("click", () => setDetailVisible(!state.detailVisible));
 elements.review_search.addEventListener("input", () => {
     state.query = elements.review_search.value.trim();
@@ -7361,9 +7594,16 @@ window.addEventListener("keydown", (event) => {
         elements.session_history_close.click();
         return;
     }
+    if (event.key === "Escape" && state.exploring && elements.source_panel.classList.contains("hidden")) {
+        if (event.target.closest?.("input, textarea, select, [contenteditable='true']")) return;
+        event.preventDefault();
+        if (state.detailVisible) elements.detail_close.click();
+        else elements.graph_close.click();
+        return;
+    }
     if (event.key === "Escape" && !elements.source_panel.classList.contains("hidden")) {
         // Over an Explore lens the source is an overlay, so Esc returns to the lens. In Review, Esc never leaves the file:
-        // it clears the highlighted range, and Close × remains the way to close it.
+        // it clears the highlighted range, and Close remains the way to close it.
         if (state.reviewPage !== "review" || state.exploring) {
             elements.source_close.click();
             return;
@@ -7381,7 +7621,7 @@ window.addEventListener("keydown", (event) => {
         navigateSource(event.key === "ArrowLeft" ? -1 : 1);
         return;
     }
-    if (event.altKey && event.key === "ArrowLeft" && (state.stack.length || state.mode !== "graph")) {
+    if (event.altKey && event.key === "ArrowLeft" && (state.viewHistory.length || state.stack.length || state.mode !== "graph")) {
         event.preventDefault();
         elements.zoom_out.click();
         return;
@@ -7557,7 +7797,7 @@ function positionSideResize() {
     const visible = Boolean(side && body && document.body.classList.contains("reviewing") && side.offsetWidth > 0
         && getComputedStyle(body).display === "grid" && !document.body.classList.contains("review-source-focus"));
     handle.classList.toggle("hidden", !visible);
-    if (visible) handle.style.left = `${side.offsetLeft - 4}px`;
+    if (visible) handle.style.left = `${side.offsetLeft}px`;
 }
 
 function wirePaneResize(name, handle) {
@@ -7612,6 +7852,10 @@ window.addEventListener("resize", () => {
     }
 });
 elements.source_close.addEventListener("click", () => {
+    if (state.sourceReturnView) {
+        restoreViewReturn(state.sourceReturnView).catch(showError);
+        return;
+    }
     rememberWorkspaceSource();
     setSourceFocus(false);
     setDiscussionMode(false);
@@ -7670,6 +7914,7 @@ elements.session_history_close.addEventListener("click", () => {
     elements.session_history_panel.classList.add("hidden");
     elements.session_transcript.replaceChildren();
     state.highlightedPromptEventId = null;
+    state.sessionHistoryReturnFocus?.();
 });
 document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
     state.sourceTab = tab.dataset.tab;
@@ -7688,6 +7933,10 @@ function updateReviewApply() {
 }
 
 function resetReviewNavigation() {
+    state.sourceFocusReturn = null;
+    state.viewHistory = [];
+    state.sourceReturnView = null;
+    state.packageSelectionClosed = false;
     state.annotationDisclosures.clear();
     state.annotationView = null;
     state.annotationGeneration = null;
