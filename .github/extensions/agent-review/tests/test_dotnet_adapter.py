@@ -13,7 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parents[1] / "analyzer"))
 from dotnet_adapter import DOTNET_ADAPTER, dotnet_input_path, helper_path, run_dotnet_helper
 from dotnet_decisions import normalize_code_paths
-from language_adapters import AnalysisSnapshot, active_adapters
+from language_adapters import AdapterUnavailable, AnalysisSnapshot, active_adapters
 from review_model import ReviewModel
 
 
@@ -21,10 +21,10 @@ class DotnetAdapterTests(unittest.TestCase):
     def test_malformed_manifest_cannot_fabricate_dependency_removals(self):
         baseline = {"App.csproj": b'<Project><ItemGroup><PackageReference Include="Foo" Version="1.0" /></ItemGroup></Project>'}
         snapshot = AnalysisSnapshot(Path("."), baseline, {"App.csproj": b"<Project>"}, None, True, False)
-        with self.assertRaisesRegex(ValueError, "current manifest App.csproj contains invalid XML"):
+        with self.assertRaisesRegex(AdapterUnavailable, "current manifest App.csproj contains invalid XML"):
             DOTNET_ADAPTER.dependencies(snapshot, [])
         snapshot = AnalysisSnapshot(Path("."), {}, {"Directory.Packages.props": b"<NotProject/>"}, None, True, False)
-        with self.assertRaisesRegex(ValueError, "Project XML root"):
+        with self.assertRaisesRegex(AdapterUnavailable, "Project XML root"):
             DOTNET_ADAPTER.dependencies(snapshot, [])
 
     def test_no_cache_disables_helper_persistence_without_mutating_environment(self):

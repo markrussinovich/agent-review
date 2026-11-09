@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import gzip
 import io
 import json
+import subprocess
 import sys
 from typing import Any, TextIO
 
@@ -11,7 +13,7 @@ from churn import analyze_churn
 from codeboarding_adapter import load_codeboarding
 from generated_sources import generated_paths
 from git_snapshot import create_snapshot, discover_base, discover_repo, run_git
-from language_adapters import AnalysisSnapshot, active_adapters, merge_coverage
+from language_adapters import AdapterUnavailable, AnalysisSnapshot, LanguageAdapter, active_adapters, merge_coverage
 from review_model import ReviewModel
 
 
@@ -77,15 +79,41 @@ def build_review(
             + (f"; {len(changed):,} changed, e.g. {changed[0]}, remain reviewable as files." if changed else "; none changed in this review.")
         )
     adapters = active_adapters(analysis_snapshot)
+    # Stage whole-language contributions so a later failure cannot leave partial facts behind.
+    contributions = {
+        adapter.id: ReviewModel(copy.deepcopy(model.repository), changes=copy.deepcopy(model.changes),
+                                source_files=copy.deepcopy(model.source_files))
+        for adapter in adapters
+    }
+    unavailable: list[dict[str, str]] = []
+
+    def adapter_failed(adapter: LanguageAdapter, phase: str, error: Exception) -> None:
+        contributions.pop(adapter.id)
+        reason = " ".join(str(error).split())[:600] or type(error).__name__
+        unavailable.append({"language": adapter.id, "phase": phase, "reason": reason})
+        name = {"node": "JavaScript / TypeScript", "csharp": "C#", "cpp": "C/C++"}.get(
+            adapter.id, adapter.id.capitalize())
+        warning = (
+            f"{name} facts unavailable: {phase} failed: {reason} "
+            "Graph, package usage and coverage facts for this language were omitted; source diffs remain available."
+        )
+        model.warnings.append(warning)
+        print(f"agent-review {adapter.id} {phase}: {error}", file=sys.stderr, flush=True)
+        progress("adapter_unavailable", warning, graph_percent)
+
+    graph_percent = 32
     progress("dependencies", "Comparing package declarations and project version pins", 32)
-    dependencies = {}
     for adapter in adapters:
-        declarations = adapter.dependencies(analysis_snapshot, model.warnings)
-        dependencies[adapter.id] = declarations
-        for key in ("baseline", "current", "changes"):
-            model.packages[key].extend(declarations[key])
+        facts = contributions[adapter.id]
+        try:
+            facts.packages = adapter.dependencies(analysis_snapshot, facts.warnings)
+        except (AdapterUnavailable, OSError, subprocess.SubprocessError) as error:
+            adapter_failed(adapter, "dependencies", error)
     graph_percent = 42
     for adapter in adapters:
+        if adapter.id not in contributions:
+            continue
+        facts = contributions[adapter.id]
         progress(adapter.graph_phase, adapter.graph_message, graph_percent)
 
         def graph_progress(message: str, percent: int) -> None:
@@ -93,15 +121,53 @@ def build_review(
             graph_percent = max(graph_percent, percent)
             progress(adapter.graph_phase, message, graph_percent)
 
-        adapter.scan(analysis_snapshot, model, dependencies[adapter.id], graph_progress)
-    if any(adapter.id != "python" for adapter in adapters):
-        model.repository["review_languages"] = [adapter.id for adapter in adapters]
+        try:
+            adapter.scan(analysis_snapshot, facts, facts.packages, graph_progress)
+        except (AdapterUnavailable, OSError, subprocess.SubprocessError) as error:
+            adapter_failed(adapter, "scan", error)
     progress("relationships", "Resolving package usage and aggregate architecture edges", 68)
+    graph_percent = 68
     for adapter in adapters:
-        adapter.resolve_package_usage(model, dependencies[adapter.id])
+        if adapter.id not in contributions:
+            continue
+        facts = contributions[adapter.id]
+        try:
+            adapter.resolve_package_usage(facts, facts.packages)
+        except (AdapterUnavailable, OSError, subprocess.SubprocessError) as error:
+            adapter_failed(adapter, "package usage", error)
     progress("coverage", "Loading coverage and changed executable-line data", 76)
-    coverage_reports = [adapter.coverage(analysis_snapshot) for adapter in adapters]
+    graph_percent = 76
+    for adapter in adapters:
+        if adapter.id not in contributions:
+            continue
+        facts = contributions[adapter.id]
+        try:
+            facts.coverage = adapter.coverage(analysis_snapshot)
+        except (AdapterUnavailable, OSError, subprocess.SubprocessError) as error:
+            adapter_failed(adapter, "coverage", error)
+    coverage_reports = []
+    for facts in contributions.values():
+        model.repository.update(facts.repository)
+        for path, saved in facts.source_files.items():
+            model.source_files.setdefault(path, {}).update(saved)
+        for key in ("symbols", "edges", "evidence", "warnings"):
+            getattr(model, key).extend(getattr(facts, key))
+        for key, values in facts.aggregates.items():
+            model.aggregates.setdefault(key, []).extend(values)
+        for key in ("baseline", "current", "changes"):
+            model.packages[key].extend(facts.packages[key])
+        model.code_paths.update(facts.code_paths)
+        model.instruction_documents.update(facts.instruction_documents)
+        coverage_reports.append(facts.coverage)
+    if unavailable or any(adapter.id != "python" for adapter in adapters):
+        model.repository["review_languages"] = [adapter.id for adapter in adapters]
+    if unavailable:
+        model.repository["analysis_incomplete"] = True
+        model.repository["unavailable_languages"] = unavailable
     model.coverage = merge_coverage(coverage_reports)
+    if unavailable:
+        model.coverage = {**model.coverage, "incomplete": True,
+                          "unavailable_languages": [item["language"] for item in unavailable]}
     for report in coverage_reports:
         model.warnings.extend(report.get("warnings", []))
     if current_arg:

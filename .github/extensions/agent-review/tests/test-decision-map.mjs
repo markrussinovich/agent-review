@@ -38,6 +38,28 @@ const map = {
     ],
 };
 
+test("unavailable graph languages keep healthy decisions and explicit incomplete evidence", async () => {
+    const requests = [];
+    const state = new ReviewState(".", { runDecisions: async (request) => {
+        requests.push(request.adapter_id);
+        return { callables: [{ id: "run", path: "main.py" }], totals: { added: 1 }, warnings: [] };
+    } });
+    try {
+        state.model = {
+            metadata: { unavailable_languages: [{ language: "csharp", phase: "scan", reason: "helper failed" }] },
+            symbols: [{ id: "run", kind: "function", path: "main.py", classification: "added", qualname: "run" }],
+            source_files: { "main.py": { current: "def run(): return 1" } }, nodes: [], changes: [],
+        };
+        await state.startDecisionMap();
+        assert.deepEqual(requests, ["python"]);
+        assert.equal(state.decisionMap.status, "complete");
+        assert.equal(state.decisionMap.limited, true);
+        assert.equal(state.decisionMap.verification.limited, true);
+        assert.deepEqual(state.decisionMap.callables.map((callable) => callable.id), ["run"]);
+        assert.match(state.decisionMap.warnings[0], /csharp code paths unavailable.*helper failed/);
+    } finally { await state.dispose(); }
+});
+
 test("decision presentation keeps conditional gates, order, and totals explicit", () => {
     assert.deepEqual(decisionConditions(map.callables[0].entries[1].decision).map((part) => part.label), ["when", "only if", "per"]);
     const text = decisionText(map.callables[1].entries[0], "pkg/hybrid.py");

@@ -260,6 +260,32 @@ explanations and clickable saved source/project locations. Baseline/current and
 target-framework labels distinguish their scope; unresolved graph links are
 not automatically classified as runtime bugs.
 
+If a language's tooling or authoritative input fails, its dependency, graph,
+package-usage and coverage contribution is discarded together and an immediate
+progress message identifies the failed phase. **Analysis limitations** explains
+which language's facts are unavailable and why; other languages, saved source
+diffs and Copilot review remain available. Missing facts are not successful
+zero-usage or zero-coverage results.
+Adapter-failure notes stay readable in narrow reviewing layouts through a
+scoped detail overlay; Close or Escape returns focus to **Show details** without
+discarding healthy source or annotations. Saved models mark
+`metadata.analysis_incomplete` and list `metadata.unavailable_languages`;
+coverage retains healthy reports with `incomplete` and `unavailable_languages`.
+Unavailable languages are not retried by code-path extraction. Repository and
+snapshot failures, cancellation and unexpected scanner/invariant errors remain
+fatal rather than being disguised as language limitations.
+
+The focused failure regression is
+`python -m unittest discover -s .github\extensions\agent-review\tests -p test_adapter_failures.py`.
+For the production limitation UI, set `AGENT_REVIEW_UX_REPO` to a real
+mixed-language repository with a changed JavaScript/TypeScript file, optionally
+`AGENT_REVIEW_UX_BASE`, and run
+`node .github\extensions\agent-review\tests\browser\adapter-failures.mjs`
+with the browser tooling/artifact settings below. It deliberately fails a
+trusted helper process, checks healthy facts, saved diffs and AI request
+availability, and captures light/dark, narrow and source screenshots.
+Its controlled AI response verifies availability and context, not model quality.
+
 ### Follow code paths
 
 The **Code paths** metric maps how each changed production function behaves:
@@ -765,8 +791,9 @@ Roslyn assemblies with the extension (not its cache), or set
 `AGENT_REVIEW_DOTNET_HELPER` to the built `AgentReview.Dotnet.dll`.
 Prepare it in a trusted development checkout or a separate owned tooling
 directory, never inside an untrusted repository being reviewed.
-`AGENT_REVIEW_DOTNET` selects the analysis runtime. Missing tooling fails with an
-actionable message; it does not silently fall back to pretend semantics.
+`AGENT_REVIEW_DOTNET` selects the analysis runtime. Missing tooling makes C#
+facts unavailable with an actionable limitation, without blocking other
+languages or silently falling back to pretend semantics.
 Python-only reviews do not start a compiler or .NET process.
 
 Syntax content facts use a bounded .NET-specific cache (256 entries, 16 MiB

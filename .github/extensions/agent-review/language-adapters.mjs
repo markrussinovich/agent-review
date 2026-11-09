@@ -26,10 +26,12 @@ export function sourceAdapter(path) {
 // Requests stay per-language so each compiler resolves only its own symbols and project configuration.
 export function buildCodePathRequests(model, repoRoot, adapters = REVIEW_ADAPTERS) {
     const ids = new Set();
+    const unavailable = new Set((model.metadata?.unavailable_languages || []).map((item) => item.language));
     const requests = [];
     for (const adapter of adapters) {
         if (ids.has(adapter.id)) throw new Error(`Duplicate review adapter: ${adapter.id}.`);
         ids.add(adapter.id);
+        if (unavailable.has(adapter.id)) continue;
         const request = adapter.buildCodePathRequest(model, repoRoot);
         if (request) requests.push({ ...request, adapter_id: adapter.id });
     }

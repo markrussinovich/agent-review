@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from language_adapters import AnalysisSnapshot
+from language_adapters import AdapterUnavailable, AnalysisSnapshot
 from review_model import ReviewModel, stable_id
 
 
@@ -35,7 +35,7 @@ def run_dotnet_helper(
 ) -> dict[str, Any]:
     helper = helper_path()
     if not helper.is_file():
-        raise RuntimeError(
+        raise AdapterUnavailable(
             f"C# analysis requires the prepared Roslyn helper: {helper}. "
             "Install .NET SDK 10 and build the extension's trusted "
             "dotnet-analyzer\\AgentReview.DotnetAnalyzer.csproj with dotnet build -c Release "
@@ -69,19 +69,19 @@ def run_dotnet_helper(
                         if on_wait:
                             on_wait(time.monotonic() - started)
         except FileNotFoundError as error:
-            raise RuntimeError("C# analysis requires dotnet on PATH or AGENT_REVIEW_DOTNET; "
+            raise AdapterUnavailable("C# analysis requires dotnet on PATH or AGENT_REVIEW_DOTNET; "
                                "install a local .NET 10 runtime/SDK. No reviewed code was executed.") from error
         except subprocess.TimeoutExpired as error:
-            raise RuntimeError("Roslyn snapshot analysis exceeded 120 seconds; reduce snapshot scope.") from error
+            raise AdapterUnavailable("Roslyn snapshot analysis exceeded 120 seconds; reduce snapshot scope.") from error
         if result.returncode:
-            raise RuntimeError(f"Roslyn snapshot analysis failed (exit {result.returncode}): "
+            raise AdapterUnavailable(f"Roslyn snapshot analysis failed (exit {result.returncode}): "
                                f"{result.stderr[-6000:]}")
         try:
             value = json.loads(result.stdout)
         except json.JSONDecodeError as error:
-            raise RuntimeError(f"Roslyn helper returned invalid JSON: {result.stderr[-2000:]}") from error
+            raise AdapterUnavailable(f"Roslyn helper returned invalid JSON: {result.stderr[-2000:]}") from error
         if not isinstance(value, dict):
-            raise RuntimeError("Roslyn helper output must be a JSON object.")
+            raise AdapterUnavailable("Roslyn helper output must be a JSON object.")
         return value
 
 
@@ -123,11 +123,11 @@ class DotnetAdapter:
                 try:
                     root = ET.fromstring(data)
                 except ET.ParseError as error:
-                    raise ValueError(f"Cannot compare NuGet declarations: {side} manifest {path} "
+                    raise AdapterUnavailable(f"Cannot compare NuGet declarations: {side} manifest {path} "
                                      f"contains invalid XML ({error}). Use a valid manifest/comparison "
                                      "before assessing dependency changes.") from error
                 if root.tag.rsplit("}", 1)[-1] != "Project":
-                    raise ValueError(f"Cannot compare NuGet declarations: {side} manifest {path} "
+                    raise AdapterUnavailable(f"Cannot compare NuGet declarations: {side} manifest {path} "
                                      "must have a Project XML root.")
         baseline = parse_dotnet_packages(snapshot.baseline, warnings)
         current = parse_dotnet_packages(snapshot.current, warnings)

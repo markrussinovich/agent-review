@@ -80,3 +80,14 @@ test("code path maps merge without losing per-language identities or evidence li
     assert.deepEqual(result.warnings, ["References missing"]);
     assert.throws(() => mergeCodePathMaps([python, { ...csharp, callables: [{ id: "python:run" }] }]), /duplicate callable ID/);
 });
+
+test("unavailable languages are not retried during code path extraction", () => {
+    const seen = [];
+    const adapters = ["python", "csharp"].map((id) => ({
+        id, buildCodePathRequest: () => { seen.push(id); return { files: [id] }; },
+    }));
+    const model = { metadata: { unavailable_languages: [{ language: "csharp", phase: "scan", reason: "helper failed" }] } };
+    assert.deepEqual(buildCodePathRequests(model, "repo", adapters), [{ files: ["python"], adapter_id: "python" }]);
+    assert.deepEqual(seen, ["python"]);
+    assert.throws(() => buildCodePathRequests(model, "repo", [adapters[1], adapters[1]]), /Duplicate review adapter/);
+});
