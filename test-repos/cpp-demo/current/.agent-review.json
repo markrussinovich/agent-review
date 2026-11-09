@@ -1,0 +1,5 @@
+{
+  "base_ref": "HEAD",
+  "test_cpp": "native-tests.exe",
+  "test_cpp_build": ["node", "build-tests.mjs"]
+}

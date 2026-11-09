@@ -336,7 +336,7 @@ class GoAdapterTests(unittest.TestCase):
             input=source.encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             check=True, timeout=10,
         )
-        self.assertEqual(b"['Target']\n", process.stdout)
+        self.assertEqual([b"['Target']"], process.stdout.splitlines())
 
     def test_import_qualified_calls_do_not_resolve_to_methods(self):
         files = {

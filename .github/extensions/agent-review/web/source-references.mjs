@@ -1,5 +1,5 @@
 export const SOURCE_FILE_EXTENSION_PATTERN =
-    "csproj|cs|slnx?|props|targets|py|go|rs|mod|sum|lock|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html";
+    "csproj|cs|slnx?|props|targets|py|go|rs|c|C|cc|cpp|cxx|h|hh|hpp|hxx|ipp|tpp|inl|mod|sum|lock|toml|txt|json|ya?ml|md|[cm]?[jt]sx?|css|html";
 
 export function parseSourceReference(value) {
     const tagged = /^(base|current):(.+)$/.exec(value.trim());
@@ -10,6 +10,7 @@ export function parseSourceReference(value) {
     const expression = new RegExp(
         `^((?:[A-Za-z0-9_.-]+[\\\\/])*[A-Za-z0-9_.-]+\\.(?:${SOURCE_FILE_EXTENSION_PATTERN}))`
         + "(?::(\\d+(?:-\\d+)?(?:,\\d+(?:-\\d+)?)*))?$",
+        "i",
     );
     const match = expression.exec(value.trim());
     if (!match) return null;
