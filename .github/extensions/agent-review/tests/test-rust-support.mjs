@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { reviewAdapter, sourceAdapter, testAdapterForMap } from "../language-adapters.mjs";
@@ -13,6 +13,8 @@ import { cargoTestCommand, cargoTestPlan, formatCargoTestCommand, runCargoTests,
 import { exportSnapshot } from "../test-run.mjs";
 import { isReviewSymbol, isTestPath, languageForPath } from "../web/languages.mjs";
 import { packageEvidenceLinks } from "../web/package-presentation.mjs";
+
+const libTarget = { kind: "lib", name: "fixture", path: "src/lib.rs" };
 
 test("Rust language, symbols, test paths, and review adapter are registered", () => {
     assert.equal(languageForPath("src/lib.rs").id, "rust");
@@ -35,16 +37,32 @@ test("Cargo linked-test plan uses an exact locked command and advertises executi
         verification: { tests: [{
             id: "src/lib.rs::tests::checks_changed", name: "tests::checks_changed",
             path: "src/lib.rs", manifest: "Cargo.toml", link: "direct",
+            cargo_target: libTarget,
         }] },
     };
     const plan = cargoTestPlan(map, "C:\\repo");
     assert.equal(plan.reason, null);
     assert.match(plan.prerequisites, /build scripts\/procedural macros/);
     assert.deepEqual(cargoTestCommand({ executable: "cargo" }, plan), [
-        "cargo", "test", "--manifest-path", ".\\Cargo.toml", "--locked", "--",
+        "cargo", "test", "--manifest-path", `.${sep}Cargo.toml`, "--locked", "--lib", "--",
         "tests::checks_changed", "--exact", "--nocapture",
     ]);
     assert.match(formatCargoTestCommand({ executable: "cargo" }, plan), /--locked/);
+});
+
+test("Cargo plans reject ambiguous and legacy selectors instead of guessing", async () => {
+    for (const extra of [{}, { cargo_target: libTarget, selector_error: "Multiple module paths." }]) {
+        const plan = cargoTestPlan({
+            status: "complete", verification: { tests: [{
+                id: "src/app.rs::checks", name: "checks", path: "src/app.rs",
+                manifest: "Cargo.toml", link: "direct", ...extra,
+            }] },
+        }, "C:\\repo");
+        assert.ok(plan.reason);
+        assert.match(formatCargoTestCommand({ executable: "cargo" }, plan), /Unavailable/);
+        assert.throws(() => cargoTestCommand({ executable: "cargo" }, plan));
+        await assert.rejects(runCargoTests({ repoRoot: "C:\\repo", python: { executable: "cargo" }, plan }));
+    }
 });
 
 test("Rust review fingerprints normalize BOM and CRLF without changing saved evidence", () => {
@@ -85,7 +103,7 @@ test("historical Rust runs accept checkout CRLF but still reject source edits", 
         const plan = {
             manifest: "Cargo.toml", tests: ["src/lib.rs::tests::checks_changed"],
             rust_tests: [{ id: "src/lib.rs::tests::checks_changed", name: "tests::checks_changed",
-                path: "src/lib.rs", manifest: "Cargo.toml" }],
+                path: "src/lib.rs", manifest: "Cargo.toml", cargo_target: libTarget }],
             source_hashes: { "src/lib.rs": rustSourceHash(source) },
         };
         const run = () => runCargoTests({ repoRoot: exported, python: { executable: process.execPath }, plan });
@@ -131,7 +149,7 @@ test("opt-in Cargo runner verifies source and records exact test outcomes", asyn
         const plan = {
             manifest: "Cargo.toml", tests: ["src/lib.rs::tests::checks_changed"],
             rust_tests: [{ id: "src/lib.rs::tests::checks_changed", name: "tests::checks_changed",
-                path: "src/lib.rs", manifest: "Cargo.toml" }],
+                path: "src/lib.rs", manifest: "Cargo.toml", cargo_target: libTarget }],
             source_hashes: { "src/lib.rs": createHash("sha256").update(source).digest("hex") },
         };
         const result = await runCargoTests({
@@ -161,7 +179,7 @@ test("cancelling an owned Cargo run stops the test process without outcomes", { 
         const plan = {
             manifest: "Cargo.toml", tests: ["src/lib.rs::tests::slow"],
             rust_tests: [{ id: "src/lib.rs::tests::slow", name: "tests::slow",
-                path: "src/lib.rs", manifest: "Cargo.toml" }],
+                path: "src/lib.rs", manifest: "Cargo.toml", cargo_target: libTarget }],
             source_hashes: { "src/lib.rs": createHash("sha256").update(source).digest("hex") },
         };
         pending = runCargoTests({ repoRoot: root, python: { executable: "node" }, plan, signal: controller.signal });
@@ -171,6 +189,92 @@ test("cancelling an owned Cargo run stops the test process without outcomes", { 
     } finally {
         controller.abort(new DOMException("Fixture cleanup", "AbortError"));
         await pending?.catch(() => {});
+        await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+});
+
+test("generated Cargo exact selectors execute root and declared-module tests in pinned targets", {
+    skip: process.env.AGENT_REVIEW_EXECUTE_CARGO_TESTS !== "1", timeout: 300_000,
+}, async () => {
+    const extension = dirname(dirname(fileURLToPath(import.meta.url)));
+    const fixture = join(extension, "tests", "fixtures", "rust-selectors");
+    const root = await mkdtemp(join(tmpdir(), "agent-review-rust-selectors-"));
+    const exec = promisify(execFile);
+    try {
+        await cp(fixture, root, { recursive: true });
+        const current = {};
+        async function load(directory, prefix = "") {
+            for (const entry of await readdir(directory, { withFileTypes: true })) {
+                const path = prefix + entry.name;
+                if (entry.isDirectory()) await load(join(directory, entry.name), `${path}/`);
+                else current[path] = await readFile(join(directory, entry.name), "utf8");
+            }
+        }
+        await load(root);
+        const request = reviewAdapter("rust").buildCodePathRequest({
+            symbols: [{ id: "placeholder", language: "rust", kind: "function", classification: "modified",
+                name: "changed", qualname: "changed", path: "src/lib.rs" }],
+            source_files: Object.fromEntries(Object.entries(current).map(([path, text]) => [path, { current: text }])),
+        });
+        const input = join(root, "review-input.json");
+        await writeFile(input, JSON.stringify(request));
+        const script = [
+            "import json,sys", "sys.path.insert(0,sys.argv[1])",
+            "from rust_graph import _scan_side", "from rust_decisions import build",
+            "payload=json.load(open(sys.argv[2],encoding='utf-8'))",
+            "facts=_scan_side({p:t.encode() for p,t in payload['current'].items()},[])",
+            "symbol=next(s for s in facts['symbols'].values() if s['name']=='changed')",
+            "payload['callables']=[{'id':symbol['id'],'qualname':'changed'}]",
+            "json.dump(build(payload),sys.stdout)",
+        ].join("\n");
+        const { stdout } = await exec(process.env.AGENT_REVIEW_PYTHON || "python",
+            ["-c", script, join(extension, "analyzer"), input], { windowsHide: true });
+        const map = { ...JSON.parse(stdout), status: "complete", adapter_id: "rust" };
+        const plan = cargoTestPlan(map, root);
+        assert.equal(plan.reason, null);
+        assert.equal(plan.rust_tests.length, 24);
+        assert.ok(plan.source_hashes["Cargo.toml"], "Cargo target declarations must be pinned too");
+        assert.ok(plan.rust_tests.some((test) => test.name === "app::tests::nonroot_checks"));
+        const runtime = { executable: process.env.AGENT_REVIEW_TEST_CARGO || "cargo" };
+        const result = await runCargoTests({ repoRoot: root, python: runtime, plan });
+        assert.equal(result.exit_code, 0, result.output);
+        assert.equal(Object.values(result.trace.tests).filter((test) => test.outcome === "passed").length, 24, result.output);
+        assert.equal((result.output.match(/running 1 test\b/g) || []).length, 24, result.output);
+        assert.doesNotMatch(result.output, /wrong Cargo target/);
+        const wrong = await exec(runtime.executable, [
+            "test", "--manifest-path", join(root, "Cargo.toml"), "--locked", "--lib", "--",
+            "tests::nonroot_checks", "--exact", "--nocapture",
+        ], { windowsHide: true });
+        assert.match(wrong.stdout, /running 0 tests/, "reproduce the issue's missing-module selector");
+        await writeFile(join(root, "Cargo.toml"), `${current["Cargo.toml"]}\n# target declaration edit\n`);
+        await assert.rejects(runCargoTests({ repoRoot: root, python: runtime, plan }), /source changed: Cargo.toml/);
+        const customRoot = join(root, "custom-library");
+        const customFiles = {
+            "Cargo.toml": '[package]\nname="custom-library"\nversion="0.1.0"\nedition="2021"\n'
+                + '[lib]\nname="renamed_library"\npath="roots/entry.rs"\n',
+            "Cargo.lock": 'version=4\n[[package]]\nname="custom-library"\nversion="0.1.0"\n',
+            "roots/entry.rs": "pub fn changed() -> bool { true }\nmod worker;\n"
+                + "#[test]\nfn root_checks() { assert!(changed()); }\n",
+            "roots/worker.rs": "#[test]\nfn module_checks() { assert!(crate::changed()); }\n",
+        };
+        for (const [path, source] of Object.entries(customFiles)) {
+            await mkdir(dirname(join(customRoot, path)), { recursive: true });
+            await writeFile(join(customRoot, path), source);
+        }
+        await writeFile(input, JSON.stringify({
+            current: customFiles, source_hashes: Object.fromEntries(Object.entries(customFiles)
+                .filter(([path]) => path.endsWith(".rs") || path === "Cargo.toml")
+                .map(([path, source]) => [path, rustSourceHash(source)])),
+        }));
+        const custom = await exec(process.env.AGENT_REVIEW_PYTHON || "python",
+            ["-c", script, join(extension, "analyzer"), input], { windowsHide: true });
+        const customPlan = cargoTestPlan({ ...JSON.parse(custom.stdout), status: "complete" }, customRoot);
+        assert.equal(customPlan.reason, null);
+        assert.deepEqual(customPlan.rust_tests.map((test) => test.name).sort(), ["root_checks", "worker::module_checks"]);
+        const customResult = await runCargoTests({ repoRoot: customRoot, python: runtime, plan: customPlan });
+        assert.equal(customResult.exit_code, 0, customResult.output);
+        assert.equal(Object.values(customResult.trace.tests).filter((test) => test.outcome === "passed").length, 2, customResult.output);
+    } finally {
         await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
 });
