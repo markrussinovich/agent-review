@@ -124,24 +124,154 @@ function flatten(node, operator) {
     return ts.isBinaryExpression(node) && node.operatorToken.kind === operator
         ? [...flatten(node.left, operator), ...flatten(node.right, operator)] : [node];
 }
-function terminates(node) {
+const throwingAnalysis = new WeakMap();
+function localThrowingCalls(source) {
+    if (throwingAnalysis.has(source)) return throwingAnalysis.get(source);
+    const { checker } = snapshotProgram([{ path: source.fileName, current: source.text, source }]);
+    const symbol = (node) => checker.getSymbolAtLocation(node);
+    const written = new Set(), helpers = new Map(), proof = new Map();
+    let strict = !!source.externalModuleIndicator;
+    for (const node of source.statements) {
+        if (!ts.isExpressionStatement(node) || !ts.isStringLiteral(node.expression)) break;
+        if (node.expression.text === "use strict") strict = true;
+    }
+    let dynamicScope = false;
+    const write = (node) => {
+        node = unwrap(node);
+        if (!node) return;
+        if (ts.isIdentifier(node)) written.add(symbol(node));
+        else if (ts.isArrayLiteralExpression(node)) node.elements.forEach(write);
+        else if (ts.isObjectLiteralExpression(node)) node.properties.forEach((property) => {
+            if (ts.isShorthandPropertyAssignment(property)) written.add(checker.getShorthandAssignmentValueSymbol(property));
+            else write(ts.isPropertyAssignment(property) ? property.initializer : property.expression);
+        });
+        else if (ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) write(node.expression);
+        else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) write(node.left);
+    };
+    walk(source, (node) => {
+        if (ts.isWithStatement(node) || ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+            && node.expression.text === "eval" && !symbol(node.expression)?.declarations?.length) dynamicScope = true;
+        if (!strict && ts.isFunctionDeclaration(node) && !ts.isSourceFile(node.parent)
+            && !(ts.isBlock(node.parent) && isCallable(node.parent.parent) && node.parent.parent.body === node.parent)) dynamicScope = true;
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+            && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) write(node.left);
+        if ((ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node))
+            && [ts.SyntaxKind.PlusPlusToken, ts.SyntaxKind.MinusMinusToken].includes(node.operator)) write(node.operand);
+        if ((ts.isForOfStatement(node) || ts.isForInStatement(node)) && !ts.isVariableDeclarationList(node.initializer)) write(node.initializer);
+        if (!node.body || node.asteriskToken || node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)) return;
+        let name, declaration;
+        if (ts.isFunctionDeclaration(node) && node.name && (ts.isSourceFile(node.parent) || ts.isBlock(node.parent))) {
+            name = node.name; declaration = node;
+        } else if ((ts.isFunctionExpression(node) || ts.isArrowFunction(node))
+            && ts.isVariableDeclaration(node.parent) && ts.isIdentifier(node.parent.name)
+            && node.parent.parent.flags & ts.NodeFlags.Const) {
+            name = node.parent.name; declaration = node.parent;
+        }
+        const binding = name && symbol(name);
+        if (binding && binding.declarations?.every((item) => item === declaration
+            || ts.isFunctionDeclaration(item) && !item.body)) helpers.set(binding, { fn: node, declaration });
+    });
+    const union = (...sets) => new Set(sets.flatMap((set) => [...set]));
+    const sequence = (nodes, depth) => {
+        let outcomes = new Set(["normal"]);
+        for (const node of nodes) {
+            if (!outcomes.delete("normal")) break;
+            outcomes = union(outcomes, flow(node, depth));
+        }
+        return outcomes;
+    };
+    const pure = (node) => {
+        let safe = true;
+        walk(node, (child) => {
+            if (ts.isCallExpression(child) || ts.isNewExpression(child) || ts.isAwaitExpression(child)
+                || ts.isYieldExpression(child) || ts.isTaggedTemplateExpression(child)) safe = false;
+        }, true);
+        return safe;
+    };
+    const isThrowingCall = (node, depth = 0) => {
+        node = unwrap(node);
+        if (dynamicScope || depth >= 60 || !node || !ts.isCallExpression(node)
+            || node.questionDotToken || node.flags & ts.NodeFlags.OptionalChain
+            || !ts.isIdentifier(node.expression) || node.arguments.some((arg) => ts.isSpreadElement(arg) || !pure(arg))) return false;
+        const binding = symbol(node.expression), helper = helpers.get(binding);
+        if (!helper || written.has(binding) || ts.isVariableDeclaration(helper.declaration)
+            && helper.declaration.getStart() >= node.getStart()) return false;
+        if (helper.fn.parameters.some((parameter) => parameter.initializer && !pure(parameter.initializer))) return false;
+        if (proof.has(helper.fn)) return proof.get(helper.fn);
+        // A visiting helper is not proof: recursive cycles may never throw.
+        proof.set(helper.fn, false);
+        const outcomes = flow(helper.fn.body, depth + 1);
+        const raises = outcomes.size === 1 && outcomes.has("raise");
+        proof.set(helper.fn, raises);
+        return raises;
+    };
+    const effect = (node, depth) => new Set([isThrowingCall(node, depth) ? "raise" : pure(node) ? "normal" : "unknown"]);
+    const flow = (node, depth) => {
+        if (!node) return new Set(["normal"]);
+        if (ts.isBlock(node)) return sequence(node.statements, depth);
+        if (ts.isThrowStatement(node)) {
+            let deferred = false;
+            walk(node.expression, (child) => {
+                if (ts.isCallExpression(child) || ts.isAwaitExpression(child)
+                    || ts.isYieldExpression(child) || ts.isTaggedTemplateExpression(child)
+                    || ts.isNewExpression(child) && symbol(child.expression)?.declarations?.length) deferred = true;
+            }, true);
+            return new Set([deferred && !isThrowingCall(node.expression, depth) ? "unknown" : "raise"]);
+        }
+        if (ts.isReturnStatement(node)) {
+            const effects = effect(node.expression, depth);
+            return new Set([...effects].map((outcome) => outcome === "normal" ? "return" : outcome));
+        }
+        if (ts.isExpressionStatement(node)) return effect(node.expression, depth);
+        if (ts.isIfStatement(node)) {
+            const effects = effect(node.expression, depth);
+            return effects.has("normal") ? union(flow(node.thenStatement, depth), flow(node.elseStatement, depth)) : effects;
+        }
+        if (ts.isTryStatement(node)) {
+            let pending = flow(node.tryBlock, depth);
+            if (node.catchClause && pending.delete("raise")) pending = union(pending, flow(node.catchClause.block, depth));
+            if (node.finallyBlock) {
+                const final = flow(node.finallyBlock, depth);
+                const unknown = pending.has("unknown");
+                pending = final.delete("normal") ? union(pending, final) : final;
+                if (unknown) pending.add("unknown");
+            }
+            return pending;
+        }
+        if (ts.isVariableStatement(node)) return sequence(node.declarationList.declarations.map((item) => item.initializer).filter(Boolean), depth);
+        if (ts.isFunctionDeclaration(node) || ts.isEmptyStatement(node)) return new Set(["normal"]);
+        if (ts.isExpression(node)) return effect(node, depth);
+        // Loops, switches, labels and other unsupported control flow cannot prove a helper always raises.
+        return new Set(["unknown"]);
+    };
+    const analysis = { isThrowingCall };
+    throwingAnalysis.set(source, analysis);
+    return analysis;
+}
+
+function terminates(node, isThrowingCall = () => false) {
     if (!node) return false;
     if (ts.isReturnStatement(node) || ts.isThrowStatement(node)) return true;
-    if (ts.isBlock(node)) return node.statements.some(terminates);
-    if (ts.isIfStatement(node)) return !!node.elseStatement && terminates(node.thenStatement) && terminates(node.elseStatement);
-    if (ts.isTryStatement(node)) return terminates(node.finallyBlock)
-        || (terminates(node.tryBlock) && (!node.catchClause || terminates(node.catchClause.block)));
+    if (ts.isExpressionStatement(node)) return isThrowingCall(node.expression);
+    if (ts.isBlock(node)) return node.statements.some((child) => terminates(child, isThrowingCall));
+    if (ts.isIfStatement(node)) return !!node.elseStatement && terminates(node.thenStatement, isThrowingCall) && terminates(node.elseStatement, isThrowingCall);
+    if (ts.isTryStatement(node)) return terminates(node.finallyBlock, isThrowingCall)
+        || (terminates(node.tryBlock, isThrowingCall) && (!node.catchClause || terminates(node.catchClause.block, isThrowingCall)));
     return false;
 }
-function leavesBlock(node) {
+function leavesBlock(node, isThrowingCall) {
     if (!node) return false;
-    if (terminates(node) || ts.isBreakStatement(node) || ts.isContinueStatement(node)) return true;
-    if (ts.isBlock(node)) return node.statements.some(leavesBlock);
-    return ts.isIfStatement(node) && !!node.elseStatement && leavesBlock(node.thenStatement) && leavesBlock(node.elseStatement);
+    if (terminates(node, isThrowingCall) || ts.isBreakStatement(node) || ts.isContinueStatement(node)) return true;
+    if (ts.isBlock(node)) return node.statements.some((child) => leavesBlock(child, isThrowingCall));
+    return ts.isIfStatement(node) && !!node.elseStatement && leavesBlock(node.thenStatement, isThrowingCall) && leavesBlock(node.elseStatement, isThrowingCall);
 }
 
 export function collectNodeDecisions(fn, limits = NODE_CODEPATH_LIMITS) {
     const decisions = [];
+    const { isThrowingCall } = localThrowingCalls(fn.getSourceFile());
+    const ends = (node) => terminates(node, isThrowingCall);
+    const leaves = (node) => leavesBlock(node, isThrowingCall);
+    const modelledCalls = new Set();
     let truncated = false;
     const add = (outcome, value, frames, node, extra = {}) => {
         if (decisions.length >= limits.decisions) { truncated = true; return; }
@@ -192,7 +322,11 @@ export function collectNodeDecisions(fn, limits = NODE_CODEPATH_LIMITS) {
     };
     const expression = (node, frames, action = "return", anchor = node) => {
         node = unwrap(node);
-        if (ts.isConditionalExpression(node)) {
+        if (isThrowingCall(node)) {
+            modelledCalls.add(node);
+            add("raise", text(node), frames, anchor,
+                { expression: !ts.isReturnStatement(anchor) && !ts.isThrowStatement(anchor) && !ts.isExpressionStatement(anchor) });
+        } else if (ts.isConditionalExpression(node)) {
             expression(node.whenTrue, [...frames, { kind: "if", node: node.condition }], action, node.whenTrue);
             expression(node.whenFalse, [...frames, { kind: "if", node: node.condition, negative: true }], action, node.whenFalse);
         } else if (action === "return" && ts.isBinaryExpression(node)
@@ -217,10 +351,10 @@ export function collectNodeDecisions(fn, limits = NODE_CODEPATH_LIMITS) {
             let active = [...frames];
             for (const child of node.statements) {
                 statement(child, active, loops);
-                if (leavesBlock(child)) break;
+                if (leaves(child)) break;
                 if (ts.isIfStatement(child)) {
-                    if (leavesBlock(child.thenStatement)) active.push({ kind: "if", node: child.expression, negative: true });
-                    else if (leavesBlock(child.elseStatement)) active.push({ kind: "if", node: child.expression });
+                    if (leaves(child.thenStatement)) active.push({ kind: "if", node: child.expression, negative: true });
+                    else if (leaves(child.elseStatement)) active.push({ kind: "if", node: child.expression });
                 }
             }
         } else if (ts.isIfStatement(node)) {
@@ -229,7 +363,11 @@ export function collectNodeDecisions(fn, limits = NODE_CODEPATH_LIMITS) {
         } else if (ts.isReturnStatement(node)) {
             if (node.expression) expression(node.expression, frames, "return", node);
             else add("empty", "undefined", frames, node);
-        } else if (ts.isThrowStatement(node)) expression(node.expression, frames, "throw", node);
+        } else if (ts.isThrowStatement(node)) {
+            walk(node.expression, (child) => modelledCalls.add(child), true);
+            expression(node.expression, frames, "throw", node);
+        }
+        else if (ts.isExpressionStatement(node) && isThrowingCall(node.expression)) expression(node.expression, frames, "throw", node);
         else if (ts.isForStatement(node) || ts.isForOfStatement(node) || ts.isForInStatement(node)
             || ts.isWhileStatement(node) || ts.isDoStatement(node)) {
             const label = ts.isForOfStatement(node) ? `for ${text(node.initializer)} of ${text(node.expression)}`
@@ -240,7 +378,7 @@ export function collectNodeDecisions(fn, limits = NODE_CODEPATH_LIMITS) {
         } else if ((ts.isBreakStatement(node) || ts.isContinueStatement(node)) && loops && !node.label) {
             add(ts.isBreakStatement(node) ? "stop" : "skip", null, frames, node);
         } else if (ts.isTryStatement(node)) {
-            const overrides = terminates(node.finallyBlock);
+            const overrides = ends(node.finallyBlock);
             // An unconditional finally exit replaces every pending return/throw.
             if (!overrides) {
                 const pending = node.finallyBlock ? "try (pending exit may be replaced by finally)" : "try";
@@ -252,7 +390,7 @@ export function collectNodeDecisions(fn, limits = NODE_CODEPATH_LIMITS) {
                     statement(node.catchClause.block, handlerFrames, loops);
                     let abrupt = false;
                     walk(node.catchClause.block, (child) => {
-                        if (ts.isReturnStatement(child) || ts.isThrowStatement(child)
+                        if (ends(child)
                             || ts.isContinueStatement(child) || ts.isBreakStatement(child)) abrupt = true;
                     }, true);
                     if (!abrupt) add("handled", short(node.catchClause.block.getText()), handlerFrames, node.catchClause, { handler: true });
@@ -264,12 +402,12 @@ export function collectNodeDecisions(fn, limits = NODE_CODEPATH_LIMITS) {
                 const clause = node.caseBlock.clauses[i];
                 const label = ts.isCaseClause(clause) ? `case ${text(node.expression)} === ${text(clause.expression)}` : `default for ${text(node.expression)}`;
                 // Fallthrough can enter a clause from earlier cases. Do not claim an exact gate.
-                const fallthrough = i > 0 && !node.caseBlock.clauses[i - 1].statements.some((item) => terminates(item) || ts.isBreakStatement(item));
+                const fallthrough = i > 0 && !node.caseBlock.clauses[i - 1].statements.some((item) => ends(item) || ts.isBreakStatement(item));
                 const scope = [...frames, { kind: "case", label: fallthrough ? `${label} (or fallthrough)` : label, node: clause }];
                 for (const child of clause.statements) {
                     if (ts.isBreakStatement(child)) break;
                     statement(child, scope, loops);
-                    if (terminates(child)) break;
+                    if (ends(child)) break;
                 }
             }
         } else if (ts.isLabeledStatement(node)) statement(node.statement, [...frames, { kind: "label", label: `label ${text(node.label)}` }], loops);
@@ -282,7 +420,7 @@ export function collectNodeDecisions(fn, limits = NODE_CODEPATH_LIMITS) {
             if (ts.isReturnStatement(node) && node.expression) returnsValue = true;
             if (ts.isYieldExpression(node)) yields = true;
         }, true);
-        if (returnsValue && !yields && !terminates(fn.body)) {
+        if (returnsValue && !yields && !ends(fn.body)) {
             const last = fn.body.statements.at(-1);
             if (last) add("empty", "undefined (falls through)", [], last, { implicit: true });
         }
@@ -291,7 +429,15 @@ export function collectNodeDecisions(fn, limits = NODE_CODEPATH_LIMITS) {
     const byLine = new Map();
     for (const decision of decisions) byLine.set(decision.line, (byLine.get(decision.line) || 0) + 1);
     for (const decision of decisions) if (byLine.get(decision.line) > 1) decision.trace = null;
-    return { decisions, truncated };
+    const unmodelled = [];
+    const inspect = (node) => {
+        if ((ts.isCallExpression(node) || ts.isNewExpression(node) || ts.isTaggedTemplateExpression(node))
+            && !modelledCalls.has(node)) unmodelled.push(`${text(node)} (line ${line(node)})`);
+    };
+    walk(fn.body, inspect, true);
+    for (const parameter of fn.parameters) walk(parameter, inspect, true);
+    return { decisions, truncated, incomplete: unmodelled.length > 0,
+        warnings: unmodelled.length ? [`Call behavior is not fully modelled: ${unmodelled.slice(0, 3).join("; ")}${unmodelled.length > 3 ? `; ${unmodelled.length - 3} more` : ""}. Decision counts are partial, not proof of no other outcomes.`] : [] };
 }
 
 const key = (decision) => JSON.stringify([decision.kind, decision.outcome, decision.value, decision.when,
@@ -350,7 +496,7 @@ export function diffNodeDecisions(base, current) {
 function snapshotProgram(sources) {
     const root = "/__agent_review_snapshot__";
     const canonical = (path) => posix.normalize(`${root}/${String(path).replaceAll("\\", "/")}`);
-    const files = new Map(sources.map((item) => [canonical(item.path), item.current]));
+    const files = new Map(sources.map((item) => [canonical(item.path), item]));
     const options = { allowJs: true, checkJs: true, noLib: true, noResolve: false, target: ts.ScriptTarget.Latest,
         module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, jsx: ts.JsxEmit.Preserve };
     const moduleFile = (specifier, containing) => {
@@ -361,9 +507,9 @@ function snapshotProgram(sources) {
             .find((candidate) => files.has(candidate)) || null;
     };
     const host = {
-        getSourceFile: (name, version) => files.has(name) ? ts.createSourceFile(name, files.get(name), version, true) : undefined,
+        getSourceFile: (name, version) => files.has(name) ? files.get(name).source || ts.createSourceFile(name, files.get(name).current, version, true) : undefined,
         getDefaultLibFileName: () => "", writeFile: () => {}, getCurrentDirectory: () => root,
-        getDirectories: () => [], fileExists: (name) => files.has(name), readFile: (name) => files.get(name),
+        getDirectories: () => [], fileExists: (name) => files.has(name), readFile: (name) => files.get(name)?.current,
         getCanonicalFileName: (name) => name, useCaseSensitiveFileNames: () => true, getNewLine: () => "\n",
         resolveModuleNames: (names, containing) => names.map((name) => {
             const file = moduleFile(name, containing);
@@ -693,6 +839,9 @@ export function buildNodeCodePathMap(request, limits = NODE_CODEPATH_LIMITS) {
             }
             const baseCollected = before ? collectNodeDecisions(before, limits) : { decisions: [], truncated: false };
             const currentCollected = after ? collectNodeDecisions(after, limits) : { decisions: [], truncated: false };
+            for (const [version, collected] of [["baseline", baseCollected], ["current", currentCollected]]) {
+                for (const warning of collected.warnings || []) warnings.push(`${file.path}: ${target.qualname} (${version}): ${warning}`);
+            }
             const entries = diffNodeDecisions(baseCollected.decisions, currentCollected.decisions);
             const counts = Object.fromEntries(["added", "removed", "changed", "moved"].map((status) => [status, entries.filter((entry) => entry.status === status).length]));
             for (const status of Object.keys(counts)) totals[status] += counts[status];
@@ -706,7 +855,8 @@ export function buildNodeCodePathMap(request, limits = NODE_CODEPATH_LIMITS) {
                 source_hash: typeof file.current === "string" ? sourceHash(file.current) : null,
                 line: after ? line(after) : null, base_line: before ? line(before) : null,
                 decisions_base: baseCollected.decisions.length, decisions_current: currentCollected.decisions.length,
-                counts, entries: selected, omitted_entries: entries.length - selected.length, truncated });
+                counts, entries: selected, omitted_entries: entries.length - selected.length, truncated,
+                incomplete: !!(baseCollected.incomplete || currentCollected.incomplete) });
             allCurrent.set(target.id, currentCollected.decisions);
         }
     }
@@ -717,7 +867,7 @@ export function buildNodeCodePathMap(request, limits = NODE_CODEPATH_LIMITS) {
     return { adapter_id: "node", callables: results, totals, verification,
         source_hashes: Object.fromEntries(validSources.map((source) => [source.path, sourceHash(source.current)])),
         files_examined: files.length,
-        limited, warnings, elapsed_ms: Math.round(performance.now() - started) };
+        limited, incomplete: results.some((result) => result.incomplete), warnings, elapsed_ms: Math.round(performance.now() - started) };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

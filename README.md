@@ -1206,6 +1206,16 @@ explicitly imported `node:test`, Vitest, or Jest APIs and `node:assert` or impor
 callbacks remain unknown. Jest and Vitest links are inferred, not executable by
 the initial runner. **Run linked tests** is an explicit repository-code execution
 action, not part of analysis.
+Calls to synchronous, non-generator helpers in the same file produce raise
+outcomes when their saved bodies provably always throw, including transitive
+calls and immutable arrow/function bindings. Compiler binding identity keeps
+shadowed names separate; reassigned bindings, recursive cycles, optional calls,
+conditional helpers that can return, and unsupported control flow are not
+assumed to throw. Proof is bounded to 60 helper levels and does not infer
+semantics from names such as `fail`, `check`, or `assert`. Unmodelled calls
+produce analysis notes and a **Partial path model** label instead of a
+zero-without-test-evidence claim. Known exits and their test links remain
+available; these summaries do not prove runtime reachability or termination.
 The initial Node runner requires Node.js **22.15+** and supports isolated,
 top-level ESM JavaScript `node:test` cases, one case per file. Erasable `.ts` and
 `.mts` tests use Node's `--experimental-strip-types`, retaining original source

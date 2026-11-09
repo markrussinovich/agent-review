@@ -5720,10 +5720,12 @@ function renderCollection(model) {
 
 function decisionMetric(map) {
     const totals = decisionTotals(map);
+    const partial = map && (map.limited || map.incomplete || map.callables?.some((item) => item.incomplete || item.truncated));
     let detail;
     if (!map) detail = "Unavailable for this review";
     else if (map.status === "loading") detail = "Extracting code paths…";
     else if (map.status === "error") detail = "Extraction failed";
+    else if (partial) detail = "Partial path model · see analysis notes";
     else if (!map.callables?.length) detail = "No changed production callables";
     else if (!totals.callables) detail = "No code path changes";
     else {
@@ -5736,6 +5738,9 @@ function decisionMetric(map) {
         const card = metric("Code paths", map?.status === "loading" ? "…" : "–", detail, "decisions");
         if (map?.status === "loading") card.classList.add("metric-pending");
         return card;
+    }
+    if (partial && !(totals.added + totals.removed + totals.changed + totals.moved)) {
+        return metric("Code paths", "Unknown", detail, "decisions");
     }
     return deltaMetric("Code paths", totals.added, totals.removed, detail, "decisions", totals.changed + totals.moved);
 }
@@ -5886,8 +5891,10 @@ function renderDecisionView(model) {
     const changed = changedCallables(map).filter(matches).filter((item) => visibleEntries(item).length).sort((a, b) =>
         (b.entries?.length || 0) - (a.entries?.length || 0) || a.path.localeCompare(b.path) || (a.line || 0) - (b.line || 0));
     const quiet = filter !== "all" ? [] : (map.callables || []).filter((item) => !changed.includes(item) && !(item.entries?.length) && matches(item));
+    const partial = map.limited || map.incomplete || map.callables?.some((item) => item.incomplete || item.truncated);
     if (!changed.length) {
         view.append(el("p", "collection-empty", filter !== "all" ? "No code paths match this evidence filter."
+            : partial ? "No code path changes were found in the analyzed subset; omitted or unmodelled code remains unknown."
             : map.callables?.length
                 ? "No code path changes: changed callables keep the same exits, error handling, and wiring."
                 : "No changed production callables in supported languages in this review."));
@@ -5917,7 +5924,7 @@ function renderDecisionView(model) {
         const same = quiet.filter((item) => item.change === "modified").length;
         const none = quiet.length - same;
         const details = el("details", "decision-unchanged");
-        details.append(el("summary", "", [
+        details.append(el("summary", "", partial ? `${countLabel(quiet.length, "callable")} with no modelled code path changes (partial analysis)` : [
             same ? `${countLabel(same, "modified callable")} ${plural(same, "keeps", "keep")} the same code paths` : null,
             none ? `${countLabel(none, "added or removed callable")} ${plural(none, "has", "have")} no exits, handlers, or wiring` : null,
         ].filter(Boolean).join(" · ")));

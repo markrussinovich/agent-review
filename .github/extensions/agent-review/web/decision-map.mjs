@@ -276,7 +276,9 @@ export function decisionPromptContext(map, callables = map?.callables || [], { m
         items.push({
             callable: callableName(item), path: item.path, change: item.change, line: item.line,
             decisions_before: item.decisions_base, decisions_after: item.decisions_current,
-            changes: changes.length ? changes : [item.change === "modified"
+            incomplete: Boolean(map.limited || map.incomplete || item.incomplete || item.truncated),
+            changes: changes.length ? changes : [map.limited || map.incomplete || item.incomplete || item.truncated ? "partial code path model; no modelled changes"
+                : item.change === "modified"
                 ? "no code path changes (same exits, handlers, and wiring)" : "no exits, handlers, or wiring"],
             omitted_changes: Math.max(0, (item.entries?.length || 0) - changes.length) + (item.omitted_entries || 0),
         });
@@ -284,7 +286,7 @@ export function decisionPromptContext(map, callables = map?.callables || [], { m
     return {
         note: "Static extraction from saved source: exits, error handlers, and name-based wiring per changed callable, with governing conditions. 'only if' gates apply only when a value is present. It does not prove runtime reachability.",
         evidence_note: map.verification ? "Test evidence per path: 'Confirmed' means a linked test run executed that line; 'inferred' links come from static analysis of test calls and assertions and are not proof; 'Not executed' means the linked tests ran without reaching it; 'No test evidence' means no test calls the function or its callers." : undefined,
-        limited: Boolean(map.limited) || omitted > 0,
+        limited: Boolean(map.limited || map.incomplete) || callables.some((item) => item.incomplete || item.truncated) || omitted > 0,
         callables: items,
         omitted_callables: omitted,
     };
