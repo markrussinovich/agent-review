@@ -226,6 +226,32 @@ internal static class SelfTests
                     callerCapped.Edges.Any(e => e.Kind == "calls" && e.Source.Contains("Consumer.Run", StringComparison.Ordinal) &&
                         e.Target.Contains("Budget.M19997", StringComparison.Ordinal)),
                     "unchanged direct caller declarations precede unrelated symbols at the global budget");
+                var removedTarget = Analyzer.Analyze(new Request(callerBefore, new Dictionary<string, string>(callerBefore)
+                {
+                    ["Budget.cs"] = callerBefore["Budget.cs"].Replace("public int M19997() => 19997;", "", StringComparison.Ordinal)
+                }, "graph", false));
+                Check(removedTarget.Symbols.Any(s => s.Name == "M19997" && s.Classification == "removed") &&
+                    removedTarget.Symbols.Any(s => s.Qualname == "Consumer.Run()" && s.Classification == "unchanged") &&
+                    removedTarget.Edges.Any(e => e.Change == "removed" && e.Source.Contains("Consumer.Run", StringComparison.Ordinal) &&
+                        e.Target.Contains("Budget.M19997", StringComparison.Ordinal)),
+                    "baseline callers remain prioritized and genuine callee removals are not hidden by unrelated limits");
+                var namedBefore = new Dictionary<string, string>(baseline)
+                {
+                    ["Budget.cs"] = baseline["Budget.cs"][..^1] +
+                        "public int @event() => 1; public T Generic<T>(T value) => value; public Budget(int value) { if (value < 0) return; }}",
+                    ["ZConsumer.cs"] = "using B = Budget; public class Consumer { public int Run() => new B(0).@event() + new B(0).Generic<int>(1); }"
+                };
+                var namedAfter = new Dictionary<string, string>(namedBefore)
+                {
+                    ["Budget.cs"] = namedBefore["Budget.cs"].Replace("@event() => 1", "@event() => 2", StringComparison.Ordinal)
+                        .Replace("=> value; public Budget", "=> default(T); public Budget", StringComparison.Ordinal)
+                        .Replace("value < 0", "value < 1", StringComparison.Ordinal)
+                };
+                var namedCalls = Analyzer.Analyze(new Request(namedBefore, namedAfter, "graph", false));
+                Check(namedCalls.Edges.Any(e => e.Source.Contains("Consumer.Run", StringComparison.Ordinal) && e.Target.Contains("Budget.event", StringComparison.Ordinal)) &&
+                    namedCalls.Edges.Any(e => e.Source.Contains("Consumer.Run", StringComparison.Ordinal) && e.Target.Contains("Budget.Generic", StringComparison.Ordinal)) &&
+                    namedCalls.Edges.Any(e => e.Source.Contains("Consumer.Run", StringComparison.Ordinal) && e.Target.Contains("Budget.#ctor", StringComparison.Ordinal)),
+                    "caller prefilter preserves escaped and generic method names and alias-sensitive constructors");
                 var edgeBefore = new Dictionary<string, string>
                 {
                     ["App.csproj"] = plain,
@@ -293,7 +319,8 @@ internal static class SelfTests
                     "[Fact] public void ZLinked() { Lib.Api.Read(); }}";
                 var testCapped = Analyzer.Analyze(new Request([], references));
                 Check(testCapped.CodePaths.Verification.Tests.Any(t => t.FullName == "ApiTests.ZLinked") &&
-                    testCapped.CodePaths.Verification.OmittedTests == 1 && testCapped.CodePaths.Verification.Limited,
+                    testCapped.CodePaths.Verification.OmittedTests == 0 &&
+                    testCapped.CodePaths.Verification.OmittedTestCandidates == 1 && testCapped.CodePaths.Verification.Limited,
                     "direct changed-code tests beat the test budget and disclose omissions");
                 var noPathChange = Analyzer.Analyze(new Request(
                     new Dictionary<string, string>(references) { ["lib/Api.cs"] = "namespace Lib; public class Api { public static void Read() { int x = 1; } }" },

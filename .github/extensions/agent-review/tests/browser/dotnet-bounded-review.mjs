@@ -6,7 +6,7 @@ import { performance } from "node:perf_hooks";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { ReviewState } from "../../review-state.mjs";
+import { ReviewState, runDecisionExtractor } from "../../review-state.mjs";
 import { startReviewServer } from "../../server.mjs";
 import { impactSlice } from "../../web/impact-model.mjs";
 import { reviewContext } from "../../web/review-presentation.mjs";
@@ -31,6 +31,7 @@ try {
         reviewTarget: { mode: "commit", label: "Pinned real C# review", currentRef: head },
         workspacePath: screenshots,
         currentSessionId: "bounded-dotnet-regression",
+        runDecisions: runDecisionExtractor,
         ...(savedModel ? { runAnalyzer: async () => JSON.parse(await readFile(savedModel, "utf8")) }
             : savedRequest ? { runAnalyzer: async () => {
             const result = await execute(process.env.AGENT_REVIEW_PYTHON || "python", [
@@ -93,6 +94,8 @@ try {
         await metric.click();
         await page.locator(".decision-view").waitFor();
         assert.match(await page.locator(".decision-view").textContent(), /omitted or unmodelled code remains unknown/);
+        assert.match(await page.locator(".linked-tests > summary").textContent(), /test candidates? not examined/);
+        assert.doesNotMatch(await page.locator(".linked-tests > summary").textContent(), /shown of/);
         await page.screenshot({ path: join(screenshots, `bounded-decisions-${theme}.png`) });
         await page.keyboard.press("Control+k");
         await page.locator("#review-command-query").fill("PrepareOperator");
@@ -111,10 +114,18 @@ try {
         assert.match(await page.locator(".impact-counts").textContent(), /Related test: [3-9]/);
         assert.match(await page.locator(".impact-toolbar").textContent(), /relationships are incomplete/);
         await page.screenshot({ path: join(screenshots, `bounded-impact-${theme}.png`) });
+        const focus = page.locator(".impact-graph .node").filter({ hasText: "PrepareOperator" }).first();
+        await focus.focus();
+        await page.keyboard.press("Enter");
+        const details = page.locator("#detail-pane .detail-grid");
+        await details.waitFor();
+        assert.match(await details.textContent(), /Direct callers[\s\S]*6 resolved.*incomplete/);
+        await page.screenshot({ path: join(screenshots, `bounded-callers-${theme}.png`) });
+        await page.locator("#detail-close").click();
         await page.setViewportSize({ width: 390, height: 844 });
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
         await page.screenshot({ path: join(screenshots, `bounded-narrow-${theme}.png`) });
-        await openReviewTool(page, "decisions");
+        await openReviewTool(page, "paths");
         assert.match(await page.locator(".decision-view").textContent(), /Partial path model/);
         assert.deepEqual(errors, []);
         await page.close();

@@ -176,9 +176,9 @@ internal static class TestLinks
         var examined = snapshot.Entities.Values.Where(e => e.Declarations.Any(n => n is MethodDeclarationSyntax method &&
                 method.AttributeLists.Count != 0)).Select(e => e.Symbol.Path).Distinct(StringComparer.Ordinal).Count();
         if (traversalLimited) warnings.Add("Static test reachability capped at eight call hops and 5000 source targets per test.");
-        return new Verification(tests, Math.Max(0, candidates.Length - MaxTests), examined,
+        return new Verification(tests, 0, examined,
             candidates.Length > MaxTests || traversalLimited || snapshot.Limited ||
-                snapshot.Projects.Any(p => p.Config.Incomplete));
+                snapshot.Projects.Any(p => p.Config.Incomplete), Math.Max(0, candidates.Length - MaxTests));
     }
 
     internal static bool IsTestSource(Entity entity)

@@ -87,6 +87,10 @@ def run_dotnet_helper(
 
 def normalize_code_paths(facts: dict) -> dict:
     result = facts["code_paths"]
+    verification = result.get("verification")
+    if verification is not None and "omitted_test_candidates" not in verification and "omitted_tests" in verification:
+        verification["omitted_test_candidates"] = verification["omitted_tests"]
+        verification["omitted_tests"] = 0
     names = {symbol["id"]: symbol["qualname"] for symbol in facts.get("symbols", [])}
     for callable in result.get("callables", []):
         scope = callable["id"].split("::", 1)[0]

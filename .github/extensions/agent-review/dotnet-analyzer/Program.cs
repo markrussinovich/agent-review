@@ -148,7 +148,8 @@ internal sealed record AnalysisResult(List<SymbolRecord> Symbols, List<EdgeRecor
     List<string> Warnings, CodePaths CodePaths);
 internal sealed record CodePaths(List<CallableChanges> Callables, Dictionary<string, int> Totals,
     bool Limited, List<string> Warnings, Verification Verification);
-internal sealed record Verification(List<TestRecord> Tests, int OmittedTests, int TestFilesExamined, bool Limited);
+internal sealed record Verification(List<TestRecord> Tests, int OmittedTests, int TestFilesExamined, bool Limited,
+    int OmittedTestCandidates = 0);
 internal sealed record TestRecord(string Id, string FullName, string Project, string Link,
     string Name, string Path, int Line, List<string> Calls, List<string> Callables,
     List<AssertionRecord> Assertions, string DeclarationRecognition, string? Via = null);

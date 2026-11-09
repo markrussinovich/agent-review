@@ -45,6 +45,8 @@ internal sealed class Snapshot
     public Dictionary<string, CSharpParseOptions> ParseOptions { get; } = new(StringComparer.Ordinal);
     public HashSet<string> AvailableIds { get; } = new(StringComparer.Ordinal);
     public HashSet<(string Scope, string Path)> AnalyzedSources { get; } = [];
+    public HashSet<string> PriorityCallers { get; } = new(StringComparer.Ordinal);
+    public HashSet<string> OmittedEdgeSources { get; } = new(StringComparer.Ordinal);
 }
 
 internal static class Analyzer
@@ -77,7 +79,7 @@ internal static class Analyzer
         var changedPaths = baseline.Keys.Concat(currentFiles.Keys).Where(path =>
             baseline.GetValueOrDefault(path) != currentFiles.GetValueOrDefault(path)).ToHashSet(StringComparer.Ordinal);
         var before = Build(baseline, currentFiles, changedPaths, warnings, "baseline");
-        var after = Build(currentFiles, baseline, changedPaths, warnings, "current");
+        var after = Build(currentFiles, baseline, changedPaths, warnings, "current", before.PriorityCallers);
         var symbols = new List<SymbolRecord>();
         foreach (var (id, entity) in after.Entities.OrderBy(e => e.Key, StringComparer.Ordinal))
         {
@@ -135,7 +137,7 @@ internal static class Analyzer
     }
 
     private static Snapshot Build(Dictionary<string, string> files, Dictionary<string, string> otherFiles,
-        HashSet<string> changedPaths, List<string> allWarnings, string label)
+        HashSet<string> changedPaths, List<string> allWarnings, string label, IReadOnlySet<string>? priorityCallers = null)
     {
         var warnings = new List<string>();
         var snapshot = new Snapshot { Files = files };
@@ -345,7 +347,39 @@ internal static class Analyzer
         var changedIds = declarations.Where(d => d.Rank == 0).Select(d =>
             d.Project.Model(d.Tree).GetDeclaredSymbol(d.Node) is { } symbol
                 ? Id(d.Project.Config.Scope, symbol) : null).OfType<string>().ToHashSet(StringComparer.Ordinal);
+        var changedMembers = declarations.Where(d => d.Rank == 0)
+            .Select(d => d.Project.Model(d.Tree).GetDeclaredSymbol(d.Node))
+            .Where(s => s is IMethodSymbol or IPropertySymbol).OfType<ISymbol>().ToArray();
+        var changedNames = changedMembers.Select(s => s.Name.Split('.').Last()).ToHashSet(StringComparer.Ordinal);
+        var changedConstructors = changedMembers.OfType<IMethodSymbol>()
+            .Any(m => m.MethodKind is MethodKind.Constructor or MethodKind.StaticConstructor);
+        var changedIndexers = changedMembers.OfType<IPropertySymbol>().Any(p => p.IsIndexer);
+        var changedOperators = changedMembers.OfType<IMethodSymbol>()
+            .Any(m => m.MethodKind is MethodKind.UserDefinedOperator or MethodKind.Conversion);
+        bool MayTargetChangedMember(SyntaxNode node)
+        {
+            if (changedOperators) return true;
+            var name = node switch
+            {
+                InvocationExpressionSyntax call => call.Expression switch
+                {
+                    MemberAccessExpressionSyntax access => access.Name.Identifier.ValueText,
+                    MemberBindingExpressionSyntax binding => binding.Name.Identifier.ValueText,
+                    SimpleNameSyntax simple => simple.Identifier.ValueText,
+                    _ => null
+                },
+                MemberAccessExpressionSyntax access => access.Name.Identifier.ValueText,
+                MemberBindingExpressionSyntax binding => binding.Name.Identifier.ValueText,
+                IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
+                _ => null
+            };
+            if (node is ObjectCreationExpressionSyntax or ImplicitObjectCreationExpressionSyntax or ConstructorInitializerSyntax)
+                return changedConstructors;
+            if (node is ElementAccessExpressionSyntax) return changedIndexers;
+            return name is null || changedNames.Contains(name);
+        }
         var directCallers = new HashSet<string>(StringComparer.Ordinal);
+        if (priorityCallers is not null) directCallers.UnionWith(priorityCallers);
         if (changedIds.Count != 0)
         {
             foreach (var project in snapshot.Projects.Where(p => p.Config.Path != "<unassigned>"))
@@ -356,6 +390,7 @@ internal static class Analyzer
                         ObjectCreationExpressionSyntax or ImplicitObjectCreationExpressionSyntax or ConstructorInitializerSyntax or
                         MemberAccessExpressionSyntax or ElementAccessExpressionSyntax or MemberBindingExpressionSyntax or IdentifierNameSyntax))
                     {
+                        if (!MayTargetChangedMember(node)) continue;
                         var target = model.GetSymbolInfo(node).Symbol;
                         if (target is not (IMethodSymbol or IPropertySymbol) ||
                             ResolveId(snapshot, project, target) is not { } targetId || !changedIds.Contains(targetId)) continue;
@@ -368,6 +403,7 @@ internal static class Analyzer
                     }
                 }
         }
+        snapshot.PriorityCallers.UnionWith(directCallers);
         int DeclarationPriority((ProjectState Project, SyntaxTree Tree, SyntaxNode Node, int Rank) declaration)
         {
             if (declaration.Rank == 0) return 0;
@@ -461,6 +497,7 @@ internal static class Analyzer
             var rank = changedIds.Contains(edge.Source) || changedIds.Contains(edge.Target) ? 0 :
                 changedPaths.Contains(edge.Path) ? 1 : 2;
             if (edgeBuckets[rank].Count < MaxEdges) edgeBuckets[rank].Add(edge);
+            else snapshot.OmittedEdgeSources.Add(edge.Source);
         }
         foreach (var project in snapshot.Projects.Where(p => p.Config.Path != "<unassigned>")
             .OrderBy(p => Priority(p.Config)))
@@ -531,6 +568,7 @@ internal static class Analyzer
             }
         }
         snapshot.Edges.AddRange(edgeBuckets.SelectMany(bucket => bucket).Take(MaxEdges));
+        snapshot.OmittedEdgeSources.UnionWith(edgeBuckets.SelectMany(bucket => bucket).Skip(MaxEdges).Select(e => e.Source));
         if (edgeCount > MaxEdges)
         {
             snapshot.Limited = true;
@@ -622,8 +660,16 @@ internal static class Analyzer
         }
         bool UnchangedSource(EdgeRecord edge) => baseline.Files.TryGetValue(edge.Path, out var source) &&
             currentSnapshot.Files.GetValueOrDefault(edge.Path) == source && SameContext(edge.Source) && SameContext(edge.Target);
-        return output.Where(e => e.Change != "removed" || !currentSnapshot.Limited || !UnchangedSource(e))
-            .Select(e => e.Change == "added" && baseline.Limited && UnchangedSource(e) ? e with { Change = "unchanged" } : e)
+        bool OmittedRelationship(EdgeRecord edge, Snapshot present, Snapshot other)
+        {
+            bool OmittedEndpoint(string id) => !other.Entities.ContainsKey(id) &&
+                present.Entities.TryGetValue(id, out var entity) && WasOmitted(entity, other);
+            return OmittedEndpoint(edge.Source) || OmittedEndpoint(edge.Target) ||
+                other.Entities.ContainsKey(edge.Source) && other.Entities.ContainsKey(edge.Target) &&
+                other.OmittedEdgeSources.Contains(edge.Source) && UnchangedSource(edge);
+        }
+        return output.Where(e => e.Change != "removed" || !OmittedRelationship(e, baseline, currentSnapshot))
+            .Select(e => e.Change == "added" && OmittedRelationship(e, currentSnapshot, baseline) ? e with { Change = "unchanged" } : e)
             .OrderBy(e => e.Path, StringComparer.Ordinal).ThenBy(e => e.Line)
             .ThenBy(e => e.Source, StringComparer.Ordinal).ThenBy(e => e.Target, StringComparer.Ordinal)
             .ThenBy(e => e.Kind, StringComparer.Ordinal).ThenBy(e => e.Change, StringComparer.Ordinal).ToList();

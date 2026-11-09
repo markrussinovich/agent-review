@@ -787,6 +787,8 @@ declaration omitted on only one side is not a symbol removal or addition.
 Partial declarations for a retained identity remain merged at the symbol boundary.
 Bounded caller counts show resolved relationships, not proof of zero callers;
 incomplete code-path/test results never establish that no changes or tests exist.
+Unexamined test candidates are counted separately from known linked tests; a
+candidate omitted by the test budget is not claimed to reach changed code.
 
 Scanning reads **both saved trees** and never invokes reviewed MSBuild targets,
 restores packages, builds projects, or executes reviewed code. Project XML is

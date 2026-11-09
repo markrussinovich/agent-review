@@ -49,6 +49,12 @@ class DotnetAdapterTests(unittest.TestCase):
         self.assertEqual(result["verification"]["tests"][0]["link"], "via")
         self.assertEqual(result["callables"][0]["target_framework"], "net10.0")
 
+    def test_older_helper_omissions_are_candidates_not_known_linked_tests(self):
+        result = normalize_code_paths({"symbols": [], "code_paths": {
+            "verification": {"tests": [], "omitted_tests": 7, "limited": True}}})
+        self.assertEqual(result["verification"]["omitted_tests"], 0)
+        self.assertEqual(result["verification"]["omitted_test_candidates"], 7)
+
     def test_python_only_activation_never_invokes_dotnet(self):
         snapshot = AnalysisSnapshot(Path("."), {}, {"app.py": b"def run(): return 1"}, None, False, False)
         with patch("dotnet_adapter.run_dotnet_helper", side_effect=AssertionError("compiler started")):

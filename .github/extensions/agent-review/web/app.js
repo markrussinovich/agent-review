@@ -6069,7 +6069,8 @@ function renderLinkedTests(map) {
     section.addEventListener("toggle", () => { if (section.isConnected) state.linkedTestsOpen = section.open; });
     const tests = map.verification.tests;
     section.append(el("summary", "", `${countLabel(tests.length, "Linked test")}${
-        map.verification.omitted_tests ? ` shown of ${(tests.length + map.verification.omitted_tests).toLocaleString()}` : ""}`));
+        map.verification.omitted_tests ? ` shown of ${(tests.length + map.verification.omitted_tests).toLocaleString()}` : ""}${
+        map.verification.omitted_test_candidates ? ` · ${countLabel(map.verification.omitted_test_candidates, "test candidate")} not examined` : ""}`));
     const list = el("div", "linked-test-list");
     for (const test of tests) {
         const row = el("button", "linked-test");
