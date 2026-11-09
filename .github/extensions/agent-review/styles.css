@@ -2400,6 +2400,10 @@ body.reviewing.review-source-focus .source-body { grid-template-columns: minmax(
   .review-navigation { width: min(82vw, 300px); z-index: 150; box-shadow: 2px 0 12px #0003; }
   body.reviewing .workspace { left: 0; grid-template-columns: minmax(0, 1fr) !important; }
   body.reviewing .workspace .detail { display: none; }
+  body.reviewing .workspace:not(.detail-collapsed) .detail:has(.analysis-adapter-unavailable) {
+    display: block; position: absolute; inset: 0; z-index: 1; min-height: 0; border: 0;
+  }
+  body.reviewing .workspace:not(.detail-collapsed):has(.analysis-adapter-unavailable) > .graph-panel { visibility: hidden; }
   body.reviewing #source-panel { left: 0; }
   body.reviewing #session-history-panel { left: 0; border-left: 0; }
   .workspace-reading-tools { flex-wrap: wrap; }
