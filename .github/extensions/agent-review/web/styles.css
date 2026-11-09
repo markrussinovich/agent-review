@@ -222,6 +222,7 @@ body.review-ready #review-target-label, body.review-ready .repository-row, body.
   background: var(--cp-success);
 }
 .status.working::before { background: var(--cp-warning); }
+.status.failed::before { background: var(--cp-danger); }
 #refresh, #cancel-analysis, .zoom-out, .tab, .source-close {
   padding: 8px 12px;
   border: 1px solid var(--cp-border);
@@ -240,6 +241,15 @@ main { width: 100%; max-width: none; padding: 20px 20px 36px; }
   background: var(--cp-surface);
 }
 .error { border-color: var(--cp-danger); color: var(--cp-danger); white-space: pre-wrap; }
+.error.analyzer-error { white-space: normal; overflow-wrap: anywhere; }
+.analyzer-error > p { margin: 8px 0; }
+.analyzer-error-details { margin-top: 12px; color: var(--cp-text); }
+.analyzer-error-details > summary { cursor: pointer; }
+.analyzer-error-details > button { margin-top: 8px; }
+.analyzer-error-details > pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  padding: 12px; border: 1px solid var(--cp-border); border-radius: var(--pr-radius);
+  background: var(--cp-surface-soft); color: var(--cp-text); font: 12px/1.5 Consolas, "Courier New", monospace; }
+.analyzer-error-recovery { white-space: pre-wrap; }
 .analysis-progress { border-color: var(--cp-accent); }
 #progress-percent { color: var(--cp-accent); font: 700 .8125rem var(--cp-font-mono); }
 .progress-copy strong { font-size: .75rem; }

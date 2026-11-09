@@ -46,6 +46,7 @@ const staticFiles = new Map([
     ["/review-ledger.mjs", "review-ledger.mjs"],
     ["/languages.mjs", "languages.mjs"],
     ["/connection-feedback.mjs", "connection-feedback.mjs"],
+    ["/analyzer-error.mjs", "analyzer-error.mjs"],
     ["/analysis-limitations.mjs", "analysis-limitations.mjs"],
     ["/styles.css", "styles.css"],
 ]);
