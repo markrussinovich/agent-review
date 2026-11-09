@@ -52,6 +52,7 @@ try {
         reviewLimits: { maxRequests: 12 },
     });
     await state.refresh();
+    await state.decisionPromise;
     assert.ok(state.model, state.error);
     const changedFiles = state.model.changes.filter((change) => change.status !== "unchanged").length;
     assert.ok(changedFiles, "use a real checkout with uncommitted changes or set AGENT_REVIEW_UX_BASE");
@@ -120,13 +121,14 @@ try {
             await state.runRuleCheck({ force: true });
             emitted = false;
             await state.runCustomAnalyses(customInput);
-            await page.waitForFunction(() => document.querySelector(".rule-check")?.textContent.includes("All 9 findings"));
+            await page.waitForFunction(() => document.querySelector(".rule-check")?.textContent.includes("All 9 findings")
+                && document.querySelector(".custom-result")?.textContent.includes("All 9 findings")
+                && document.querySelector(".custom-result .custom-status")?.textContent === "partial");
             await checkNotice(rules);
             const all = rules.locator("details").filter({ has: page.getByText("All 9 findings", { exact: true }) });
             await all.locator(":scope > summary").click();
             assert.equal(await all.locator(".internal-review-notice").isVisible(), true);
             assert.equal(await all.locator(":scope > ul > li").count(), 9);
-            await page.waitForFunction(() => document.querySelector(".custom-result")?.textContent.includes("All 9 findings"));
             assert.match(await custom.locator(":scope > .annotation-body").textContent(), /Results incomplete.*Saved source observation/);
             const customAll = custom.locator("details").filter({ has: page.getByText("All 9 findings", { exact: true }) });
             await customAll.locator(":scope > summary").click();
