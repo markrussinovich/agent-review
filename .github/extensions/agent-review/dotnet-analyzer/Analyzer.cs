@@ -110,7 +110,7 @@ internal static class Analyzer
             : DecisionAnalysis.Build(before, after);
         SyntaxFactsCache.Flush(warnings);
         if (before.Limited || after.Limited)
-            paths = paths with { Limited = true, Warnings = paths.Warnings.Append("Snapshot size limits omitted source or symbols.").ToList() };
+            paths = paths with { Limited = true, Warnings = paths.Warnings.Append("Snapshot analysis limits omitted source, symbols, or relationships.").ToList() };
         return new AnalysisResult(symbols.OrderBy(s => s.Id, StringComparer.Ordinal).ToList(),
             DiffEdges(before, after),
             warnings.Distinct(StringComparer.Ordinal).ToList(), paths);
