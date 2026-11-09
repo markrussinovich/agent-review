@@ -123,7 +123,8 @@ export function startReviewServer(state, options = {}) {
                 res.writeHead(200, {
                     "Content-Type": contentTypes[extname(filename)],
                     "Cache-Control": "no-store",
-                    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:",
+                    // The Copilot app injects its ambient theme as inline <style> elements, so styles (not scripts) allow inline.
+                    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:",
                     "X-Content-Type-Options": "nosniff",
                 });
                 res.end(body);

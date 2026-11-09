@@ -32,6 +32,17 @@ test("Copilot theme wins over the opposite OS preference", () => {
         assert.equal(root.getAttribute("data-agent-review-theme"), "host");
     }
 });
+test("the Copilot app's data-theme-tone is followed live and observed", () => {
+    const { root, events, targets } = setup({ system: "dark" });
+    assert.equal(root.getAttribute("data-agent-review-theme"), "system");
+    for (const tone of ["light", "dark"]) {
+        root.setAttribute("data-theme-tone", tone);
+        events.mutation();
+        assert.equal(root.getAttribute("data-theme"), tone);
+        assert.equal(root.getAttribute("data-agent-review-theme"), "host");
+    }
+    assert(targets.every(({ options }) => options.attributeFilter.includes("data-theme-tone")));
+});
 test("late root/body theme injection and live host changes are observed", () => {
     const { root, body, events } = setup();
     body.setAttribute("data-color-mode", "dark");

@@ -6,14 +6,17 @@
     const override = validMode(requested);
     if (requested && !override) console.warn("[agent-review] Unsupported scoutTheme; expected light or dark.");
 
+    // The Copilot app marks its ambient tone with data-theme-tone; other hosts use data-color-mode.
+    const hostMode = (node) => validMode(node?.getAttribute("data-theme-tone"))
+        || validMode(node?.getAttribute("data-color-mode"));
+
     const synchronize = () => {
-        const host = validMode(root.getAttribute("data-color-mode"))
-            || validMode(document.body?.getAttribute("data-color-mode"));
+        const host = hostMode(root) || hostMode(document.body);
         root.setAttribute("data-theme", override || host || (media.matches ? "dark" : "light"));
         root.setAttribute("data-agent-review-theme", override ? "override" : host ? "host" : "system");
     };
     const observer = new MutationObserver(synchronize);
-    const options = { attributes: true, attributeFilter: ["data-color-mode"] };
+    const options = { attributes: true, attributeFilter: ["data-theme-tone", "data-color-mode"] };
     observer.observe(root, options);
     const observeBody = () => {
         observer.observe(document.body, options);
