@@ -5,6 +5,89 @@ import { ReviewState } from "../review-state.mjs";
 import { buildAnnotationPrompt } from "../ai-prompts.mjs";
 import { managedCopilotPath } from "../managed-copilot.mjs";
 
+test("review summaries omit transcripts and session prompts require bounded explicit pages", () => {
+    const state = new ReviewState("C:\\repo");
+    state.model = {
+        metadata: { head: "saved-head" }, summary: { files_changed: 10 }, warnings: [],
+        attention: Array.from({ length: 30 }, (_, index) => ({
+            id: `finding:${index}`, title: `Concern ${index}`, impact_score: index,
+        })),
+    };
+    const turns = Array.from({ length: 96 }, (_, index) => ({
+        id: `turn:${index}`, prompt: `Prompt ${index} ${"x".repeat(1000)}`,
+        referenced_files: Array.from({ length: 100 }, (_, file) => `src/file${file}.js`),
+        agent_activity: [{ summary: "TRANSCRIPT CONTENT ".repeat(2000) }],
+    }));
+    state.sessionContext = {
+        provenance: "copilot_session_history", factual_status: "context_only",
+        intent: [{ summary: "UNRELATED INTENT" }], timeline: [{ summary: "RAW TIMELINE" }],
+        recent_activity: turns[0].agent_activity, turns, event_count: 10000,
+    };
+    assert.ok(JSON.stringify(state.sessionContext).length > 1_200_000);
+    state.selection = { id: "unknown-selection" };
+    const summary = state.contextFor(null);
+    assert.equal(summary.metadata.head, "saved-head");
+    assert.equal(summary.top_concerns[0].id, "finding:29");
+    assert.equal(summary.omitted_concerns, 20);
+    assert.equal(summary.session_context.turn_count, 96);
+    assert.ok(JSON.stringify(summary).length < 5_000);
+    assert.doesNotMatch(JSON.stringify(summary), /TRANSCRIPT CONTENT|UNRELATED INTENT|RAW TIMELINE|Prompt 0/);
+    const page = state.sessionChangeContext({ include_turns: true, offset: 25, limit: 25 });
+    assert.equal(page.turns.length, 25);
+    assert.equal(page.turns[0].id, "turn:25");
+    assert.equal(page.next_offset, 50);
+    assert.equal(page.turns[0].omitted_referenced_files, 80);
+    assert.equal(page.turns[0].activity_count, 1);
+    assert.ok(JSON.stringify(page).length < 40_000);
+    assert.doesNotMatch(JSON.stringify(page), /TRANSCRIPT CONTENT/);
+    assert.equal(state.sessionChangeContext({ include_turns: true, offset: 95 }).next_offset, null);
+    assert.deepEqual(state.sessionChangeContext({ include_turns: true, offset: 100 }).turns, []);
+    for (const input of [{ include_turns: "yes" }, { offset: -1 }, { offset: 0.5 }, { limit: 0 }, { limit: 26 }]) {
+        assert.throws(() => state.sessionChangeContext(input), /Session context requires/);
+    }
+});
+
+test("prompt paging waits for older historical turns before returning offsets", async () => {
+    let finishHistory;
+    const history = new Promise((resolve) => { finishHistory = resolve; });
+    const state = new ReviewState("C:\\repo", {
+        currentSessionId: "current",
+        getSessionEvents: async () => Array.from({ length: 15 }, (_, index) => ({
+            id: `current:${index}`, type: "user.message",
+            timestamp: `2026-11-01T12:${String(index).padStart(2, "0")}:00Z`,
+            data: { content: `Current prompt ${index}` },
+        })),
+        getHistoricalSessionContexts: () => history,
+    });
+    const counts = await state.readSessionChangeContext();
+    assert.equal(counts.turn_count, 15, "counts remain available while history loads");
+    let returned = false;
+    const firstPage = state.readSessionChangeContext({ include_turns: true }).then((page) => {
+        returned = true;
+        return page;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(returned, false);
+    finishHistory({ contexts: [{
+        session_id: "older", event_count: 20,
+        turns: Array.from({ length: 20 }, (_, index) => ({
+            id: `older:${index}`, started_at: `2026-10-01T12:${String(index).padStart(2, "0")}:00Z`,
+            prompt: `Older prompt ${index}`, referenced_files: [], agent_activity: [],
+        })),
+    }], failures: [] });
+    let page = await firstPage;
+    const ids = [];
+    while (true) {
+        ids.push(...page.turns.map((turn) => turn.id));
+        if (page.next_offset === null) break;
+        page = await state.readSessionChangeContext({ include_turns: true, offset: page.next_offset });
+    }
+    assert.equal(ids.length, 35);
+    assert.equal(new Set(ids).size, 35);
+    assert.equal(ids[0], "older:0");
+    assert.equal(ids.at(-1), "session-turn:current:14");
+});
+
 test("annotation prefetch and foreground callers share a generation, persist its result, and retry failures", async () => {
     let calls = 0, finish, started;
     let ready = new Promise((resolve) => { started = resolve; });
