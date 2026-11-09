@@ -40,12 +40,8 @@ export const handlers = {
         const model = await instanceFor(ctx).state.refresh();
         return { ok: true, summary: model.summary };
     },
-    get_review_context: async (ctx) => instanceFor(ctx).state.contextFor(ctx.input?.id),
-    get_session_change_context: async (ctx) => {
-        const instance = instanceFor(ctx);
-        await instance.state.refreshSessionContext();
-        return instance.state.sessionContext;
-    },
+    get_review_context: async (ctx) => instanceFor(ctx).state.contextFor(ctx.input?.id ?? null),
+    get_session_change_context: async (ctx) => instanceFor(ctx).state.readSessionChangeContext(ctx.input || {}),
     focus_item: async (ctx) => {
         const context = instanceFor(ctx).state.select({ id: String(ctx.input.id), kind: String(ctx.input.kind || "") });
         return { ok: true, context };

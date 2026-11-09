@@ -549,6 +549,15 @@ lookup fails. After a fixed extension release is published, update the
 plugin or distribution loader as described below; existing loaders stay pinned to
 their original release.
 
+The canvas `get_review_context` action returns a compact summary when `id` is
+omitted, even if an item is selected. It includes ranked concern IDs and bounded
+analysis warnings, but never conversation turns or activity transcripts.
+`get_session_change_context` returns provenance and counts by default. To inspect
+prompt summaries explicitly, use `{ "include_turns": true, "offset": 0, "limit": 10 }`.
+Pages contain at most 25 turns, clip each prompt to 900 characters, and report
+omitted file references and activity counts. Follow `next_offset` until it is
+`null`; full activity transcripts remain outside these canvas action responses.
+
 ### Install
 
 #### Install from the Copilot marketplace

@@ -1810,6 +1810,51 @@ export class ReviewState {
         };
     }
 
+    async readSessionChangeContext(input = {}) {
+        await this.refreshSessionContext();
+        if (input.include_turns) await this.refreshHistoricalSessionContexts();
+        return this.sessionChangeContext(input);
+    }
+
+    sessionChangeContext({ include_turns = false, offset = 0, limit = 10 } = {}) {
+        if (typeof include_turns !== "boolean" || !Number.isInteger(offset) || offset < 0
+            || !Number.isInteger(limit) || limit < 1 || limit > 25) {
+            throw new Error("Session context requires include_turns as a boolean, a non-negative offset, and limit from 1 to 25.");
+        }
+        const context = this.sessionContext;
+        if (!context) return null;
+        const turns = context.turns || [];
+        const result = {
+            provenance: context.provenance,
+            factual_status: context.factual_status,
+            note: context.note,
+            event_count: context.event_count,
+            turn_count: turns.length,
+            historical_search_complete: context.historical_search_complete || false,
+            historical_session_count: context.historical_session_count || 0,
+            error: context.error || null,
+            history_error: context.history_error || null,
+            history_failures: (context.history_failures || []).slice(0, 10),
+            omitted_history_failures: Math.max(0, (context.history_failures || []).length - 10),
+        };
+        if (include_turns) {
+            result.turns = turns.slice(offset, offset + limit).map((turn) => ({
+                id: turn.id,
+                session_id: turn.session_id,
+                prompt_event_id: turn.prompt_event_id,
+                prompt: String(turn.prompt || "").slice(0, 900),
+                started_at: turn.started_at,
+                ended_at: turn.ended_at,
+                referenced_files: (turn.referenced_files || []).slice(0, 20),
+                omitted_referenced_files: Math.max(0, (turn.referenced_files || []).length - 20),
+                activity_count: (turn.agent_activity || []).length,
+            }));
+            result.offset = offset;
+            result.next_offset = offset + result.turns.length < turns.length ? offset + result.turns.length : null;
+        }
+        return result;
+    }
+
     select(selection) {
         if (selection !== null && (!selection || typeof selection.id !== "string")) {
             throw new Error("Selection must contain an id.");
@@ -1821,7 +1866,19 @@ export class ReviewState {
 
     contextFor(id = this.selection?.id) {
         if (!this.model) return null;
-        if (!id) return { metadata: this.model.metadata, summary: this.model.summary, session_context: this.sessionContext };
+        if (!id) return {
+            metadata: this.model.metadata,
+            summary: this.model.summary,
+            top_concerns: [...(this.model.attention || [])]
+                .sort((a, b) => (b.impact_score || 0) - (a.impact_score || 0))
+                .slice(0, 10).map((item) => ({
+                    id: item.id, title: String(item.title || "").slice(0, 300),
+                    severity: item.severity, impact_score: item.impact_score,
+                })),
+            omitted_concerns: Math.max(0, (this.model.attention || []).length - 10),
+            analysis_quality: boundedAnalysisWarnings(this.model.warnings),
+            session_context: this.sessionChangeContext(),
+        };
         if (id.startsWith("section:")) return contextForSection(this.model, id,
             this.reviewEvidenceModel === this.model ? this.reviewEvidence : null, (subject) => this.contextFor(subject));
         const node = this.model.nodes?.find((item) => item.id === id);
