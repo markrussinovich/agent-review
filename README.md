@@ -1,7 +1,7 @@
 # Agent Review
 
 A GitHub Copilot Canvas extension for reviewing agent-made changes in Python,
-Node.js/TypeScript, C#/.NET, Go, Rust, and Markdown repositories. Start with the change's intent and architecture,
+Node.js/TypeScript, C#/.NET, Go, Rust, C/C++, and Markdown repositories. Start with the change's intent and architecture,
 then follow its impact down to findings, dependency evidence, and source diffs.
 
 [![Agent Review: change brief, architecture graph, attention queue, package changes, source diff, originating prompt, and AI briefing](docs/agent-review.png)](docs/agent-review.png)
@@ -12,7 +12,7 @@ illustrative; changes, graph, and findings come from the analyzer. Click to enla
 
 ## Evaluation projects
 
-The four [review test projects](test-repos/) used for large-change and UX
+The [review test projects](test-repos/) used for large-change and UX
 validation are checked in as portable source fixtures. Each guide describes
 the intended change, what to evaluate, explicit test/coverage commands, and
 which evidence must remain unknown or inferred.
@@ -23,6 +23,7 @@ which evidence must remain unknown or inferred.
 | [Node.js / TypeScript](test-repos/node-demo/README.md) | npm workspaces, JS/TS/JSX/TSX graph and package changes, isolated tests, and exact-source coverage |
 | [Python coverage](test-repos/coverage-demo/README.md) | Inferred versus confirmed paths, aggregate coverage, intentionally untested exits, and exact source-location discussion |
 | [C# / .NET](test-repos/dotnet-demo/README.md) | Partial classes, interfaces, threshold contracts, NuGet locks, xUnit outcomes, and aggregate-only coverage |
+| [C / C++](test-repos/cpp-demo/README.md) | Header-only changes, unchanged consumers, C and C++ syntax, decision paths, and explicit native test builds |
 
 From this checkout, create each sample in a **new directory outside this
 repository**:
@@ -32,6 +33,7 @@ node .\test-repos\prepare.mjs large-repo C:\temp\agent-review-large-repo-sample
 node .\test-repos\prepare.mjs node-demo C:\temp\agent-review-node-demo-sample
 node .\test-repos\prepare.mjs coverage-demo C:\temp\agent-review-coverage-demo-sample
 node .\test-repos\prepare.mjs dotnet-demo C:\temp\agent-review-dotnet-demo-sample
+node .\test-repos\prepare.mjs cpp-demo C:\temp\agent-review-cpp-sample
 ```
 
 The preparer recreates independent local Git baselines without copying nested
@@ -39,8 +41,8 @@ Git metadata, caches, dependencies, or machine-specific coverage reports.
 Existing destinations are rejected, including the original validation repos.
 Setup never installs dependencies, runs tests, or changes your extension.
 Open the printed directory with **Change repository** in Agent Review.
-The large project uses committed `main` / `large-change` targets; the other
-three leave their feature changes uncommitted for **Worktree** review against
+The large project uses committed `main` / `large-change` targets; the others
+leave their feature changes uncommitted for **Worktree** review against
 `HEAD`. Do not review the fixture directories as if they were standalone repos.
 
 Run the setup/regression checks with `node --test test-repos/tests/prepare.test.mjs`.
@@ -158,6 +160,11 @@ reading-pane controls, and the context/discussion switch stays visible while
 reading. Originating-session context (the Copilot request that produced the code)
 sits directly beneath the AI explanation and its risk assessment; errors
 remain explicit. **Focus code** also hides the decision footer while reading.
+
+File explanations select saved changed hunks and surrounding context, including
+for source languages without a symbol analyzer. Changed lines take priority
+within excerpt budgets; omitted source ranges and diff hunks remain explicit.
+Identical partial excerpts do not establish that the file is unchanged.
 
 Whole-file review decisions have a clear finish line: **Not reviewed**,
 **Reviewed**, or **Needs follow-up**. **Mark file reviewed & next** records a
@@ -749,8 +756,11 @@ the extension's own trusted tool once (not a project under review):
 dotnet build .github\extensions\agent-review\dotnet-analyzer\AgentReview.DotnetAnalyzer.csproj -c Release -p:ImportDirectoryBuildProps=false -p:ImportDirectoryBuildTargets=false -p:UseSharedCompilation=false -nodeReuse:false
 ```
 
-The helper references Roslyn bundled with the SDK, without a NuGet package
-dependency. Copy its Release binaries, dependency/runtime configuration and
+Source builds reference Roslyn bundled with the SDK, without a NuGet package
+dependency. The release bundle instead uses the pinned portable
+`Microsoft.CodeAnalysis.CSharp` package, because the SDK's copy is precompiled
+for the build machine's OS and CPU. For a source build, copy the helper's
+Release binaries, dependency/runtime configuration and
 Roslyn assemblies with the extension (not its cache), or set
 `AGENT_REVIEW_DOTNET_HELPER` to the built `AgentReview.Dotnet.dll`.
 Prepare it in a trusted development checkout or a separate owned tooling
@@ -935,7 +945,7 @@ Returning to a target reuses its results while the provider remains running.
 
 ## Limits and data
 
-- Structural analysis supports Python, Node.js/TypeScript, C#/.NET, Go, and Rust; individual
+- Structural analysis supports Python, Node.js/TypeScript, C#/.NET, Go, Rust, and C/C++; individual
   rule-based checks can be language-specific. Other text files
   remain reviewable as diffs. No findings is **not** a correctness guarantee;
   **Priority** ranks attention, not security.
@@ -1041,6 +1051,70 @@ tooling already used by this repository:
 ```powershell
 node .github\extensions\agent-review\tests\browser\bootstrap.mjs
 ```
+
+### C / C++ reviews
+
+The C/C++ adapter uses bundled Tree-sitter C and C++ WebAssembly grammars.
+Static analysis needs no compiler, build directory, package manager, or network
+access. It reads both saved snapshots, including headers and deleted sources,
+and models namespaces, types, declarations, definitions, constructors,
+destructors, operators, lambdas, includes, inheritance, and conservatively linked
+calls. Source ranges, changed signatures/bodies, complexity, callers and decision
+paths feed the existing review layers, architecture, impact, explanation and
+discussion views.
+
+`.c` uses the C grammar; uppercase `.C` and C++ source extensions use C++.
+Ambiguous `.h` headers are tried with both grammars; C++ wins ties and the
+inferred dialect is disclosed. Headers and template implementation files
+(`.hh`, `.hpp`, `.hxx`, `.ipp`, `.tpp`, `.inl`) remain first-class review source.
+Unchanged consumers of changed headers remain available as context.
+
+This is **syntax analysis, not a compiler**. Macros are not expanded,
+preprocessor guards are retained rather than evaluated, and template
+instantiation, ambiguous overloads, pointer calls and dynamic dispatch remain
+unresolved. Parse errors and resource limits are visible; saved diffs remain
+reviewable. Individual files are limited to 5 MB and two seconds per grammar
+parse; decision maps retain the existing 60-entry per-callable and 2,000-entry
+total limits. Analysis never executes CMake, MSBuild, recipes, tests, or
+repository binaries. Conan, vcpkg and other native package integrations are
+not implemented; an include does not establish a dependency's origin/version.
+
+Supported GoogleTest `TEST`/`TEST_F` and Catch2 `TEST_CASE` bodies are linked
+statically through resolved source calls. **Run linked tests** requires explicit
+build/executable configuration in `.agent-review.json`:
+
+```json
+{
+  "test_cpp": "build/native-tests.exe",
+  "test_cpp_build": ["cmake", "--build", "build", "--config", "Debug"]
+}
+```
+
+Configure a build command appropriate to your project. The example assumes
+an already configured worktree build directory; historical commit/PR runs use
+a disposable export without build artifacts, so their build command must also
+configure that export as needed. `test_cpp` must be repository-relative and
+inside the reviewed worktree/export. One configured executable and one test
+framework are supported per run. It is rebuilt before the exact linked tests
+run; source hashes are checked before/after execution, ignoring BOM and CRLF
+differences. Missing configuration, build failure, zero selected tests and
+unreported outcomes are errors, not passing evidence.
+
+Only the explicit execution action runs the configured build command and
+test binary. It may download dependencies and run reviewed scripts/code.
+Snapshot isolation is not a sandbox. Cancellation and timeouts stop the owned
+process tree. Results establish named-test outcomes, **not per-test path
+coverage**; static path associations remain inferred.
+
+Saved LCOV can annotate C/C++ sources and headers when the snapshot contains
+`cpp-coverage.json` (or `.agent-review/cpp-coverage.json`), using the same
+`revision`, `report`, and per-file `source_hashes` shape described below for
+Rust. The report must match the reviewed revision and LF-normalized source
+bytes without a leading UTF-8 BOM. Stale, missing, and ambiguous records remain unknown. Imported LCOV is
+aggregate evidence, not proof that a named test executed a path.
+
+See the portable [C/C++ sample](test-repos/cpp-demo/README.md) for a
+dependency-free native build and review walkthrough.
 
 ### Rust reviews
 
@@ -1211,7 +1285,7 @@ disposable repository is separate from this persistent demo.
 
 Snapshot loading, review lifecycle, source navigation, and UI remain shared.
 Implemented language adapters are **Python**, **Node.js/TypeScript**, **C#/.NET**,
-**Go**, and **Rust**.
+**Go**, **Rust**, **C/C++**, and **Markdown**.
 
 - `analyzer/language_adapters.py` defines the snapshot contract and selects
   adapters using both trees (including deleted sources and manifest-only changes).
@@ -1225,7 +1299,8 @@ Implemented language adapters are **Python**, **Node.js/TypeScript**, **C#/.NET*
   static linkage, and isolated `node:test` runner; `dotnet-review-adapter.mjs`
   routes Roslyn and the opt-in xUnit runner; `go-review-adapter.mjs` routes
   saved-source Go decisions and exact-test execution; and `rust-review-adapter.mjs` routes
-  saved-syntax path extraction and the opt-in exact Cargo runner. Per-language results merge
+  saved-syntax path extraction and the opt-in exact Cargo runner. `cpp-review-adapter.mjs`
+  routes precomputed Tree-sitter decisions and opt-in native test builds/execution. Per-language results merge
   into the shared code-path view; unknown adapters and duplicate callable IDs
   fail explicitly.
 - `web/languages.mjs` shares implemented source-language and test-path

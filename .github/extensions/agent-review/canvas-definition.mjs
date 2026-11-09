@@ -1,7 +1,7 @@
 export const canvasDefinition = {
     id: "agent-review",
     displayName: "Agent Review",
-    description: "Understand Python, JavaScript/TypeScript, C#/.NET, Go, and Rust changes from architecture to deterministic source evidence.",
+    description: "Understand Python, JavaScript/TypeScript, C#/.NET, Go, Rust, and C/C++ changes from architecture to deterministic source evidence.",
     inputSchema: {
         type: ["object", "null"],
         properties: {

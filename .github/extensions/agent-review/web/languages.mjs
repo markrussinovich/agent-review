@@ -6,7 +6,13 @@ export const LANGUAGE_SUPPORT = Object.freeze([
     Object.freeze({ id: "go", name: "Go", extensions: Object.freeze([".go"]) }),
     Object.freeze({ id: "rust", name: "Rust", extensions: Object.freeze([".rs"]) }),
     Object.freeze({ id: "markdown", name: "Markdown", executable: false, extensions: Object.freeze([".md"]) }),
+    Object.freeze({ id: "cpp", name: "C / C++", extensions: Object.freeze([".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".ipp", ".tpp", ".inl"]) }),
 ]);
+
+export function isCppSourcePath(path) {
+    return LANGUAGE_SUPPORT.find((language) => language.id === "cpp").extensions.some((extension) =>
+        String(path || "").toLowerCase().endsWith(extension));
+}
 
 export function languageForPath(path) {
     return LANGUAGE_SUPPORT.find((language) => language.extensions.some((extension) =>
@@ -18,7 +24,8 @@ export function isTestPath(path) {
         || /\.(?:test|spec)\.[cm]?[jt]sx?$/i.test(path || "")
         || /(^|\/)[^/]*tests?[^/]*\/.*\.cs$|tests?\.cs$/i.test(path || "")
         || /_test\.go$/i.test(path || "")
-        || /(^|\/)(?:tests?|benches)\/.*\.rs$/i.test(path || "");
+        || /(^|\/)(?:tests?|benches)\/.*\.rs$/i.test(path || "")
+        || (isCppSourcePath(path) && /(?:^|\/)(?:test_[^/]+|[^/]+_tests?|[^/]+[Tt]ests?)\.[^.]+$/.test(path || ""));
 }
 
 export function isReviewSymbol(node) {
@@ -27,5 +34,7 @@ export function isReviewSymbol(node) {
         || (node?.language === "csharp" && ["namespace", "interface", "struct", "record", "enum",
             "delegate", "constructor", "operator", "property", "accessor", "field", "event"].includes(kind))
         || (node?.language === "go" && ["type", "struct", "interface"].includes(kind))
-        || (node?.language === "rust" && ["module", "struct", "enum", "trait"].includes(kind));
+        || (node?.language === "rust" && ["module", "struct", "enum", "trait"].includes(kind))
+        || (node?.language === "cpp" && ["namespace", "struct", "union", "enum", "type",
+            "constructor", "destructor", "operator", "lambda"].includes(kind));
 }

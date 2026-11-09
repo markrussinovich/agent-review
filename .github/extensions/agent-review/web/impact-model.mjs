@@ -5,7 +5,7 @@ const relationshipTypes = new Set(["calls", "imports", "inherits", "uses_package
 
 // The analyzer can mark members "modified" when only their file or containing type changed. Impact shows a callable as
 // changed only when its own lines changed or it was added/removed; packages, classes and modules keep the analyzer's flag.
-const CALLABLE_KINDS = new Set(["function", "method", "constructor"]);
+const CALLABLE_KINDS = new Set(["function", "method", "constructor", "destructor", "operator", "lambda"]);
 function effectiveChange(node, changedPaths) {
     if (node.change !== "modified" || !CALLABLE_KINDS.has(node.kind)) return node.change;
     if (node.path && !changedPaths.has(node.path)) return "unchanged";
@@ -55,14 +55,14 @@ export function impactSeeds(model, id) {
     const evidence = model.evidence?.[id];
     if (evidence?.path) {
         const precise = (model.nodes || []).filter((item) => item.path === evidence.path && item.start_line <= evidence.line
-            && item.end_line >= evidence.line && ["function", "method", "constructor"].includes(item.kind))
+            && item.end_line >= evidence.line && CALLABLE_KINDS.has(item.kind))
             .sort((a, b) => (a.end_line - a.start_line) - (b.end_line - b.start_line))[0];
         return precise ? [precise.id] : impactSeeds(model, `file:${evidence.path}`);
     }
     const path = subjectId?.startsWith("file:") ? subjectId.slice(5) : node?.kind === "module" ? node.path : null;
     if (path) {
         const callables = (model.nodes || []).filter((item) => item.path === path
-            && ["function", "method", "constructor"].includes(item.kind) && item.change !== "unchanged");
+            && CALLABLE_KINDS.has(item.kind) && item.change !== "unchanged");
         return callables.length ? callables.map((item) => item.id) : node ? [node.id] : [];
     }
     return node ? [node.id] : [];
