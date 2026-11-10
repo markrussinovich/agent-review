@@ -6,6 +6,7 @@ import { isTestPath } from "./web/languages.mjs";
 import { repositoryRuleReferences } from "./review-contracts.mjs";
 import { impactSlice } from "./web/impact-model.mjs";
 import { effectiveDocuments } from "./markdown-context.mjs";
+import { internalReviewPresentation } from "./web/review-presentation.mjs";
 
 const VERSION = 7;
 export const REVIEW_LIMITS = Object.freeze({
@@ -426,13 +427,14 @@ function renderCitation(citation) {
 }
 
 export function renderReview(result, maxShown = REVIEW_LIMITS.maxFindingsShown) {
+    const presentation = internalReviewPresentation(result);
     const shown = result.findings.slice(0, maxShown);
     const findings = shown.length ? shown.map((item) =>
         `- **${item.severity[0].toUpperCase()}${item.severity.slice(1)}: ${item.title}** ${item.detail} (${item.citations.map(renderCitation).join(", ")}).`).join("\n")
-        : result.status === "complete" ? "No supported findings." : "No supported findings in the completed analysis.";
+        : presentation.empty;
     const gaps = result.gaps.slice(0, 5).map((gap) => `- ${gap.path ? `\`${gap.path}\`: ` : ""}${gap.reason}`);
     const coverage = result.coverage;
-    return `## Findings\n\n${findings}\n\n## Verification\n\n`
+    return `## Findings\n\n${presentation.notice ? `**${presentation.notice}**\n\n` : ""}${findings}\n\n## Verification\n\n`
         + `- Analysis completed for ${coverage.completed_files} of ${coverage.total_files} changed files; ${coverage.completed_units} of ${coverage.total_units} evidence units.`
         + (result.findings.length > shown.length ? ` Showing ${shown.length} of ${result.findings.length} findings.` : "")
         + `\n${gaps.join("\n")}${result.gaps.length > gaps.length ? `\n- ${result.gaps.length - gaps.length} additional evidence gaps remain.` : ""}`;

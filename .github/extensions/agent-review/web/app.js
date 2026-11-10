@@ -66,7 +66,7 @@ const [
     { ItemDiscussionPane },
     { aiPlaceholder: activityPlaceholder },
     { parseReviewLocation, reviewLocation },
-    { annotationSections, conciseReviewText, overviewBlurb, reviewCommands, reviewContext, reviewItemEvidence, reviewSignal },
+    { annotationSections, conciseReviewText, internalReviewPresentation, overviewBlurb, reviewCommands, reviewContext, reviewItemEvidence, reviewSignal },
     { isReviewSymbol, isTestPath, languageForPath },
     { ConnectionFeedback },
     { describeAnalysisWarning, summarizeAnalysisWarnings, unlinkedSentence },
@@ -3364,6 +3364,7 @@ function appendInternalReview(container, review, scope, resume) {
     if (review.findings?.length > 8) {
         const all = el("details", "");
         all.append(el("summary", "", `All ${review.findings.length} findings`));
+        appendInternalReviewNotice(all, review);
         const list = el("ul", "");
         for (const finding of review.findings) {
             const item = el("li", "");
@@ -3403,11 +3404,20 @@ function appendInternalReview(container, review, scope, resume) {
     }
 }
 
+function appendInternalReviewNotice(container, review) {
+    const { notice } = internalReviewPresentation(review);
+    if (!notice) return;
+    const banner = el("p", "overview-limitation internal-review-notice");
+    banner.setAttribute("role", "status");
+    banner.append(el("strong", "", notice));
+    container.append(banner);
+}
+
 function renderInternalReviewBody(container, review) {
     container.append(el("h3", "", "Findings"));
+    appendInternalReviewNotice(container, review);
     if (!review.findings?.length) {
-        container.append(el("p", "", review.status === "complete"
-            ? "No supported findings." : "No supported findings in the completed analysis."));
+        container.append(el("p", "", internalReviewPresentation(review).empty));
         return;
     }
     const list = el("ul", "");
@@ -3461,7 +3471,7 @@ function renderRuleCheck() {
         method: "POST", body: JSON.stringify({ force: false }),
     }));
     if (rules.status === "running" && !rules.coverage) details.append(aiPlaceholder("rule-check", "Copilot is checking the change against the repository rules…", 3));
-    if (rules.content) {
+    if (rules.content || rules.coverage) {
         markdownContext.subject = null;
         markdownContext.intent = null;
         const body = revealOnce(el("div", "annotation-body"), "rule-check");
@@ -6972,7 +6982,7 @@ function renderCustomAnalyses() {
         if (result?.status === "running" && !result.coverage) {
             details.append(aiPlaceholder(`custom:${key}`, "Copilot is running this check...", 3));
         }
-        if (result?.content) {
+        if (result?.content || result?.coverage) {
             markdownContext.subject = null;
             markdownContext.intent = null;
             const body = revealOnce(el("div", "annotation-body"), `custom:${key}`);
