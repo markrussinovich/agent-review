@@ -209,6 +209,8 @@ class ReviewModel:
                 **({"analysis_incomplete": True,
                     "unavailable_languages": self.repository["unavailable_languages"]}
                    if self.repository.get("analysis_incomplete") else {}),
+                **({"snapshot_exclusions": self.repository["snapshot_exclusions"]}
+                   if "snapshot_exclusions" in self.repository else {}),
                 **({"node_loc": self.repository["node_loc"]} if "node_loc" in self.repository else {}),
                 **({"csharp_loc": self.repository["csharp_loc"]} if "csharp_loc" in self.repository else {}),
                 **({"go_loc": self.repository["go_loc"]} if "go_loc" in self.repository else {}),

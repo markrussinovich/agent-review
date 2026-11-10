@@ -7189,7 +7189,11 @@ function renderView() {
         elements.clean_review.querySelector("p").textContent = worktreeNotice
             ? "Reanalyze to check the latest worktree. This saved snapshot does not include later edits."
             : state.connectionLost ? "This is the last saved result; it cannot confirm the current worktree while disconnected."
-                : "The selected snapshot has no reviewable changes against its baseline.";
+                : model.metadata?.snapshot_exclusions?.changed_files
+                    ? `${countLabel(model.metadata.snapshot_exclusions.changed_files, "changed file")} excluded by snapshot rules: ${
+                        model.metadata.snapshot_exclusions.rules.map((rule) => `${rule.pattern} (${rule.reason === "user" ? "explicit exclude" : "default rule"}: ${rule.count})`).join("; ")
+                    }. No included files changed. Agent Review source is included automatically in its own source repository; installed extension files and caches remain excluded elsewhere.`
+                    : "The selected snapshot has no reviewable changes against its baseline.";
         for (const element of [elements.review_overview, elements.review_background, elements.change_brief, elements.custom_analyses, elements.summary,
             elements.breadcrumbs, document.querySelector(".workspace"), elements.source_panel, elements.session_history_panel]) {
             element.classList.add("hidden");
@@ -7867,7 +7871,7 @@ function renderReviewPickerNotice() {
     const pending = Boolean(state.reviewPickerPending || state.reviewSubmitting
         || (state.payload?.loading && !state.payload.model));
     for (const element of [elements.review_overview, elements.review_background, elements.change_brief, elements.summary, document.querySelector(".workspace")]) {
-        element.classList.toggle("hidden", pending);
+        element.classList.toggle("hidden", pending || isEmptyReview(state.payload));
     }
     // renderBreadcrumbs owns their visibility once a review is open; the picker only hides them.
     if (pending) elements.breadcrumbs.classList.add("hidden");

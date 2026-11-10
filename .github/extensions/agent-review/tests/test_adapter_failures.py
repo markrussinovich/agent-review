@@ -63,12 +63,12 @@ class FailingAdapter:
 
 
 class AdapterFailureTests(unittest.TestCase):
-    def review(self, adapters):
+    def review(self, adapters, excluded_changes=()):
         before = {"main.py": b"def run():\n    return 1\n"}
         after = {"main.py": b"def run():\n    return 2\n"}
         changes = [{"path": "main.py", "status": "modified", "current_lines": 2,
                     "lines_added": 1, "lines_removed": 1, "added_lines": [2], "removed_lines": [2]}]
-        snapshot = SimpleNamespace(baseline=before, current=after,
+        snapshot = SimpleNamespace(baseline=before, current=after, excluded_changes=excluded_changes,
             changes=lambda: copy.deepcopy(changes),
             source_files=lambda *_: {"main.py": {"baseline": before["main.py"].decode(),
                                                 "current": after["main.py"].decode()}})
@@ -83,6 +83,16 @@ class AdapterFailureTests(unittest.TestCase):
             self.stderr = io.StringIO()
             stack.enter_context(redirect_stderr(self.stderr))
             return build_review(".", "main", (), use_cache=False)
+
+    def test_snapshot_exclusions_and_incomplete_language_metadata_are_both_retained(self):
+        exclusions = ({"reason": "default", "pattern": "node_modules", "count": 1},)
+        result = self.review((PYTHON_ADAPTER, FailingAdapter("scan")), excluded_changes=exclusions).to_dict()
+        self.assertEqual(result["metadata"]["snapshot_exclusions"],
+                         {"changed_files": 1, "rules": list(exclusions)})
+        self.assertTrue(result["metadata"]["analysis_incomplete"])
+        self.assertEqual(result["metadata"]["unavailable_languages"],
+                         [{"language": "broken", "phase": "scan", "reason": "deliberate helper failure"}])
+        self.assertIn("return 2", result["source_files"]["main.py"]["current"])
 
     def test_each_phase_discards_the_whole_language_and_retains_healthy_facts(self):
         healthy = self.review((PYTHON_ADAPTER,)).to_dict()

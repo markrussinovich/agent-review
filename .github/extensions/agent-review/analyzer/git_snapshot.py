@@ -16,6 +16,24 @@ from pathlib import Path
 DEFAULT_EXCLUDES = tuple(json.loads(
     Path(__file__).with_name("snapshot-excludes.json").read_text(encoding="utf-8")
 ))
+SELF_REPOSITORY_MARKERS = tuple(json.loads(
+    Path(__file__).with_name("self-repository-markers.json").read_text(encoding="utf-8")
+))
+EXTENSION_SOURCE = ".github/extensions/agent-review"
+
+
+def default_excludes(repo: Path, refs: tuple[str, ...] = ()) -> tuple[str, ...]:
+    # The tracked product layout distinguishes a source checkout from an install,
+    # including offline forks and arbitrarily named worktrees.
+    tracked = set(run_git(repo, "ls-files", "--cached", "-z", "--",
+                          *(f":(top,literal){marker}" for marker in SELF_REPOSITORY_MARKERS)).split("\0"))
+    head = run_git(repo, "rev-parse", "--verify", "--quiet", "HEAD", check=False).strip()
+    for ref in dict.fromkeys((*refs, *([head] if head else []))):
+        tracked.update(run_git(repo, "ls-tree", "-r", "--name-only", "-z", ref, "--",
+                               *SELF_REPOSITORY_MARKERS).split("\0"))
+    if all(marker in tracked for marker in SELF_REPOSITORY_MARKERS):
+        return tuple(pattern for pattern in DEFAULT_EXCLUDES if pattern != EXTENSION_SOURCE)
+    return DEFAULT_EXCLUDES
 
 
 def _content_equal(before: bytes, after: bytes) -> bool:
@@ -117,15 +135,17 @@ def _snapshot_regular_file(repo: Path, name: str) -> bool:
 
 def current_files(
     repo: Path, excludes: tuple[str, ...], on_progress: Callable[[str], None] | None = None,
+    *, defaults: tuple[str, ...] | None = None,
 ) -> dict[str, bytes]:
     result: dict[str, bytes] = {}
-    patterns = DEFAULT_EXCLUDES + excludes
+    defaults = default_excludes(repo) if defaults is None else defaults
+    patterns = defaults + excludes
     last_update = time.monotonic()
     total_bytes = 0
     if on_progress:
         on_progress("Listing tracked and non-ignored working-tree files")
     pathspecs = [":/"]
-    for pattern in DEFAULT_EXCLUDES:
+    for pattern in defaults:
         prefix = "**/" if "/" not in pattern and not any(char in pattern for char in "*?[") else ""
         pathspecs.extend((f":(exclude,glob){prefix}{pattern}", f":(exclude,glob){prefix}{pattern}/**"))
     paths = [
@@ -154,10 +174,11 @@ def current_files(
 def baseline_files(
     repo: Path, base_ref: str | None, excludes: tuple[str, ...],
     on_progress: Callable[[str], None] | None = None,
+    *, defaults: tuple[str, ...] | None = None,
 ) -> dict[str, bytes]:
     if not base_ref:
         return {}
-    patterns = DEFAULT_EXCLUDES + excludes
+    patterns = (default_excludes(repo, (base_ref,)) if defaults is None else defaults) + excludes
     if on_progress:
         on_progress(f"Listing tracked files in {base_ref}")
     entries: list[tuple[str, str]] = []
@@ -211,6 +232,7 @@ class Snapshot:
     baseline: dict[str, bytes]
     current: dict[str, bytes]
     _large_diffs: dict[str, str] = field(default_factory=dict, compare=False, repr=False)
+    excluded_changes: tuple[dict[str, object], ...] = ()
 
     def _large_diff(self, path: str, before: bytes, after: bytes) -> str:
         if path not in self._large_diffs:
@@ -377,11 +399,33 @@ def create_snapshot(
     repo: Path, base_ref: str | None, excludes: tuple[str, ...], current_ref: str | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> Snapshot:
+    defaults = default_excludes(repo, tuple(ref for ref in (base_ref, current_ref) if ref))
+    if base_ref:
+        names = run_git(repo, "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+                        "--name-only", "-z", base_ref, *([current_ref] if current_ref else []), "--").split("\0")
+    elif current_ref:
+        names = run_git(repo, "ls-tree", "-r", "--name-only", "-z", current_ref).split("\0")
+    else:
+        names = run_git(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard").split("\0")
+        names = [name for name in names if name and _snapshot_regular_file(repo, name)]
+    if not current_ref and base_ref:
+        names += run_git(repo, "ls-files", "-z", "--others", "--exclude-standard").split("\0")
+    counts: dict[tuple[str, str], int] = {}
+    for name in set(names) - {""}:
+        for reason, patterns in (("user", excludes), ("default", defaults)):
+            pattern = next((pattern for pattern in patterns if _excluded(name, (pattern,))), None)
+            if pattern is not None:
+                key = (reason, pattern)
+                counts[key] = counts.get(key, 0) + 1
+                break
     return Snapshot(
         repo,
         base_ref,
-        baseline_files(repo, base_ref, excludes, on_progress),
-        baseline_files(repo, current_ref, excludes, on_progress) if current_ref else current_files(repo, excludes, on_progress),
+        baseline_files(repo, base_ref, excludes, on_progress, defaults=defaults),
+        baseline_files(repo, current_ref, excludes, on_progress, defaults=defaults) if current_ref else current_files(
+            repo, excludes, on_progress, defaults=defaults),
+        excluded_changes=tuple({"reason": reason, "pattern": pattern, "count": count}
+                               for (reason, pattern), count in sorted(counts.items())),
     )
 
 

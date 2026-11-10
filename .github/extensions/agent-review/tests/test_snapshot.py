@@ -11,10 +11,84 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "analyzer"))
-from git_snapshot import Snapshot, baseline_files, current_files
+from git_snapshot import Snapshot, baseline_files, current_files, create_snapshot, SELF_REPOSITORY_MARKERS
 
 
 class SnapshotTests(unittest.TestCase):
+    def test_self_source_policy_is_tracked_and_stable_for_saved_and_worktree_pairs(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="arbitrary-fork-name-") as directory:
+            repo = Path(directory)
+            def git(*args: str) -> str:
+                return subprocess.check_output(["git", "-C", str(repo), *args], stderr=subprocess.PIPE).decode().strip()
+            git("init", "-q")
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.invalid")
+            git("config", "core.autocrlf", "false")
+            source = ".github/extensions/agent-review/analyzer/source.py"
+            for name in (*SELF_REPOSITORY_MARKERS, source):
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"value = 1\n")
+            # Merely installing the complete layout without tracking it cannot opt in.
+            self.assertNotIn(source, current_files(repo, ()))
+            git("add", ".")
+            git("commit", "-qm", "source checkout")
+            base = git("rev-parse", "HEAD")
+            (repo / source).write_bytes(b"value = 2\n")
+            cache = repo / ".github/extensions/agent-review/node_modules/cache.py"
+            cache.parent.mkdir()
+            cache.write_text("do not collect\n")
+            snapshot = create_snapshot(repo, base, ())
+            self.assertEqual("modified", next(change["status"] for change in snapshot.changes() if change["path"] == source))
+            self.assertNotIn(cache.relative_to(repo).as_posix(), snapshot.current)
+            for marker in SELF_REPOSITORY_MARKERS[:-1]:
+                git("rm", marker)
+            git("mv", SELF_REPOSITORY_MARKERS[-1], ".github/extensions/agent-review/renamed-manifest.json")
+            # Index-only detection would re-exclude all source after staged deletion.
+            self.assertIn(source, current_files(repo, ()))
+            self.assertIn(source, create_snapshot(repo, base, ()).baseline)
+            git("add", source)
+            git("commit", "-qm", "remove markers and modify source")
+            head = git("rev-parse", "HEAD")
+            saved = create_snapshot(repo, base, (), head)
+            self.assertEqual(b"value = 1\n", saved.baseline[source])
+            self.assertEqual(b"value = 2\n", saved.current[source])
+            worktree = create_snapshot(repo, base, ())
+            self.assertIn(source, worktree.current)
+            explicit = create_snapshot(repo, base, (".github/extensions/agent-review",), head)
+            self.assertNotIn(source, explicit.baseline)
+            self.assertNotIn(source, explicit.current)
+            self.assertEqual("user", explicit.excluded_changes[0]["reason"])
+            self.assertEqual(3, explicit.excluded_changes[0]["count"])
+
+    def test_foreign_tracked_install_stays_excluded_and_reports_changed_count(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="agent-review-") as directory:
+            repo = Path(directory)
+            def git(*args: str) -> str:
+                return subprocess.check_output(["git", "-C", str(repo), *args], stderr=subprocess.PIPE).decode().strip()
+            git("init", "-q")
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.invalid")
+            source = ".github/extensions/agent-review/source.py"
+            (repo / source).parent.mkdir(parents=True)
+            (repo / source).write_text("value = 1\n")
+            (repo / SELF_REPOSITORY_MARKERS[-1]).write_text("{}")
+            git("add", ".")
+            git("commit", "-qm", "foreign tracked install")
+            base = git("rev-parse", "HEAD")
+            (repo / source).write_text("value = 2\n")
+            (repo / ".github/extensions/agent-review/untracked.py").write_text("new\n")
+            snapshot = create_snapshot(repo, base, ())
+            self.assertEqual({}, snapshot.current)
+            self.assertEqual(({"reason": "default", "pattern": ".github/extensions/agent-review", "count": 2},),
+                             snapshot.excluded_changes)
+            git("add", ".")
+            git("commit", "-qm", "installed source edits")
+            saved = create_snapshot(repo, base, (), git("rev-parse", "HEAD"))
+            self.assertEqual({}, saved.baseline)
+            self.assertEqual({}, saved.current)
+            self.assertEqual(snapshot.excluded_changes, saved.excluded_changes)
+
     def test_large_repetitive_diff_uses_saved_bytes_and_preserves_late_change(self) -> None:
         lines = [b"// repeated context\n"] * 20000
         before = b"".join(lines) + b"-- old value\n"
@@ -100,7 +174,8 @@ class SnapshotTests(unittest.TestCase):
                 actual = baseline_files(repo, "HEAD", (), updates.append)
             self.assertEqual(expected, actual)
             self.assertEqual(expected, current_files(repo, ()))
-            self.assertEqual(3, calls.call_count, "one ls-tree plus two cat-file batches, not one process per file")
+            self.assertEqual(2, sum("--batch" in call.args[0] for call in calls.call_args_list),
+                             "two cat-file batches, not one process per file")
             self.assertTrue(any("of 108" in update for update in updates))
             self.assertIn("Snapshot complete", updates[-1])
             self.assertEqual({}, baseline_files(repo, None, ()))
