@@ -1,0 +1,5 @@
+[
+  "scripts/build-distribution.mjs",
+  "scripts/verify-distribution.mjs",
+  ".github/extensions/agent-review/copilot-extension.json"
+]

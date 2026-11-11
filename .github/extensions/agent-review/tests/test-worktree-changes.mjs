@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, writeFile, mkdir, rename, rm, open } from "node:fs/promises";
+import { mkdtemp, writeFile, mkdir, rename, rm, open, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fingerprintWorktree } from "../worktree-changes.mjs";
@@ -14,6 +14,60 @@ const execute = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const model = () => ({ metadata: {}, nodes: [], edges: [], attention: [], package_changes: [],
     evidence: {}, changes: [], summary: {}, coverage: {}, warnings: [] });
+
+test("self-source fingerprints include tracked product source across marker deletion, but never foreign installs or caches", async (t) => {
+    const markers = JSON.parse(await readFile(new URL("../analyzer/self-repository-markers.json", import.meta.url), "utf8"));
+    for (const self of [false, true]) {
+        const repo = await mkdtemp(join(tmpdir(), self ? "unrelated-fork-name-" : "agent-review-"));
+        t.after(() => rm(repo, { recursive: true, force: true }));
+        const git = (...args) => execute("git", ["-C", repo, ...args]);
+        await git("init", "-q");
+        await git("config", "user.name", "Test");
+        await git("config", "user.email", "test@example.invalid");
+        const source = join(repo, ".github", "extensions", "agent-review", "source.py");
+        for (const marker of markers) {
+            const path = join(repo, ...marker.split("/"));
+            await mkdir(dirname(path), { recursive: true });
+            await writeFile(path, "{}");
+        }
+        await writeFile(source, "value = 1\n");
+        await writeFile(join(repo, "main.py"), "value = 1\n");
+        await git("add", self ? "." : "main.py");
+        await git("commit", "-qm", "base");
+        const base = (await git("rev-parse", "HEAD")).stdout.trim();
+        let initial = await fingerprintWorktree(repo, { baseRef: base });
+        await writeFile(source, "value = 22\n");
+        const next = await fingerprintWorktree(repo, { baseRef: base });
+        if (self) assert.notEqual(next, initial);
+        else assert.equal(next, initial, "untracked layout cannot identify an installed extension as the product");
+        initial = next;
+        const cache = join(dirname(source), "node_modules", "cache.py");
+        await mkdir(dirname(cache), { recursive: true });
+        await writeFile(cache, "excluded\n");
+        assert.equal(await fingerprintWorktree(repo, { baseRef: base }), initial);
+        if (self) {
+            for (const marker of markers.slice(0, -1)) await git("rm", marker);
+            await git("mv", markers.at(-1), ".github/extensions/agent-review/renamed-manifest.json");
+            initial = await fingerprintWorktree(repo, { baseRef: base });
+            await writeFile(source, "value = 333\n");
+            assert.notEqual(await fingerprintWorktree(repo, { baseRef: base }), initial, "staged marker deletion keeps self-source in the fingerprint");
+            await git("add", source);
+            await git("commit", "-qm", "remove markers");
+            initial = await fingerprintWorktree(repo, { baseRef: base });
+            await writeFile(source, "value = 4444\n");
+            assert.notEqual(await fingerprintWorktree(repo, { baseRef: base }), initial, "saved baseline markers keep the pair policy stable");
+            await mkdir(join(repo, "subfolder"));
+            assert.equal(await fingerprintWorktree(join(repo, "subfolder"), { baseRef: base }),
+                await fingerprintWorktree(repo, { baseRef: base }));
+        } else {
+            await git("add", ".github");
+            await git("commit", "-qm", "tracked foreign install");
+            initial = await fingerprintWorktree(repo);
+            await writeFile(source, "value = 4444\n");
+            assert.equal(await fingerprintWorktree(repo), initial, "tracked extension without root distribution scripts remains excluded");
+        }
+    }
+});
 
 test("fingerprints cover same-sized edits, additions, deletions, renames, commits, and analysis inputs", async (t) => {
     const repo = await mkdtemp(join(tmpdir(), "worktree-fingerprint-"));
