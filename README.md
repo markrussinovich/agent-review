@@ -104,6 +104,12 @@ test exercise presentation, not semantic instruction compliance.
 
 ### Understand the change
 
+If fatal analysis fails, Agent Review shows a short recovery message and
+**Retry**. **Technical details** keeps the complete diagnostic in one collapsed,
+copyable section. A failed refresh leaves the previous saved review available,
+explicitly identified as previous data. Partial-analysis warnings remain in the
+review's existing limitation summary.
+
 **Worktree** compares the saved working tree with the configured comparison
 base, not necessarily `HEAD`. A stale local `main` can therefore include years
 of committed history even in a clean worktree. Use `origin/main` for the current

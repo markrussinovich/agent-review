@@ -69,6 +69,7 @@ const [
     { annotationSections, conciseReviewText, internalReviewPresentation, overviewBlurb, reviewCommands, reviewContext, reviewItemEvidence, reviewSignal },
     { isReviewSymbol, isTestPath, languageForPath },
     { ConnectionFeedback },
+    { AnalyzerErrorPresenter },
     { describeAnalysisWarning, summarizeAnalysisWarnings, unlinkedSentence },
     { buildReviewPlan, concernPriorities },
     { fileTree, groupForSource, reviewSequence, treeTotals, workspaceNavigation },
@@ -86,7 +87,7 @@ const [
     import("/package-presentation.mjs"), import("/source-references.mjs"), import("/diff-context.mjs"),
     import("/impact-model.mjs"), import("/item-discussion-ui.mjs"), import("/ai-activity.mjs"),
     import("/review-location.mjs"), import("/review-presentation.mjs"), import("/languages.mjs"),
-    import("/connection-feedback.mjs"), import("/analysis-limitations.mjs"), import("/review-plan.mjs"),
+    import("/connection-feedback.mjs"), import("/analyzer-error.mjs"), import("/analysis-limitations.mjs"), import("/review-plan.mjs"),
     import("/review-workspace.mjs"), import("/count-format.mjs"), import("/review-ledger.mjs"),
     import("/decision-map.mjs"),
 ]);
@@ -157,6 +158,22 @@ const elements = Object.fromEntries([
     "prompt-manager-error", "prompt-library", "prompt-editor", "prompt-editor-title", "prompt-scope",
     "prompt-title", "prompt-text", "prompt-enabled", "prompt-save", "prompt-new",
 ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
+const analyzerErrorPresenter = new AnalyzerErrorPresenter(elements.error, {
+    retry: async () => {
+        if (state.analyzerRetryPending || state.payload?.loading || state.connectionLost) return;
+        state.analyzerRetryPending = true;
+        elements.status.focus({ preventScroll: true });
+        renderError();
+        try {
+            if (state.reviewPickerPending) await openSelectedReview();
+            else await reanalyze();
+        } finally {
+            state.analyzerRetryPending = false;
+            renderError();
+        }
+    },
+    copy: (button, text, onError) => copyText(button, text, onError),
+});
 const connectionFeedback = new ConnectionFeedback({
     onChange: (phase) => {
         state.connectionLost = phase !== "connected";
@@ -1232,8 +1249,9 @@ function evidenceButton(id) {
     return button;
 }
 
-async function copyText(button, text) {
+async function copyText(button, text, onError = showError) {
     const originalLabel = button.getAttribute("aria-label") || "Copy";
+    const originalText = button.textContent;
     try {
         let copied = false;
         if (navigator.clipboard?.writeText) {
@@ -1250,23 +1268,25 @@ async function copyText(button, text) {
             textarea.style.position = "fixed";
             textarea.style.opacity = "0";
             document.body.append(textarea);
+            const focus = document.activeElement;
             try {
                 textarea.select();
                 if (!document.execCommand("copy")) throw new Error("The browser rejected the copy command.");
             } finally {
                 textarea.remove();
+                focus?.focus({ preventScroll: true });
             }
         }
         button.textContent = "✓";
         button.setAttribute("aria-label", "Copied");
         button.title = "Copied";
         setTimeout(() => {
-            button.textContent = "⧉";
+            button.textContent = originalText;
             button.setAttribute("aria-label", originalLabel);
             button.title = originalLabel;
         }, 1500);
     } catch (error) {
-        showError(new Error(`Unable to copy text: ${error.message}`));
+        onError(new Error(`Unable to copy text: ${error.message}`));
     }
 }
 
@@ -7150,11 +7170,12 @@ function renderView() {
     elements.change_repository.disabled = Boolean(payload?.loading || state.repositorySubmitting || state.connectionLost);
     const progress = payload?.progress;
     elements.status.textContent = payload?.loading ? `Analyzing ${progress?.percent || 0}%`
-        : payload?.cancelled ? "Analysis cancelled" : model ? payload.restored_from_cache ? "Saved review" : "Analysis current"
+        : payload?.cancelled ? "Analysis cancelled" : payload?.error ? "Analysis failed" : model ? payload.restored_from_cache ? "Saved review" : "Analysis current"
             : targetMode === "none" ? "Choose review" : "Waiting";
     elements.status.title = payload?.loading ? progress?.message || "Analyzing repository"
         : payload?.analyzed_at ? `Analyzed ${new Date(payload.analyzed_at).toLocaleString()}${payload.restored_from_cache ? ". Reanalyze to update." : ""}` : "";
     elements.status.classList.toggle("working", Boolean(payload?.loading));
+    elements.status.classList.toggle("failed", Boolean(payload?.error));
     elements.status.classList.toggle("stale", Boolean(worktreeNotice));
     if (worktreeNotice) elements.status.textContent = payload.worktree_changed ? "Worktree changed" : "Freshness unknown";
     elements.refresh.disabled = Boolean(payload?.loading || state.reviewPickerPending || state.connectionLost);
@@ -7164,9 +7185,7 @@ function renderView() {
     elements.analysis_cancelled.classList.toggle("hidden", !payload?.cancelled);
     updateReviewApply();
     // Background re-renders must not erase a client-side warning; it stays until the user opens other source or the review changes.
-    const clientError = state.clientError && state.clientError.generation === payload?.review_generation ? state.clientError.message : null;
-    elements.error.classList.toggle("hidden", !payload?.error && !clientError);
-    elements.error.textContent = payload?.error || clientError || "";
+    renderError();
     elements.analysis_progress.classList.toggle("hidden", !payload?.loading || state.connectionLost);
     if (payload?.loading) {
         const percent = Math.max(0, Math.min(100, Number(progress?.percent || 0)));
@@ -7351,14 +7370,23 @@ function applyServerSelection(payload) {
     }
 }
 
+function renderError() {
+    const payload = state.payload;
+    const clientError = state.clientError?.generation === payload?.review_generation ? state.clientError?.message : null;
+    analyzerErrorPresenter.render({
+        error: payload?.error, clientError, hasModel: Boolean(payload?.model),
+        initialization: payload?.progress?.message === "Repository initialization failed",
+        loading: payload?.loading, unavailable: state.connectionLost, retrying: state.analyzerRetryPending,
+    });
+}
+
 function showError(error) {
     if (error.code === "connection_lost") {
         markDisconnected();
         return;
     }
-    elements.error.textContent = error.message;
-    elements.error.classList.remove("hidden");
     state.clientError = { message: error.message, generation: state.payload?.review_generation };
+    renderError();
     renderWorkspaceShell();
 }
 
@@ -7870,16 +7898,21 @@ function resetReviewNavigation() {
 function renderReviewPickerNotice() {
     const pending = Boolean(state.reviewPickerPending || state.reviewSubmitting
         || (state.payload?.loading && !state.payload.model));
+    const fatal = Boolean(state.payload?.error);
     for (const element of [elements.review_overview, elements.review_background, elements.change_brief, elements.summary, document.querySelector(".workspace")]) {
-        element.classList.toggle("hidden", pending || isEmptyReview(state.payload));
+        element.classList.toggle("hidden", pending || isEmptyReview(state.payload) || (fatal && !state.payload.model));
     }
     // renderBreadcrumbs owns their visibility once a review is open; the picker only hides them.
     if (pending) elements.breadcrumbs.classList.add("hidden");
     const loading = state.reviewSubmitting || state.reviewOptionsLoading || state.payload?.loading;
-    elements.review_picker_notice.classList.toggle("hidden", !pending || (loading && !state.reviewOpenError));
+    elements.review_picker_notice.classList.toggle("hidden", fatal || !pending || (loading && !state.reviewOpenError));
     if (pending) {
         if (!loading) elements.review_target_label.textContent = "Choose a review target";
-        if (!state.payload?.loading) elements.status.textContent = loading ? "Loading review…" : "Choose review";
+        if (!state.payload?.loading) elements.status.textContent = fatal ? "Analysis failed" : loading ? "Loading review…" : "Choose review";
+        if (fatal) {
+            elements.review_picker_notice.replaceChildren();
+            return;
+        }
         elements.review_picker_notice.textContent = state.reviewOpenError ? ""
             : !elements.review_mode.value
                 ? "Choose Worktree, Commit, or Pull request to begin analysis."
@@ -8123,6 +8156,7 @@ function renderConnectionNotice() {
         elements.cancel_analysis.disabled = true;
         updateReviewApply();
     }
+    renderError();
 }
 
 function markDisconnected() {
