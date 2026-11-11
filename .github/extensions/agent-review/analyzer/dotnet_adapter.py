@@ -136,6 +136,10 @@ def _run_helper_command(command: list[str], environment: dict[str, str],
 
 def normalize_code_paths(facts: dict) -> dict:
     result = facts["code_paths"]
+    verification = result.get("verification")
+    if verification is not None and "omitted_test_candidates" not in verification and "omitted_tests" in verification:
+        verification["omitted_test_candidates"] = verification["omitted_tests"]
+        verification["omitted_tests"] = 0
     names = {symbol["id"]: symbol["qualname"] for symbol in facts.get("symbols", [])}
     for callable in result.get("callables", []):
         scope = callable["id"].split("::", 1)[0]
@@ -145,6 +149,7 @@ def normalize_code_paths(facts: dict) -> dict:
         callable["target_framework"] = scope.rsplit("@", 1)[-1] if "@" in scope else None
     for test in result.get("verification", {}).get("tests", []):
         targets = test.get("callables", test["calls"])
+        test["callable_ids"] = list(targets)
         test["callables"] = sorted({names.get(identifier, identifier) for identifier in targets})
         if test["link"] == "reachable":
             test["link"] = "via"

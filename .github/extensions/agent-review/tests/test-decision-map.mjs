@@ -89,6 +89,16 @@ test("prompt context is bounded, ranks changed callables first, and reports unav
     assert.deepEqual(decisionPromptContext({ status: "error", error: "boom" }), { unavailable: "boom" });
 });
 
+test("limited and truncated decision summaries cannot assert unchanged exits", () => {
+    const quiet = map.callables[2];
+    for (const partial of [{ limited: true }, { incomplete: true }, { callables: [{ ...quiet, truncated: true }] }]) {
+        const context = decisionPromptContext({ status: "complete", callables: [quiet], ...partial });
+        assert.equal(context.limited, true);
+        assert.equal(context.callables[0].incomplete, true);
+        assert.deepEqual(context.callables[0].changes, ["partial code path model; no modelled changes"]);
+    }
+});
+
 test("decision requests include only changed production callables and saved current text", () => {
     const request = buildDecisionRequest({
         metadata: { repo_root: "C:\\repo", base_sha: "abc" },

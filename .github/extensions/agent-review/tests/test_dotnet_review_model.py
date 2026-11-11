@@ -86,13 +86,14 @@ class DotnetReviewModelTests(unittest.TestCase):
         model.symbols = [{
             "id": "method", "identity": "csharp:App:Code.Run()", "module": "App.Code",
             "qualname": "Code.Run", "name": "Run", "kind": "method",
-            "language": "csharp", "ecosystem": "nuget",
+            "language": "csharp", "ecosystem": "nuget", "relationships_incomplete": True,
             "path": "App/Code.cs", "range": {"start_line": 1, "end_line": 2},
             "classification": "added",
         }]
         dto = model.to_dict()
         method = next(node for node in dto["nodes"] if node["id"] == "method")
         self.assertEqual(("csharp", "nuget", "csharp:App:Code.Run()"), (method["language"], method["ecosystem"], method["identity"]))
+        self.assertTrue(method["relationships_incomplete"])
         self.assertEqual("csharp", next(node for node in dto["nodes"] if node["id"] == "module")["language"])
         model.symbols[0]["path"] = "App/code.py"
         model.symbols[0].pop("language")

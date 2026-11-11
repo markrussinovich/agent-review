@@ -13,15 +13,18 @@ internal static class TestLinks
 
     internal static Verification Link(Snapshot snapshot, List<CallableChanges> callables, List<string> warnings)
     {
+        var changed = callables.Where(c => c.Change is not ("removed" or "unchanged"))
+            .Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+        var directTests = snapshot.Edges.Where(e => e.Kind is "calls" or "reads" or "writes" && changed.Contains(e.Target))
+            .Select(e => e.Source).ToHashSet(StringComparer.Ordinal);
         var candidates = snapshot.Entities.Values.Select(e => (Entity: e, Recognition: Recognition(e)))
             .Where(e => e.Recognition is not null)
             .GroupBy(e => (Project: e.Entity.Project.Config.Path, Name: FullName((IMethodSymbol)e.Entity.SemanticSymbol!)))
-            .OrderBy(g => g.Key.Project, StringComparer.Ordinal).ThenBy(g => g.Key.Name, StringComparer.Ordinal).ToArray();
+            .OrderBy(g => g.Any(e => directTests.Contains(e.Entity.Symbol.Id)) ? 0 : 1)
+            .ThenBy(g => g.Key.Project, StringComparer.Ordinal).ThenBy(g => g.Key.Name, StringComparer.Ordinal).ToArray();
         var tests = new List<TestRecord>();
         var facts = new Dictionary<string, List<AssertionFact>>(StringComparer.Ordinal);
         var reachable = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
-        var changed = callables.Where(c => c.Change != "removed" && c.Entries.Count != 0)
-            .Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
         var adjacency = snapshot.Edges.Where(e => e.Kind is "calls" or "reads" or "writes")
             .GroupBy(e => e.Source).ToDictionary(g => g.Key, g => g.Select(e => e.Target).Distinct().ToArray());
         var traversalLimited = false;
@@ -54,7 +57,7 @@ internal static class TestLinks
             foreach (var entity in group.Select(g => g.Entity))
             foreach (var declaration in entity.Declarations)
             {
-                var model = entity.Project.Compilation!.GetSemanticModel(declaration.SyntaxTree);
+                    var model = entity.Project.Model(declaration.SyntaxTree);
                 foreach (var call in declaration.DescendantNodes(n => n is not LocalFunctionStatementSyntax)
                     .OfType<InvocationExpressionSyntax>())
                 {
@@ -164,15 +167,18 @@ internal static class TestLinks
                 var selected = asserted.Count != 0 ? asserted : links.Count != 0 ? links : indirect;
                 var evidence = new Evidence(asserted.Count != 0 ? "asserted" : links.Count != 0 ? "exercised" :
                     indirect.Count != 0 ? "reachable" : "none",
-                    selected.Take(MaxLinks).ToList(), Math.Max(0, selected.Count - MaxLinks));
+                    selected.Take(MaxLinks).ToList(), Math.Max(0, selected.Count - MaxLinks),
+                    snapshot.Limited || snapshot.Projects.Any(p => p.Config.Incomplete) ||
+                        candidates.Length > MaxTests || traversalLimited);
                 item.Entries[index] = entry with { Evidence = evidence };
             }
         }
         var examined = snapshot.Entities.Values.Where(e => e.Declarations.Any(n => n is MethodDeclarationSyntax method &&
                 method.AttributeLists.Count != 0)).Select(e => e.Symbol.Path).Distinct(StringComparer.Ordinal).Count();
         if (traversalLimited) warnings.Add("Static test reachability capped at eight call hops and 5000 source targets per test.");
-        return new Verification(tests, Math.Max(0, candidates.Length - MaxTests), examined,
-            candidates.Length > MaxTests || traversalLimited);
+        return new Verification(tests, 0, examined,
+            candidates.Length > MaxTests || traversalLimited || snapshot.Limited ||
+                snapshot.Projects.Any(p => p.Config.Incomplete), Math.Max(0, candidates.Length - MaxTests));
     }
 
     internal static bool IsTestSource(Entity entity)
@@ -197,7 +203,7 @@ internal static class TestLinks
             return "semantic";
         foreach (var declaration in entity.Declarations.OfType<MethodDeclarationSyntax>())
         {
-            var model = entity.Project.Compilation!.GetSemanticModel(declaration.SyntaxTree);
+            var model = entity.Project.Model(declaration.SyntaxTree);
             foreach (var attribute in declaration.AttributeLists.SelectMany(a => a.Attributes))
             {
                 var last = attribute.Name.ToString().Split('.').Last();
@@ -234,7 +240,7 @@ internal static class TestLinks
         if (assertion.ExceptionType is null || decision.Kind != "raise" || decision.Outcome != "raise") return false;
         foreach (var declaration in entity.Declarations)
         {
-            var model = entity.Project.Compilation!.GetSemanticModel(declaration.SyntaxTree);
+            var model = entity.Project.Model(declaration.SyntaxTree);
             foreach (var expression in declaration.DescendantNodes(n => n is not AnonymousFunctionExpressionSyntax &&
                 n is not LocalFunctionStatementSyntax).OfType<ObjectCreationExpressionSyntax>())
             {

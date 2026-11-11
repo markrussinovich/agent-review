@@ -83,3 +83,14 @@ test("an unchanged selected consumer is not mislabeled as changed", () => {
     assert.equal(slice.nodes.find((node) => node.id === "caller").impact_role, "Selected focus");
     assert.equal(slice.counts["Selected focus"], 1);
 });
+
+test("limited C# caller counts are resolved lower bounds in every impact selection", () => {
+    const value = model();
+    value.nodes[0].relationships_incomplete = true;
+    for (const subject of ["changed", "finding", "file:core.js"]) {
+        const slice = impactSlice(value, subject);
+        assert.equal(slice.counts["Potential consumer"], 1);
+        assert.equal(slice.counts["Related test"], 1);
+        assert.match(slice.gaps.join(" "), /counts include only resolved saved-source relationships/);
+    }
+});

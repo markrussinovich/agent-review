@@ -103,3 +103,13 @@ test("context uses the shared named-test execution classification without promot
         run: { status: "complete", counts: { passed: 1 }, executed: { "fn:2": [{ id: "test", outcome: "passed" }] } } });
     assert.match(context.verification.join(" "), /1 code path with named-test execution evidence/);
 });
+
+test("C# consumer/test limitations survive source context even when no links were resolved", () => {
+    const model = { nodes: [{ id: "fn", kind: "method", path: "a.cs", change: "modified", relationships_incomplete: true }],
+        edges: [], warnings: [] };
+    const context = reviewContext(model, { path: "a.cs", selected: { id: "fn" },
+        decisionMap: { status: "complete", limited: true, callables: [], verification: { tests: [], limited: true } } });
+    assert.equal(context.impact.counts["Potential consumer"], 0);
+    assert.match(context.gaps.join(" "), /unresolved and omitted callers\/tests remain unknown/);
+    assert.match(context.impact.gaps.join(" "), /relationships are incomplete/);
+});

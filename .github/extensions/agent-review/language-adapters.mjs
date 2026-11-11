@@ -61,6 +61,9 @@ export function mergeCodePathMaps(maps) {
         if (verification) {
             result.verification.tests.push(...(verification.tests || []).map((test) => ({ ...test, adapter_id: map.adapter_id })));
             result.verification.omitted_tests += verification.omitted_tests || 0;
+            if (verification.omitted_test_candidates)
+                result.verification.omitted_test_candidates = (result.verification.omitted_test_candidates || 0)
+                    + verification.omitted_test_candidates;
             result.verification.test_files_examined += verification.test_files_examined || 0;
             result.verification.limited ||= Boolean(verification.limited);
         }

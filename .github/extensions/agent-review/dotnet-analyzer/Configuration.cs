@@ -20,6 +20,9 @@ internal sealed class ProjectConfig
     public Dictionary<string, int> ReferenceLines { get; } = new(StringComparer.Ordinal);
     public bool Incomplete { get; set; }
     public bool IsTestProject { get; init; }
+    public List<(string Path, int Line, string Namespace)> GlobalUsings { get; } = [];
+    public string? AssemblyName { get; init; }
+    public List<(string Path, int Line, string Name)> FriendAssemblies { get; } = [];
 
     internal static List<ProjectConfig> Read(Dictionary<string, string> files, List<string> warnings)
     {
@@ -49,7 +52,45 @@ internal sealed class ProjectConfig
                 warnings.Add($"{path}: unsupported project XML root; syntax-only fallback.");
                 continue;
             }
-            var properties = root.Elements().Where(x => x.Name.LocalName == "PropertyGroup")
+            var propsDirectory = DirectoryPart(path);
+            XElement? props = null;
+            string? propsPath = null;
+            while (true)
+            {
+                if (root.Elements().Where(x => x.Name.LocalName == "PropertyGroup").SelectMany(x => x.Elements())
+                    .Any(x => x.Name.LocalName == "DirectoryBuildPropsPath" ||
+                        x.Name.LocalName == "ImportDirectoryBuildProps" && (HasCondition(x) || x.Value.Trim() != "true")))
+                    break;
+                var candidate = propsDirectory + "Directory.Build.props";
+                if (files.TryGetValue(candidate, out var propsText))
+                {
+                    propsPath = candidate;
+                    try
+                    {
+                        using var reader = XmlReader.Create(new StringReader(propsText), new XmlReaderSettings
+                        {
+                            DtdProcessing = DtdProcessing.Prohibit,
+                            XmlResolver = null,
+                            MaxCharactersInDocument = Analyzer.MaxSnapshotChars
+                        });
+                        props = XDocument.Load(reader, LoadOptions.SetLineInfo).Root;
+                        if (props?.Name.LocalName != "Project")
+                        {
+                            warnings.Add($"{candidate}: unsupported props XML root; inherited configuration unavailable.");
+                            props = null;
+                        }
+                    }
+                    catch (XmlException error)
+                    {
+                        warnings.Add($"{candidate}: invalid props XML ({error.Message}); inherited configuration unavailable.");
+                    }
+                    break;
+                }
+                if (propsDirectory.Length == 0) break;
+                propsDirectory = DirectoryPart(propsDirectory.TrimEnd('/'));
+            }
+            var propertyRoots = props is null ? new[] { root } : new[] { props, root };
+            var properties = propertyRoots.SelectMany(r => r.Elements()).Where(x => x.Name.LocalName == "PropertyGroup")
                 .SelectMany(x => x.Elements()).ToArray();
             var frameworks = properties.Where(x => x.Name.LocalName is "TargetFramework" or "TargetFrameworks")
                 .Where(x => !HasCondition(x)).Select(x => x.Value.Trim()).LastOrDefault();
@@ -96,7 +137,7 @@ internal sealed class ProjectConfig
                 var defines = Property("DefineConstants", "").Split([';', ','], StringSplitOptions.RemoveEmptyEntries |
                     StringSplitOptions.TrimEntries).ToList();
                 var disableFrameworkDefines = Property("DisableImplicitFrameworkDefines", "false") == "true";
-                var frameworkMatch = Regex.Match(tfm, @"^net(?<major>\d+)\.(?<minor>\d+)$");
+                var frameworkMatch = Regex.Match(tfm, @"^net(?<major>\d+)\.(?<minor>\d+)(?:-[a-z]+[\d.]*)?$");
                 if (!disableFrameworkDefines && frameworkMatch.Success &&
                     int.TryParse(frameworkMatch.Groups["major"].Value, out var major) && major >= 5)
                 {
@@ -120,11 +161,13 @@ internal sealed class ProjectConfig
                     languageVersion = LanguageVersion.Default;
                 }
                 var implicitUsings = Property("ImplicitUsings", "disable");
-                // SDK-generated implicit usings are not supplied source. Omission is deliberate.
                 if (implicitUsings is "enable" or "true")
                 {
-                    config.Incomplete = true;
-                    warnings.Add($"{config.Scope}: implicit SDK usings unavailable; unresolved unqualified names remain unresolved.");
+                    if (root.Attribute("Sdk")?.Value != "Microsoft.NET.Sdk")
+                    {
+                        config.Incomplete = true;
+                        warnings.Add($"{config.Scope}: implicit usings for this SDK are unsupported; unresolved unqualified names remain unresolved.");
+                    }
                 }
                 var nullable = Property("Nullable", "disable");
                 var nullableOptions = nullable switch
@@ -147,15 +190,67 @@ internal sealed class ProjectConfig
                             .Contains(e.Attribute("Include")?.Value, StringComparer.OrdinalIgnoreCase)) ||
                     System.IO.Path.GetFileNameWithoutExtension(path).EndsWith("Tests", StringComparison.OrdinalIgnoreCase) ||
                     System.IO.Path.GetFileNameWithoutExtension(path).EndsWith(".Test", StringComparison.OrdinalIgnoreCase);
+                var assemblyName = Property("AssemblyName", System.IO.Path.GetFileNameWithoutExtension(path));
+                if (properties.Any(x => x.Name.LocalName == "AssemblyName" &&
+                    (Active(x, tfm) is null || x.Value.Contains("$(", StringComparison.Ordinal))))
+                    assemblyName = null;
+                bool GenerationEnabled(string name)
+                {
+                    var enabled = true;
+                    foreach (var property in properties.Where(x => x.Name.LocalName == name))
+                    {
+                        var active = Active(property, tfm);
+                        if (active == false) continue;
+                        if (active is null || !bool.TryParse(property.Value.Trim(), out var value))
+                        {
+                            config.Incomplete = true;
+                            warnings.Add($"{config.Scope}: {name} unavailable; generated friend attributes are not inferred.");
+                            return false;
+                        }
+                        enabled = value;
+                    }
+                    return enabled;
+                }
+                var generateAssemblyInfo = GenerationEnabled("GenerateAssemblyInfo");
+                var generateFriendAttributes = GenerationEnabled("GenerateInternalsVisibleToAttributes");
                 config = new ProjectConfig
                 {
                     Path = path, Tfm = tfm, Scope = config.Scope, Sources = [],
                     Incomplete = config.Incomplete,
                     IsTestProject = isTestProject,
+                    AssemblyName = assemblyName,
                     Options = new CSharpParseOptions(languageVersion, preprocessorSymbols: defines.Distinct()),
                     CompilationOptions = new CSharpCompilationOptions(outputKind, allowUnsafe: unsafeAllowed,
                         checkOverflow: checkedArithmetic, nullableContextOptions: nullableOptions)
                 };
+                var usingItems = propertyRoots.SelectMany(r => r.Elements())
+                    .Where(x => x.Name.LocalName == "ItemGroup").SelectMany(x => x.Elements())
+                    .Where(x => x.Name.LocalName == "Using").ToArray();
+                if (implicitUsings is "enable" or "true" && root.Attribute("Sdk")?.Value == "Microsoft.NET.Sdk" &&
+                    !usingItems.Any(x => x.Attributes().Any(a => a.Name.LocalName is "Remove" or "Update")))
+                {
+                    var setting = properties.Last(e => e.Name.LocalName == "ImplicitUsings" && Active(e, tfm) == true &&
+                        !e.Value.Contains("$(", StringComparison.Ordinal));
+                    var settingPath = setting.Ancestors().Contains(root) ? path : propsPath!;
+                    foreach (var name in new[] { "System", "System.Collections.Generic", "System.IO", "System.Linq",
+                        "System.Net.Http", "System.Threading", "System.Threading.Tasks" })
+                        config.GlobalUsings.Add((settingPath, ((IXmlLineInfo)setting).LineNumber, name));
+                }
+                foreach (var usingItem in usingItems)
+                {
+                    var active = Active(usingItem, tfm);
+                    var include = usingItem.Attribute("Include")?.Value;
+                    if (active != true || include is null ||
+                        !Regex.IsMatch(include, @"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$") ||
+                        usingItem.Attributes().Any(a => a.Name.LocalName is not ("Include" or "Condition")) ||
+                        usingItem.Elements().Any())
+                    {
+                        config.Incomplete = true;
+                        continue;
+                    }
+                    config.GlobalUsings.Add((usingItem.Ancestors().Contains(root) ? path : propsPath!,
+                        ((IXmlLineInfo)usingItem).LineNumber, include));
+                }
                 var defaultItems = Property("EnableDefaultCompileItems", "true");
                 var enableDefaults = Property("EnableDefaultItems", "true") != "false" && defaultItems != "false";
                 var directory = DirectoryPart(path);
@@ -227,6 +322,18 @@ internal sealed class ProjectConfig
                             config.Incomplete = true;
                             warnings.Add($"{config.Scope}: {item.Name.LocalName} '{item.Attribute("Include")?.Value}' unavailable; no restore or assembly loading from reviewed paths.");
                             break;
+                        case "InternalsVisibleTo":
+                            if (!generateAssemblyInfo || !generateFriendAttributes) break;
+                            var friend = item.Attribute("Include")?.Value;
+                            if (friend is not null && Regex.IsMatch(friend, @"^[A-Za-z_][A-Za-z0-9_.-]*$") &&
+                                item.Attributes().All(a => a.Name.LocalName is "Include" or "Condition") && !item.Elements().Any())
+                                config.FriendAssemblies.Add((path, ((IXmlLineInfo)item).LineNumber, friend));
+                            else
+                            {
+                                config.Incomplete = true;
+                                warnings.Add($"{config.Scope}: unsupported friend assembly declaration; internal access remains unresolved.");
+                            }
+                            break;
                     }
                 }
                 if (root.Descendants().Any(x => x.Name.LocalName is "Import" or "Target" or "Choose" ||
@@ -267,6 +374,47 @@ internal sealed class ProjectConfig
             });
         }
         return configs;
+    }
+
+    internal static ProjectState? ResolveReference(ProjectConfig consumer, string path, List<ProjectState> projects)
+    {
+        var candidates = projects.Where(p => p.Config.Path == path).ToArray();
+        var exact = candidates.Where(p => p.Config.Tfm == consumer.Tfm).ToArray();
+        if (exact.Length == 1) return exact[0];
+        if (candidates.Length == 1 && (consumer.Tfm == "unknown" || candidates[0].Config.Tfm == "unknown"))
+        {
+            consumer.Incomplete = true;
+            return candidates[0];
+        }
+        var compatible = candidates.Select(p => (Project: p, Rank: CompatibleRank(consumer.Tfm, p.Config.Tfm)))
+            .Where(p => p.Rank is not null).OrderByDescending(p => p.Rank).ToArray();
+        return compatible.Length != 0 && (compatible.Length == 1 || compatible[0].Rank != compatible[1].Rank)
+            ? compatible[0].Project : null;
+    }
+
+    private static (int Framework, Version Version, int Platform, Version PlatformVersion)? CompatibleRank(string consumer, string dependency)
+    {
+        var pattern = @"^net(?<version>\d+\.\d+)(?:-(?<platform>[a-z]+)(?<platformVersion>[\d.]*))?$";
+        var target = Regex.Match(consumer, pattern);
+        var source = Regex.Match(dependency, pattern);
+        if (!target.Success || !Version.TryParse(target.Groups["version"].Value, out var targetVersion) ||
+            targetVersion.Major < 5) return null;
+        if (Regex.Match(dependency, @"^netstandard(?<version>2\.[01])$") is { Success: true } standard)
+            return (0, Version.Parse(standard.Groups["version"].Value), 0, new Version(0, 0));
+        if (!source.Success || !Version.TryParse(source.Groups["version"].Value, out var sourceVersion) ||
+            sourceVersion.Major < 5 || sourceVersion > targetVersion) return null;
+        var platform = source.Groups["platform"].Value;
+        var platformVersion = new Version(0, 0);
+        if (platform.Length != 0)
+        {
+            if (platform != target.Groups["platform"].Value) return null;
+            var sourcePlatform = source.Groups["platformVersion"].Value;
+            var targetPlatform = target.Groups["platformVersion"].Value;
+            if (sourcePlatform.Length != 0 && (!Version.TryParse(sourcePlatform, out var sourceApi) ||
+                !Version.TryParse(targetPlatform, out var targetApi) || sourceApi > targetApi)) return null;
+            if (sourcePlatform.Length != 0) platformVersion = Version.Parse(sourcePlatform);
+        }
+        return (1, sourceVersion, platform.Length == 0 ? 0 : 1, platformVersion);
     }
 
     private static bool HasCondition(XElement element) => element.AncestorsAndSelf()

@@ -4,9 +4,16 @@ import { dotnetTestCommand, dotnetTestPlan, formatDotnetTestCommand, resolveDotn
 
 function buildCodePathRequest(model) {
     if (!(model?.symbols || []).some((symbol) => symbol.language === "csharp"
-        && ["method", "property"].includes(symbol.kind)
+        && ["method", "property", "constructor", "function", "accessor"].includes(symbol.kind)
         && ["added", "modified", "removed"].includes(symbol.classification))) return null;
-    if (model.code_paths?.csharp) return { precomputed: model.code_paths.csharp };
+    if (model.code_paths?.csharp) {
+        const paths = model.code_paths.csharp;
+        const verification = paths.verification;
+        return { precomputed: verification && Object.hasOwn(verification, "omitted_tests") &&
+            !Object.hasOwn(verification, "omitted_test_candidates")
+            ? { ...paths, verification: { ...verification,
+                omitted_test_candidates: verification.omitted_tests, omitted_tests: 0 } } : paths };
+    }
     const baseline = {};
     const current = {};
     for (const [path, saved] of Object.entries(model.source_files || {})) {
