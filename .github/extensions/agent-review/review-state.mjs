@@ -36,12 +36,11 @@ import { buildReviewPlan, concernPriorities } from "./web/review-plan.mjs";
 import { ANNOTATION_PROMPT_VERSION } from "./ai-prompts.mjs";
 import { DocumentRoleStore, effectiveDocuments, instructionContext } from "./markdown-context.mjs";
 
-// Item explanations written by an older prompt are dropped so the next view regenerates them; the change overview and
-// layer summaries have their own lifecycles and are kept.
+// Older explanations may contain unrelated session intent, including overviews and derived layer summaries.
 export function currentAnnotations(annotations) {
     const kept = {};
     for (const [key, annotation] of Object.entries(annotations || {})) {
-        if (key === "overview" || key === "layers" || annotation?.prompt_version === ANNOTATION_PROMPT_VERSION) kept[key] = annotation;
+        if (annotation?.prompt_version === ANNOTATION_PROMPT_VERSION) kept[key] = annotation;
     }
     // A summary saved while it was being refined is shown as it was; the refinement itself did not survive the restart.
     if (kept.overview?.refining) kept.overview = { ...kept.overview, refining: false };
@@ -680,7 +679,7 @@ export class ReviewState {
             error: this.error,
             generated_observations: this.generatedObservations,
             selection: this.selection,
-            session_context: this.sessionContext,
+            session_context: this.sessionContextStatus(),
             annotations: this.annotations,
             progress: this.progress,
             package_risks: this.packageRisks,
@@ -1861,6 +1860,17 @@ export class ReviewState {
         return result;
     }
 
+    sessionContextStatus() {
+        if (!this.sessionContext) return null;
+        return {
+            provenance: this.sessionContext.provenance,
+            factual_status: "context_only",
+            historical_search_complete: Boolean(this.sessionContext.historical_search_complete),
+            history_error: this.sessionContext.history_error || null,
+            error: this.sessionContext.error || null,
+        };
+    }
+
     select(selection) {
         if (selection !== null && (!selection || typeof selection.id !== "string")) {
             throw new Error("Selection must contain an id.");
@@ -2068,6 +2078,7 @@ export class ReviewState {
             const steps = result && typeof result.intents === "object" ? result : { intents: result || {}, titles: {} };
             if (generation !== this.reviewGeneration || this.model !== model) throw new Error("The review changed while summarizing layers.");
             const annotation = { id: "annotation:layers", item_id: "layers", intents: steps.intents, titles: steps.titles || {},
+                prompt_version: ANNOTATION_PROMPT_VERSION,
                 generated_at: new Date().toISOString() };
             this.annotations.layers = annotation;
             this.saveCurrentReview();
@@ -2118,6 +2129,7 @@ export class ReviewState {
                     body: String(body || "").trim(),
                     evidence_ids: [],
                     basis: evidenceRevision !== null ? "review" : "saved-code",
+                    prompt_version: ANNOTATION_PROMPT_VERSION,
                     generated_at: new Date().toISOString(),
                 };
                 if (!annotation.body) throw new Error("Copilot returned an empty change summary.");
@@ -2164,6 +2176,7 @@ export class ReviewState {
                 if (revision !== this.reviewEvidenceRevision) { this.overviewRefineAgain = true; continue; }
                 if (body) {
                     this.annotations.overview = { id: "annotation:overview", item_id: "overview", body, evidence_ids: [],
+                        prompt_version: ANNOTATION_PROMPT_VERSION,
                         basis: "review", refining: this.overviewRefineAgain, generated_at: new Date().toISOString() };
                     this.saveCurrentReview();
                     this.broadcast("annotation");
@@ -2221,15 +2234,15 @@ export class ReviewState {
             if (findings.length >= 12) break;
         }
         const attribution = files
-            .filter((file) => !file.is_test)
-            .slice(0, 3)
             .map((file) => ({ file, match: this.attributionForPath(file.path)[0] }))
             .filter((entry) => entry.match)
+            .slice(0, 3)
             .map(({ file, match }) => ({
                 path: file.path,
                 prompt: String(match.original_prompt || match.prompt || "").slice(0, 500),
                 latest_file_request: match.original_prompt !== match.prompt ? String(match.prompt || "").slice(0, 500) : null,
                 confidence: match.confidence,
+                write_activity_count: match.write_activity_count,
             }));
         const savedCode = customAnalysisContext(model);
         return {
@@ -2266,7 +2279,9 @@ export class ReviewState {
     }
 
     attributionForPath(path) {
-        return findSessionAttribution(this.sessionContext, path, { before: this.reviewHistoryCutoff() });
+        const before = this.reviewHistoryCutoff();
+        if (!before) return [];
+        return findSessionAttribution(this.sessionContext, path, { before, authoringOnly: true });
     }
 
     reviewHistoryCutoff() {
@@ -2274,15 +2289,9 @@ export class ReviewState {
     }
 
     intentForReview(attribution = []) {
-        if (attribution.length) {
-            return [...new Set(attribution.map((item) => item.original_prompt || item.prompt).filter(Boolean))]
-                .map((summary) => ({ summary }));
-        }
-        if (["commit", "pr"].includes(this.reviewTarget.mode)) return [];
-        const before = this.reviewHistoryCutoff();
-        const cutoff = before === null ? null : Date.parse(before);
-        if (cutoff !== null && !Number.isFinite(cutoff)) throw new Error("Review history cutoff must be a valid timestamp.");
-        return (this.sessionContext?.intent || []).filter((item) => cutoff === null || Date.parse(item.timestamp) <= cutoff);
+        return [...new Set(attribution.filter((item) => item.write_activity_count > 0)
+            .map((item) => item.original_prompt || item.prompt).filter(Boolean))]
+            .map((summary) => ({ summary }));
     }
 
     attributionStatusForPath(path) {
@@ -2298,8 +2307,8 @@ export class ReviewState {
             status: "no_match",
             attribution,
             message: this.reviewTarget.mode === "worktree"
-                ? "No originating prompt was found in Copilot sessions for this repository."
-                : "No originating prompt was found in repository sessions at or before this commit.",
+                ? "Origin unknown: no visible edits to this file were found in Copilot sessions at or before this saved worktree."
+                : `Origin unknown: no visible edits to this file were found in repository sessions at or before this commit. Using the ${this.reviewTarget.mode === "pr" ? "PR description" : "commit message"} for stated intent.`,
         };
     }
 

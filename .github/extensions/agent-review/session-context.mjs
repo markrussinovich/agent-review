@@ -40,7 +40,7 @@ function collectPaths(value, repoRoot, key = "", paths = new Set()) {
         }
         const scanEmbeddedPaths = PATH_KEYS.has(key) || /command|script|description/i.test(key);
         for (const line of value.split(/\r?\n/)) {
-            const explicit = /(?:\*{3}\s+(?:Add|Update|Delete)\s+File:|^[+-]{3}\s+[ab]\/)\s*(.+)$/i.exec(line.trim());
+            const explicit = /(?:\*{3}\s+(?:(?:Add|Update|Delete)\s+File:|Move to:)|^[+-]{3}\s+[ab]\/)\s*(.+)$/i.exec(line.trim());
             if (explicit) {
                 const path = repositoryPath(explicit[1].trim(), repoRoot);
                 if (path) paths.add(path);
@@ -83,29 +83,18 @@ function toolDetail(event, repoRoot) {
 function toolOperation(event) {
     const name = String(event.data?.toolName || event.data?.mcpToolName || "").toLowerCase();
     const summary = toolSummary(event).toLowerCase();
-    if (/apply_patch|write|edit|rename|create|delete/.test(name)) return "write";
+    if (/(?:^|[._-])(?:apply_patch|write_file|edit_file|create_file|delete_file|rename_file|move_file|write|edit)$/.test(name)) return "write";
     if (/view|read|rg|grep|glob|search|usage/.test(name)) return "read";
     if (/inspect|verify|check|test|analy[sz]e|list|show|find/.test(summary)) return "read";
-    if (/create|write|update|modify|apply|generate|implement/.test(summary)) return "write";
     return "unknown";
 }
 
-function hasAuthoringIntent(prompt) {
-    return /\b(create|add|implement|build|generate|write|introduce|replace|remove|refactor|optimi[sz]e|fix)\b/i.test(String(prompt || ""));
-}
-
-function promptIntentScore(prompt) {
-    const text = String(prompt || "").toLowerCase();
-    let score = 0;
-    const authoring = hasAuthoringIntent(text);
-    if (authoring) score += 0.18;
-    if (!authoring && /\b(review|inspect|explain|why is|copy button|map.*prompt|canvas|highlight)\b/.test(text)) score -= 0.16;
-    return score;
-}
-
-function isReviewPrompt(prompt) {
-    return !hasAuthoringIntent(prompt)
-        && /\b(review|inspect|explain|highlight|canvas|copy button|not fixed|still finding|why is|doesn't work|broken|error)\b/i.test(String(prompt || ""));
+function writtenPaths(event, repoRoot) {
+    const args = event.data?.arguments || {};
+    const patch = typeof args.patch === "string" ? args.patch : typeof args.input === "string" ? args.input : null;
+    if (patch) return [...collectPaths({ patch }, repoRoot)].sort();
+    return [...collectPaths(Object.fromEntries(Object.entries(args)
+        .filter(([key]) => ["path", "file", "filePath", "resourceUri"].includes(key))), repoRoot)].sort();
 }
 
 export function isInternalAgentReviewPrompt(content) {
@@ -182,6 +171,7 @@ export function buildSessionContext(events, repoRoot) {
                 agent_id: event.agentId || null,
                 tool_name: event.data?.toolName || event.data?.mcpToolName || "tool",
                 operation: toolOperation(event),
+                written_files: toolOperation(event) === "write" ? writtenPaths(event, repoRoot) : [],
                 summary: toolSummary(event),
                 detail: toolDetail(event, repoRoot),
                 referenced_files: [...eventFiles].sort(),
@@ -215,7 +205,7 @@ export function buildSessionContext(events, repoRoot) {
     };
 }
 
-export function findSessionAttribution(sessionContext, path, { before = null } = {}) {
+export function findSessionAttribution(sessionContext, path, { before = null, authoringOnly = false } = {}) {
     if (!sessionContext || !path) return [];
     const cutoff = before === null ? null : Date.parse(before);
     if (cutoff !== null && !Number.isFinite(cutoff)) throw new Error("Session attribution cutoff must be a valid timestamp.");
@@ -230,19 +220,18 @@ export function findSessionAttribution(sessionContext, path, { before = null } =
         const activity = visibleActivity(turn);
         const matchingActivity = activity.filter((item) => item.referenced_files?.includes(normalized));
         const exact = matchingActivity.length > 0;
-        const writes = matchingActivity.filter((item) => item.operation === "write").length;
+        const writes = matchingActivity.filter((item) => item.operation === "write"
+            && (item.written_files || item.referenced_files)?.includes(normalized)).length;
         const reads = matchingActivity.filter((item) => item.operation === "read").length;
         const mentioned = Boolean(basename && String(turn.prompt || "").toLowerCase().includes(basename));
         if (!exact && !mentioned) continue;
-        const authoringMention = mentioned && hasAuthoringIntent(turn.prompt);
-        const confidenceScore = Math.max(0.1, Math.min(
-            1,
-            (writes ? 0.88 : exact ? 0.65 : authoringMention ? 0.72 : 0.38) + promptIntentScore(turn.prompt),
-        ));
-        const original = (sessionContext.turns || [])
-            .filter((candidate) => candidate.session_id === turn.session_id && visibleTurn(candidate) && !isReviewPrompt(candidate.prompt)
-                && visibleActivity(candidate).some((item) => item.operation === "write" && item.referenced_files?.includes(normalized)))
-            .sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)))[0];
+        if (authoringOnly && !writes) continue;
+        const confidenceScore = writes ? 0.88 : exact ? 0.38 : 0.25;
+        const original = writes ? (sessionContext.turns || [])
+            .filter((candidate) => candidate.session_id === turn.session_id && visibleTurn(candidate)
+                && visibleActivity(candidate).some((item) => item.operation === "write"
+                    && (item.written_files || item.referenced_files)?.includes(normalized)))
+            .sort((a, b) => String(a.started_at).localeCompare(String(b.started_at)))[0] : null;
         results.push({
             turn_id: turn.id,
             session_id: turn.session_id || null,
@@ -259,18 +248,16 @@ export function findSessionAttribution(sessionContext, path, { before = null } =
             reason: writes
                 ? `${normalized} was targeted by visible write/edit activity during this turn.`
                 : exact
-                    ? `${normalized} was referenced by visible read/inspection activity during this turn.`
-                    : authoringMention
-                        ? `${normalized} was explicitly named in an authoring prompt.`
-                        : `${basename} was mentioned in visible prompt or agent activity.`,
+                    ? `${normalized} was referenced by visible tool activity; no file edit was observed.`
+                    : `${basename} was mentioned in the prompt; no file edit was observed.`,
             write_activity_count: writes,
             read_activity_count: reads,
-            review_intent: isReviewPrompt(turn.prompt),
+            review_intent: !writes,
             agent_activity: activity.slice(-12),
             referenced_files: [...new Set(activity.flatMap((item) => item.referenced_files || []))],
         });
     }
-    const authoringCandidates = results.filter((item) => !item.review_intent);
+    const authoringCandidates = results.filter((item) => item.write_activity_count > 0);
     return (authoringCandidates.length ? authoringCandidates : results)
         .sort((a, b) => b.confidence_score - a.confidence_score || String(b.started_at).localeCompare(String(a.started_at)))
         .slice(0, 3);
