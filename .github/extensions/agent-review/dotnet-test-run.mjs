@@ -19,7 +19,9 @@ export function dotnetTestPlan(map, repoRoot) {
     const linked = (map?.verification?.tests || []).filter((test) => test.link !== "name-only");
     const projects = [...new Set(linked.map((test) => test.project).filter(Boolean))];
     let reason = map?.status !== "complete" ? "Code paths are still being extracted."
-        : !linked.length ? "No statically resolved xUnit tests reach the changed C# code."
+        : !linked.length ? map.limited || map.verification?.limited
+            ? "No xUnit links were resolved in incomplete analysis; omitted callers or tests remain unknown."
+            : "No statically resolved xUnit tests reach the changed C# code."
         : projects.length !== 1 ? "Linked .NET tests must belong to one test project per run." : null;
     const project = projects[0] || null;
     if (project) {

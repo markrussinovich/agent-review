@@ -13,6 +13,8 @@ internal sealed class Entity
 {
     public required SymbolRecord Symbol { get; set; }
     public List<SyntaxNode> Declarations { get; } = [];
+    // Verified omitted parts supply syntax evidence, not invented semantic bindings.
+    public List<SyntaxNode> RecoveredDeclarations { get; } = [];
     public required string Fingerprint { get; set; }
     public required ProjectState Project { get; init; }
     public ISymbol? SemanticSymbol { get; init; }
@@ -26,6 +28,14 @@ internal sealed class ProjectState
     public required string AssemblyName { get; init; }
     public CSharpCompilation? Compilation { get; set; }
     public bool Building { get; set; }
+    private readonly Dictionary<SyntaxTree, SemanticModel> models = [];
+
+    public SemanticModel Model(SyntaxTree tree)
+    {
+        if (!models.TryGetValue(tree, out var model))
+            models[tree] = model = Compilation!.GetSemanticModel(tree);
+        return model;
+    }
 }
 
 internal sealed class Snapshot
@@ -35,6 +45,17 @@ internal sealed class Snapshot
     public List<ProjectState> Projects { get; } = [];
     public bool Limited { get; set; }
     public bool ScopeOmitted { get; set; }
+    public HashSet<(string Scope, string Path, string Hash)> DeclarationHashes { get; } = [];
+    public required Dictionary<string, string> Files { get; init; }
+    public HashSet<string> ConfigurationScopes { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, CSharpParseOptions> ParseOptions { get; } = new(StringComparer.Ordinal);
+    public HashSet<string> AvailableIds { get; } = new(StringComparer.Ordinal);
+    public HashSet<(string Scope, string Path)> AnalyzedSources { get; } = [];
+    public HashSet<string> PriorityCallers { get; } = new(StringComparer.Ordinal);
+    public HashSet<string> OmittedEdgeSources { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, HashSet<string>> SourceMembership { get; } = new(StringComparer.Ordinal);
+    public Dictionary<(string Source, string Target, string Kind), int> RelationshipCounts { get; } = [];
+    public bool RelationshipProofsLimited { get; set; }
 }
 
 internal static class Analyzer
@@ -59,31 +80,36 @@ internal static class Analyzer
         {
             $"Trusted platform references are from the helper's .NET {Environment.Version} runtime, not reviewed target reference packs; target/API compatibility is incomplete.",
             "Static analysis only: no MSBuild, restore, project execution, source generators, imports or reviewed filesystem reads.",
-            "Build Configuration, implicit DEBUG/TRACE constants, generated sources and original assembly identity/friend access are not inferred. Only literal snapshot configuration is applied."
+            "Build Configuration, implicit DEBUG/TRACE constants, arbitrary generated sources and signing identity are not inferred. Only supported literal snapshot configuration is applied."
         };
         SyntaxFactsCache.Begin(warnings, request.UseCache);
         var baseline = Normalize(request.Baseline);
         var current = Normalize(request.Current);
+        var changedPaths = baseline.Keys.Concat(current.Keys).Where(path =>
+            baseline.GetValueOrDefault(path) != current.GetValueOrDefault(path)).ToHashSet(StringComparer.Ordinal);
         var baselineWarnings = new List<string>();
         var currentWarnings = new List<string>();
-        var baselineConfigs = ProjectConfig.Read(baseline.Count > MaxFiles
-            ? baseline.Take(MaxFiles).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)
-            : baseline, baselineWarnings);
-        var currentConfigs = ProjectConfig.Read(current.Count > MaxFiles
-            ? current.Take(MaxFiles).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)
-            : current, currentWarnings);
+        var baselineConfigs = ProjectConfig.Read(baseline, baselineWarnings);
+        var currentConfigs = ProjectConfig.Read(current, currentWarnings);
         var scope = SelectProjects(baseline, current, baselineConfigs, currentConfigs, warnings);
-        var before = Build(baseline, baselineConfigs, baselineWarnings, warnings, "baseline", scope, request.Progress);
-        var identical = baseline.Count == current.Count &&
-            baseline.All(pair => current.TryGetValue(pair.Key, out var text) && text == pair.Value);
+        var before = Build(baseline, current, changedPaths, baselineConfigs, baselineWarnings,
+            warnings, "baseline", scope, request.Progress);
+        var identical = changedPaths.Count == 0;
         var after = identical ? before :
-            Build(current, currentConfigs, currentWarnings, warnings, "current", scope, request.Progress);
+            Build(current, baseline, changedPaths, currentConfigs, currentWarnings,
+                warnings, "current", scope, request.Progress, before.PriorityCallers);
         if (identical && request.Progress)
             ReportProgress("Reusing identical baseline compilation for current snapshot");
+        if (!identical)
+        {
+            RecoverUnchangedDeclarations(before, after);
+            RecoverUnchangedDeclarations(after, before);
+        }
         var symbols = new List<SymbolRecord>();
         foreach (var (id, entity) in after.Entities.OrderBy(e => e.Key, StringComparer.Ordinal))
         {
-            var classification = !before.Entities.TryGetValue(id, out var old) ? "added" :
+            var classification = !before.Entities.TryGetValue(id, out var old)
+                ? WasOmitted(entity, before) ? "unchanged" : "added" :
                 old.Fingerprint == entity.Fingerprint ? "unchanged" : "modified";
             if (classification == "modified" && old is not null &&
                 (IsType(entity.Symbol.Kind) || entity.Symbol.Kind == "namespace") &&
@@ -91,12 +117,19 @@ internal static class Analyzer
                 PreferChangedDeclaration(old, entity);
             entity.Symbol = entity.Symbol with { Classification = classification,
                 BaselineDeclarations = old?.Symbol.Declarations ?? [],
-                Module = ModuleName(entity.Project.Config, entity.Symbol.Path) };
+                RelationshipsIncomplete = before.Limited || after.Limited ||
+                    before.Projects.Any(p => p.Config.Incomplete) || after.Projects.Any(p => p.Config.Incomplete),
+                Module = ModuleName(entity.Project.Config, entity.Symbol.Path)
+            };
             symbols.Add(entity.Symbol);
         }
-        symbols.AddRange(before.Entities.Where(e => !after.Entities.ContainsKey(e.Key))
-            .Select(e => e.Value.Symbol with { Classification = "removed",
-                BaselineDeclarations = e.Value.Symbol.Declarations ?? [] }));
+        symbols.AddRange(before.Entities.Where(e => !after.Entities.ContainsKey(e.Key) && !WasOmitted(e.Value, after))
+            .Select(e => e.Value.Symbol with
+            {
+                Classification = "removed",
+                RelationshipsIncomplete = before.Limited || before.Projects.Any(p => p.Config.Incomplete),
+                BaselineDeclarations = e.Value.Symbol.Declarations ?? []
+            }));
         var paths = request.Mode == "graph"
             ? new CodePaths([], [], false,
                 ["Decision extraction deferred: graph mode skips code paths and xUnit linking."],
@@ -104,11 +137,11 @@ internal static class Analyzer
             : DecisionAnalysis.Build(before, after);
         SyntaxFactsCache.Flush(warnings);
         if (before.Limited || after.Limited)
-            paths = paths with { Limited = true, Warnings = paths.Warnings.Append("Snapshot size limits omitted source or symbols.").ToList() };
+            paths = paths with { Limited = true, Warnings = paths.Warnings.Append("Snapshot analysis limits omitted source, symbols, or relationships.").ToList() };
         if (before.ScopeOmitted || after.ScopeOmitted)
             paths = paths with { Limited = true, Warnings = paths.Warnings.Append("Unrelated project contexts were not analyzed; test links and relationships cover the selected project graph only.").ToList() };
         return new AnalysisResult(symbols.OrderBy(s => s.Id, StringComparer.Ordinal).ToList(),
-            DiffEdges(before.Edges, after.Edges),
+            DiffEdges(before, after, warnings),
             warnings.Distinct(StringComparer.Ordinal).ToList(), paths);
     }
 
@@ -243,13 +276,42 @@ internal static class Analyzer
         Console.Error.WriteLine("AGENT_REVIEW_DOTNET_PROGRESS " +
             JsonSerializer.Serialize(new { message }, Program.Json));
 
-    private static Snapshot Build(Dictionary<string, string> files, List<ProjectConfig> configurations,
-        List<string> warnings, List<string> allWarnings, string label, HashSet<string>? scope, bool progress)
+    private static Snapshot Build(Dictionary<string, string> files, Dictionary<string, string> otherFiles,
+        HashSet<string> changedPaths, List<ProjectConfig> configurations, List<string> warnings,
+        List<string> allWarnings, string label, HashSet<string>? scope, bool progress,
+        IReadOnlySet<string>? priorityCallers = null)
     {
-        var snapshot = new Snapshot();
+        var snapshot = new Snapshot { Files = files };
+        snapshot.ConfigurationScopes.UnionWith(configurations.Select(c => c.Scope));
+        foreach (var config in configurations) snapshot.ParseOptions[config.Scope] = config.Options;
+        foreach (var config in configurations) snapshot.SourceMembership[config.Scope] = config.Sources.ToHashSet(StringComparer.Ordinal);
+        var affected = configurations.Where(c => changedPaths.Contains(c.Path) || c.Sources.Any(changedPaths.Contains))
+            .Select(c => c.Path).ToHashSet(StringComparer.Ordinal);
+        var consumers = new HashSet<string>(affected, StringComparer.Ordinal);
+        int count;
+        do
+        {
+            count = consumers.Count;
+            foreach (var config in configurations.Where(c => c.References.Any(consumers.Contains)))
+                consumers.Add(config.Path);
+        } while (count != consumers.Count);
+        int Priority(ProjectConfig config) => affected.Contains(config.Path) ? 0 :
+            consumers.Contains(config.Path) && config.IsTestProject ? 1 : consumers.Contains(config.Path) ? 2 : 3;
+        configurations = configurations.OrderBy(Priority).ThenBy(c => c.Scope, StringComparer.Ordinal).ToList();
         if (files.Count > MaxFiles)
         {
-            files = files.Take(MaxFiles).ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
+            var priorities = configurations.SelectMany(c => c.Sources.Select(path => (Path: path, Rank: Priority(c))))
+                .GroupBy(p => p.Path).ToDictionary(g => g.Key, g => g.Min(p => p.Rank), StringComparer.Ordinal);
+            files = files.OrderBy(p => changedPaths.Contains(p.Key) ? 0 :
+                    !p.Key.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ? 1 : 2 + priorities.GetValueOrDefault(p.Key, 3))
+                .ThenBy(p => p.Key, StringComparer.Ordinal).Take(MaxFiles)
+                .ToDictionary(x => x.Key, x => x.Value, StringComparer.Ordinal);
+            foreach (var config in configurations)
+            {
+                config.Incomplete |= config.Sources.Any(path => !files.ContainsKey(path));
+                config.Sources.RemoveAll(path => !files.ContainsKey(path));
+            }
+            configurations.RemoveAll(c => c.Path != "<unassigned>" && !files.ContainsKey(c.Path));
             warnings.Add($"Snapshot capped at {MaxFiles} files.");
             snapshot.Limited = true;
         }
@@ -272,7 +334,32 @@ internal static class Analyzer
                 continue;
             }
             contextCharacters += size;
-            var trees = config.Sources.Select(path => SyntaxCache.Parse(path, files[path], config.Options)).ToList();
+            var trees = config.Sources.OrderBy(path => changedPaths.Contains(path) ? 0 : 1)
+                .ThenBy(path => path, StringComparer.Ordinal)
+                .Select(path => SyntaxCache.Parse(path, files[path], config.Options)).ToList();
+            foreach (var group in config.GlobalUsings.GroupBy(u => u.Path))
+            {
+                if (!files.ContainsKey(group.Key))
+                {
+                    config.Incomplete = true;
+                    warnings.Add($"{config.Scope}: literal Using configuration {group.Key} omitted by the file budget.");
+                    continue;
+                }
+                var generatedSize = files[group.Key].Count(c => c == '\n') + 1L +
+                    group.Sum(u => (long)u.Namespace.Length + 15);
+                if (contextCharacters + generatedSize > 64L * 1024 * 1024)
+                {
+                    config.Incomplete = true;
+                    snapshot.Limited = true;
+                    warnings.Add($"{config.Scope}: literal Using expansion omitted at the aggregate source budget.");
+                    continue;
+                }
+                contextCharacters += generatedSize;
+                var lines = new string[files[group.Key].Count(c => c == '\n') + 1];
+                foreach (var directive in group)
+                    lines[directive.Line - 1] += $"global using {directive.Namespace}; ";
+                trees.Add(SyntaxCache.Parse(group.Key, string.Join("\n", lines), config.Options));
+            }
             snapshot.Projects.Add(new ProjectState
             {
                 Config = config, Trees = trees, AssemblyName = "snapshot_" + Hash(config.Scope)[..24]
@@ -291,6 +378,44 @@ internal static class Analyzer
             snapshot.Limited = true;
             warnings.Add("Project/TFM contexts capped at 128.");
         }
+        foreach (var project in snapshot.Projects)
+            foreach (var group in project.Config.FriendAssemblies.GroupBy(f => f.Path))
+            {
+                var padding = files[group.Key].Count(c => c == '\n') + 1L;
+                if (contextCharacters + padding > 64L * 1024 * 1024)
+                {
+                    project.Config.Incomplete = true;
+                    snapshot.Limited = true;
+                    warnings.Add($"{project.Config.Scope}: friend assembly expansion omitted at the aggregate source budget.");
+                    continue;
+                }
+                contextCharacters += padding;
+                var lines = new string[files[group.Key].Count(c => c == '\n') + 1];
+                foreach (var friend in group)
+                {
+                    var matches = snapshot.Projects.Where(p => p.Config.AssemblyName == friend.Name).ToArray();
+                    if (matches.Select(p => p.Config.Path).Distinct(StringComparer.Ordinal).Count() != 1)
+                    {
+                        project.Config.Incomplete = true;
+                        warnings.Add($"{project.Config.Scope}: friend assembly '{friend.Name}' has no unique supplied project identity; internal access remains unresolved.");
+                        continue;
+                    }
+                    foreach (var target in matches)
+                    {
+                        var attribute = $"[assembly: global::System.Runtime.CompilerServices.InternalsVisibleTo(\"{target.AssemblyName}\")] ";
+                        if (contextCharacters + attribute.Length > 64L * 1024 * 1024)
+                        {
+                            project.Config.Incomplete = true;
+                            snapshot.Limited = true;
+                            warnings.Add($"{project.Config.Scope}: friend assembly expansion omitted at the aggregate source budget.");
+                            break;
+                        }
+                        contextCharacters += attribute.Length;
+                        lines[friend.Line - 1] += attribute;
+                    }
+                }
+                project.Trees.Add(SyntaxCache.Parse(group.Key, string.Join("\n", lines), project.Config.Options));
+            }
         var compiled = 0;
         CSharpCompilation Compile(ProjectState project)
         {
@@ -300,15 +425,16 @@ internal static class Analyzer
                 ? new List<MetadataReference>() : new List<MetadataReference>(RuntimeReferences.Value);
             foreach (var path in project.Config.References)
             {
-                var dependency = snapshot.Projects.FirstOrDefault(p => p.Config.Path == path &&
-                    p.Config.Tfm == project.Config.Tfm);
+                var dependency = ProjectConfig.ResolveReference(project.Config, path, snapshot.Projects);
                 if (dependency is null || dependency.Building)
                 {
-                    warnings.Add($"{project.Config.Scope}: project reference {path} unavailable, cyclic, or has no exact TFM match; not resolved.");
+                    warnings.Add($"{project.Config.Scope}: project reference {path} unavailable, cyclic, or has no unambiguous compatible TFM; not resolved.");
                     project.Config.Incomplete = true;
                     continue;
                 }
                 references.Add(Compile(dependency).ToMetadataReference());
+                if (project.Config.Tfm == "unknown" || dependency.Config.Tfm == "unknown")
+                    warnings.Add($"{project.Config.Scope}: project reference {path} uses the single supplied context because a TFM is unknown; compatibility is unverified.");
             }
             if (progress) ReportProgress($"Compiling {project.Config.Scope} ({++compiled}/{snapshot.Projects.Count}, {label})");
             project.Compilation = CSharpCompilation.Create(project.AssemblyName, project.Trees, references,
@@ -355,49 +481,136 @@ internal static class Analyzer
                     Project = project, Fingerprint = Hash(files[project.Config.Path])
                 };
             }
+        }
+        var declarations = new List<(ProjectState Project, SyntaxTree Tree, SyntaxNode Node, int Rank)>();
+        foreach (var project in snapshot.Projects)
+        {
             foreach (var tree in project.Trees)
             {
-                var model = project.Compilation!.GetSemanticModel(tree);
+                snapshot.AnalyzedSources.Add((project.Config.Scope, tree.FilePath));
+                var otherHashes = changedPaths.Contains(tree.FilePath) && otherFiles.TryGetValue(tree.FilePath, out var otherSource)
+                    ? SyntaxCache.Parse(tree.FilePath, otherSource, project.Config.Options).GetRoot()
+                        .DescendantNodes().Where(IsDeclaration).Select(SyntaxFactsCache.DeclarationHash).ToHashSet(StringComparer.Ordinal)
+                    : null;
                 foreach (var node in tree.GetRoot().DescendantNodes().Where(IsDeclaration))
                 {
-                    if (snapshot.Entities.Count >= MaxSymbols)
-                    {
-                        snapshot.Limited = true;
-                        continue;
-                    }
-                    var symbol = model.GetDeclaredSymbol(node);
-                    if (symbol is null) continue;
-                    var id = Id(project.Config.Scope, symbol);
-                    if (id is null) continue;
-                    var span = node.GetLocation().GetLineSpan();
-                    var kind = node switch
-                    {
-                        BaseNamespaceDeclarationSyntax => "namespace",
-                        InterfaceDeclarationSyntax => "interface",
-                        EnumDeclarationSyntax => "enum",
-                        StructDeclarationSyntax => "struct",
-                        RecordDeclarationSyntax => "record",
-                        BaseTypeDeclarationSyntax or DelegateDeclarationSyntax => "class",
-                        ConstructorDeclarationSyntax or DestructorDeclarationSyntax => "constructor",
-                        PropertyDeclarationSyntax or IndexerDeclarationSyntax => "property",
-                        AccessorDeclarationSyntax => "accessor",
-                        LocalFunctionStatementSyntax => "function",
-                        _ => "method"
-                    };
-                    var record = new SymbolRecord(id, symbol.Name,
-                        symbol.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat),
-                        tree.FilePath, span.StartLinePosition.Line + 1, span.EndLinePosition.Line + 1,
-                        kind, ModuleName(project.Config, tree.FilePath), "unchanged",
-                        ParentId: symbol.ContainingType is { } containingType
-                            ? Id(project.Config.Scope, containingType) : null);
-                    if (!snapshot.Entities.TryGetValue(id, out var entity))
-                    {
-                        entity = new Entity { Symbol = record, Project = project, SemanticSymbol = symbol, Fingerprint = "" };
-                        snapshot.Entities[id] = entity;
-                    }
-                    entity.Declarations.Add(node);
+                    var hash = SyntaxFactsCache.DeclarationHash(node);
+                    snapshot.DeclarationHashes.Add((project.Config.Scope, tree.FilePath, hash));
+                    var rank = changedPaths.Contains(tree.FilePath) ? otherHashes?.Contains(hash) == true ? 1 : 0 :
+                        2 + Priority(project.Config);
+                    declarations.Add((project, tree, node, rank));
                 }
             }
+        }
+        var changedIds = declarations.Where(d => d.Rank == 0).Select(d =>
+            d.Project.Model(d.Tree).GetDeclaredSymbol(d.Node) is { } symbol
+                ? Id(d.Project.Config.Scope, symbol) : null).OfType<string>().ToHashSet(StringComparer.Ordinal);
+        var changedMembers = declarations.Where(d => d.Rank == 0)
+            .Select(d => d.Project.Model(d.Tree).GetDeclaredSymbol(d.Node))
+            .Where(s => s is IMethodSymbol or IPropertySymbol).OfType<ISymbol>().ToArray();
+        var changedNames = changedMembers.Select(s => s.Name.Split('.').Last()).ToHashSet(StringComparer.Ordinal);
+        var changedConstructors = changedMembers.OfType<IMethodSymbol>()
+            .Any(m => m.MethodKind is MethodKind.Constructor or MethodKind.StaticConstructor);
+        var changedIndexers = changedMembers.OfType<IPropertySymbol>().Any(p => p.IsIndexer);
+        var changedOperators = changedMembers.OfType<IMethodSymbol>()
+            .Any(m => m.MethodKind is MethodKind.UserDefinedOperator or MethodKind.Conversion);
+        bool MayTargetChangedMember(SyntaxNode node)
+        {
+            if (changedOperators) return true;
+            var name = node switch
+            {
+                InvocationExpressionSyntax call => call.Expression switch
+                {
+                    MemberAccessExpressionSyntax access => access.Name.Identifier.ValueText,
+                    MemberBindingExpressionSyntax binding => binding.Name.Identifier.ValueText,
+                    SimpleNameSyntax simple => simple.Identifier.ValueText,
+                    _ => null
+                },
+                MemberAccessExpressionSyntax access => access.Name.Identifier.ValueText,
+                MemberBindingExpressionSyntax binding => binding.Name.Identifier.ValueText,
+                IdentifierNameSyntax identifier => identifier.Identifier.ValueText,
+                _ => null
+            };
+            if (node is ObjectCreationExpressionSyntax or ImplicitObjectCreationExpressionSyntax or ConstructorInitializerSyntax)
+                return changedConstructors;
+            if (node is ElementAccessExpressionSyntax) return changedIndexers;
+            return name is null || changedNames.Contains(name);
+        }
+        var directCallers = new HashSet<string>(StringComparer.Ordinal);
+        if (priorityCallers is not null) directCallers.UnionWith(priorityCallers);
+        if (changedIds.Count != 0)
+        {
+            foreach (var project in snapshot.Projects.Where(p => p.Config.Path != "<unassigned>"))
+                foreach (var tree in project.Trees)
+                {
+                    var model = project.Model(tree);
+                    foreach (var node in tree.GetRoot().DescendantNodes().Where(n => n is InvocationExpressionSyntax or
+                        ObjectCreationExpressionSyntax or ImplicitObjectCreationExpressionSyntax or ConstructorInitializerSyntax or
+                        MemberAccessExpressionSyntax or ElementAccessExpressionSyntax or MemberBindingExpressionSyntax or IdentifierNameSyntax))
+                    {
+                        if (!MayTargetChangedMember(node)) continue;
+                        var target = model.GetSymbolInfo(node).Symbol;
+                        if (target is not (IMethodSymbol or IPropertySymbol) ||
+                            ResolveId(snapshot, project, target) is not { } targetId || !changedIds.Contains(targetId)) continue;
+                        var owner = node.Ancestors().FirstOrDefault(IsDeclaration);
+                        if (owner is AccessorDeclarationSyntax)
+                            owner = owner.Ancestors().FirstOrDefault(n => n is PropertyDeclarationSyntax or IndexerDeclarationSyntax);
+                        if (owner is not null && model.GetDeclaredSymbol(owner) is { } caller)
+                            for (var ancestor = caller; ancestor is not null; ancestor = ancestor.ContainingSymbol)
+                                if (Id(project.Config.Scope, ancestor) is { } callerId) directCallers.Add(callerId);
+                    }
+                }
+        }
+        snapshot.PriorityCallers.UnionWith(directCallers);
+        int DeclarationPriority((ProjectState Project, SyntaxTree Tree, SyntaxNode Node, int Rank) declaration)
+        {
+            if (declaration.Rank == 0) return 0;
+            var symbol = declaration.Project.Model(declaration.Tree).GetDeclaredSymbol(declaration.Node);
+            return symbol is not null && Id(declaration.Project.Config.Scope, symbol) is { } id && directCallers.Contains(id)
+                ? 1 : declaration.Rank == 1 ? 2 : declaration.Rank + 1;
+        }
+        foreach (var (project, tree, node, _) in declarations.OrderBy(DeclarationPriority)
+            .ThenBy(d => d.Project.Config.Scope, StringComparer.Ordinal)
+            .ThenBy(d => d.Tree.FilePath, StringComparer.Ordinal).ThenBy(d => d.Node.SpanStart))
+        {
+            var model = project.Model(tree);
+            var symbol = model.GetDeclaredSymbol(node);
+            if (symbol is null) continue;
+            var id = Id(project.Config.Scope, symbol);
+            if (id is null) continue;
+            snapshot.AvailableIds.Add(id);
+            var span = node.GetLocation().GetLineSpan();
+            var kind = node switch
+            {
+                BaseNamespaceDeclarationSyntax => "namespace",
+                InterfaceDeclarationSyntax => "interface",
+                EnumDeclarationSyntax => "enum",
+                StructDeclarationSyntax => "struct",
+                RecordDeclarationSyntax => "record",
+                BaseTypeDeclarationSyntax or DelegateDeclarationSyntax => "class",
+                ConstructorDeclarationSyntax or DestructorDeclarationSyntax => "constructor",
+                PropertyDeclarationSyntax or IndexerDeclarationSyntax => "property",
+                AccessorDeclarationSyntax => "accessor",
+                LocalFunctionStatementSyntax => "function",
+                _ => "method"
+            };
+            var record = new SymbolRecord(id, symbol.Name,
+                symbol.ToDisplayString(SymbolDisplayFormat.CSharpErrorMessageFormat),
+                tree.FilePath, span.StartLinePosition.Line + 1, span.EndLinePosition.Line + 1,
+                kind, ModuleName(project.Config, tree.FilePath), "unchanged",
+                ParentId: symbol.ContainingType is { } containingType
+                    ? Id(project.Config.Scope, containingType) : null);
+            if (!snapshot.Entities.TryGetValue(id, out var entity))
+            {
+                if (snapshot.Entities.Count >= MaxSymbols)
+                {
+                    snapshot.Limited = true;
+                    continue;
+                }
+                entity = new Entity { Symbol = record, Project = project, SemanticSymbol = symbol, Fingerprint = "" };
+                snapshot.Entities[id] = entity;
+            }
+            entity.Declarations.Add(node);
         }
         if (snapshot.Limited) warnings.Add("Source/symbol limits reached; analysis is incomplete.");
         foreach (var entity in snapshot.Entities.Values)
@@ -434,21 +647,38 @@ internal static class Analyzer
                 }
             }
         }
-        foreach (var project in snapshot.Projects.Where(p => p.Config.Path != "<unassigned>"))
+        var propertyNames = snapshot.Entities.Values.Where(entity => entity.SemanticSymbol is IPropertySymbol)
+            .Select(entity => entity.Symbol.Name.Split('.').Last()).ToHashSet(StringComparer.Ordinal);
+        List<EdgeRecord>[] edgeBuckets = [[], [], []];
+        long edgeCount = 0;
+        void AddEdge(EdgeRecord edge)
+        {
+            edgeCount++;
+            var key = (edge.Source, edge.Target, edge.Kind);
+            if (snapshot.RelationshipCounts.TryGetValue(key, out var observed))
+                snapshot.RelationshipCounts[key] = observed + 1;
+            else if (snapshot.RelationshipCounts.Count < MaxEdges)
+                snapshot.RelationshipCounts[key] = 1;
+            else snapshot.RelationshipProofsLimited = true;
+            var rank = changedIds.Contains(edge.Source) || changedIds.Contains(edge.Target) ? 0 :
+                changedPaths.Contains(edge.Path) ? 1 : 2;
+            if (edgeBuckets[rank].Count < MaxEdges) edgeBuckets[rank].Add(edge);
+            else snapshot.OmittedEdgeSources.Add(edge.Source);
+        }
+        foreach (var project in snapshot.Projects.Where(p => p.Config.Path != "<unassigned>")
+            .OrderBy(p => Priority(p.Config)))
         {
             if (progress) ReportProgress($"Resolving relationships in {project.Config.Scope} ({snapshot.Projects.IndexOf(project) + 1}/{snapshot.Projects.Count}, {label})");
+            var owners = new Dictionary<SyntaxNode, string>();
+            foreach (var entity in snapshot.Entities.Values.Where(entity => entity.Project == project))
+                foreach (var declaration in entity.Declarations)
+                    owners[declaration] = entity.Symbol.Id;
             foreach (var tree in project.Trees)
             {
-                var model = project.Compilation!.GetSemanticModel(tree);
+                var model = project.Model(tree);
                 foreach (var node in tree.GetRoot().DescendantNodes())
                 {
-                    if (snapshot.Edges.Count >= MaxEdges)
-                    {
-                        snapshot.Limited = true;
-                        break;
-                    }
                     string? kind = null;
-                    ISymbol? target = null;
                     switch (node)
                     {
                         case InvocationExpressionSyntax:
@@ -456,64 +686,113 @@ internal static class Analyzer
                         case ImplicitObjectCreationExpressionSyntax:
                         case ConstructorInitializerSyntax:
                             kind = "calls";
-                            target = model.GetSymbolInfo(node).Symbol;
                             break;
-                        case BaseTypeSyntax baseType:
-                            target = model.GetSymbolInfo(baseType.Type).Symbol;
-                            kind = target is INamedTypeSymbol { TypeKind: TypeKind.Interface } &&
-                                node.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault() is not InterfaceDeclarationSyntax
-                                ? "implements" : "inherits";
+                        case BaseTypeSyntax:
+                            kind = "inherits";
                             break;
                         case UsingDirectiveSyntax { Name: not null } directive:
                             kind = "uses";
-                            target = model.GetSymbolInfo(directive.Name).Symbol;
                             break;
-                        case MemberAccessExpressionSyntax:
+                        case MemberAccessExpressionSyntax access when propertyNames.Contains(access.Name.Identifier.ValueText):
                         case ElementAccessExpressionSyntax:
-                        case MemberBindingExpressionSyntax:
-                        case IdentifierNameSyntax when node.Parent is not MemberAccessExpressionSyntax:
-                            if (model.GetSymbolInfo(node).Symbol is IPropertySymbol property)
-                            {
-                                target = property;
-                                kind = node.Parent is AssignmentExpressionSyntax assignment && assignment.Left == node
-                                    ? "writes" : "reads";
-                            }
+                        case MemberBindingExpressionSyntax binding when propertyNames.Contains(binding.Name.Identifier.ValueText):
+                        case IdentifierNameSyntax identifier when node.Parent is not MemberAccessExpressionSyntax &&
+                            propertyNames.Contains(identifier.Identifier.ValueText):
+                            kind = "property";
                             break;
                     }
-                    if (kind is null || target is null || target is ITypeSymbol { TypeKind: TypeKind.Error }) continue;
-                    var targetId = ResolveId(snapshot, project, target);
-                    if (targetId is null || !snapshot.Entities.ContainsKey(targetId)) continue;
+                    if (kind is null) continue;
                     var owner = node.Ancestors().FirstOrDefault(IsDeclaration);
                     if (owner is AccessorDeclarationSyntax)
                         owner = owner.Ancestors().FirstOrDefault(n => n is PropertyDeclarationSyntax or IndexerDeclarationSyntax);
-                    var sourceId = owner is null ? null : model.GetDeclaredSymbol(owner) is { } ownerSymbol
-                        ? Id(project.Config.Scope, ownerSymbol) : null;
+                    var sourceId = owner is null ? null : owners.GetValueOrDefault(owner);
                     // A top-level using is file/project evidence, not a dependency of an arbitrary type.
                     if (sourceId is null && node is UsingDirectiveSyntax)
                         sourceId = $"{project.Config.Scope}::project";
                     if (sourceId is null || !snapshot.Entities.ContainsKey(sourceId)) continue;
-                    snapshot.Edges.Add(new EdgeRecord(sourceId, targetId, kind, tree.FilePath,
+                    var target = node switch
+                    {
+                        BaseTypeSyntax baseType => model.GetSymbolInfo(baseType.Type).Symbol,
+                        UsingDirectiveSyntax { Name: not null } directive => model.GetSymbolInfo(directive.Name).Symbol,
+                        _ => model.GetSymbolInfo(node).Symbol
+                    };
+                    if (target is null || target is ITypeSymbol { TypeKind: TypeKind.Error }) continue;
+                    if (kind == "property")
+                    {
+                        if (target is not IPropertySymbol) continue;
+                        kind = node.Parent is AssignmentExpressionSyntax assignment && assignment.Left == node
+                            ? "writes" : "reads";
+                    }
+                    else if (node is BaseTypeSyntax && target is INamedTypeSymbol { TypeKind: TypeKind.Interface } &&
+                        node.Ancestors().OfType<TypeDeclarationSyntax>().FirstOrDefault() is not InterfaceDeclarationSyntax)
+                        kind = "implements";
+                    var targetId = ResolveId(snapshot, project, target);
+                    if (targetId is null || !snapshot.Entities.ContainsKey(targetId)) continue;
+                    AddEdge(new EdgeRecord(sourceId, targetId, kind, tree.FilePath,
                         node.GetLocation().GetLineSpan().StartLinePosition.Line + 1));
                 }
             }
             foreach (var reference in project.Config.References)
             {
-                var dependency = snapshot.Projects.FirstOrDefault(p => p.Config.Path == reference &&
-                    p.Config.Tfm == project.Config.Tfm);
+                var dependency = ProjectConfig.ResolveReference(project.Config, reference, snapshot.Projects);
                 if (dependency is null) continue;
                 var source = $"{project.Config.Scope}::project";
                 var target = $"{dependency.Config.Scope}::project";
                 if (project.Compilation!.References.OfType<CompilationReference>().Any(r => r.Compilation == dependency.Compilation))
-                    snapshot.Edges.Add(new EdgeRecord(source, target, "project_reference",
+                    AddEdge(new EdgeRecord(source, target, "project_reference",
                         project.Config.Path, project.Config.ReferenceLines.GetValueOrDefault(reference, 1)));
             }
         }
-        if (snapshot.Edges.Count >= MaxEdges) warnings.Add($"Edges capped at {MaxEdges}; remaining resolved relationships omitted.");
+        snapshot.Edges.AddRange(edgeBuckets.SelectMany(bucket => bucket).Take(MaxEdges));
+        snapshot.OmittedEdgeSources.UnionWith(edgeBuckets.SelectMany(bucket => bucket).Skip(MaxEdges).Select(e => e.Source));
+        if (edgeCount > MaxEdges)
+        {
+            snapshot.Limited = true;
+            warnings.Add($"Edges capped at {MaxEdges}; remaining resolved relationships omitted.");
+        }
+        if (snapshot.RelationshipProofsLimited)
+            warnings.Add($"Relationship comparison proofs capped at {MaxEdges} distinct relationships; further one-sided changes remain unknown.");
         allWarnings.AddRange(warnings.Select(w => $"{label}: {w}"));
         return snapshot;
     }
 
     internal static bool IsType(string kind) => kind is "class" or "struct" or "record" or "interface" or "enum";
+    private static void RecoverUnchangedDeclarations(Snapshot source, Snapshot target)
+    {
+        if (!target.Limited) return;
+        foreach (var (id, previous) in source.Entities)
+        {
+            if (!target.Entities.TryGetValue(id, out var entity) ||
+                !target.ParseOptions[entity.Project.Config.Scope].Equals(previous.Project.Config.Options))
+                continue;
+            foreach (var declaration in previous.Declarations)
+            {
+                var path = declaration.SyntaxTree.FilePath;
+                if (target.AnalyzedSources.Contains((entity.Project.Config.Scope, path)) ||
+                    !target.SourceMembership[entity.Project.Config.Scope].Contains(path) ||
+                    !source.Files.TryGetValue(path, out var text) || target.Files.GetValueOrDefault(path) != text)
+                    continue;
+                entity.RecoveredDeclarations.Add(declaration);
+            }
+            if (entity.RecoveredDeclarations.Count == 0) continue;
+            var complete = entity.Declarations.Concat(entity.RecoveredDeclarations)
+                .OrderBy(d => d.SyntaxTree.FilePath, StringComparer.Ordinal).ThenBy(d => d.SpanStart).ToArray();
+            entity.Fingerprint = Hash(string.Join("\n", complete.Select(SyntaxFactsCache.DeclarationHash)));
+            entity.Symbol = entity.Symbol with { Declarations = complete.Select(DeclarationLocation).ToList() };
+        }
+    }
+    internal static bool WasOmitted(Entity entity, Snapshot other) =>
+        other.Limited && other.ConfigurationScopes.Contains(entity.Project.Config.Scope) &&
+        (
+        entity.Declarations.Count != 0
+            ? other.AvailableIds.Contains(entity.Symbol.Id) && entity.Declarations.All(d => other.DeclarationHashes.Contains(
+                (entity.Project.Config.Scope, d.SyntaxTree.FilePath, SyntaxFactsCache.DeclarationHash(d)))) ||
+                other.ParseOptions[entity.Project.Config.Scope].Equals(entity.Project.Config.Options) &&
+                entity.Declarations.All(d => !other.AnalyzedSources.Contains((entity.Project.Config.Scope, d.SyntaxTree.FilePath)) &&
+                    other.SourceMembership[entity.Project.Config.Scope].Contains(d.SyntaxTree.FilePath) &&
+                    other.Files.GetValueOrDefault(d.SyntaxTree.FilePath) ==
+                    entity.Project.Trees.First(t => t.FilePath == d.SyntaxTree.FilePath).GetText().ToString())
+            : other.Files.TryGetValue(entity.Symbol.Path, out var text) && Hash(text) == entity.Fingerprint);
     private static string ModuleName(ProjectConfig project, string path) =>
         $"csharp:{project.Path}:{project.Tfm}:{path}";
     private static DeclarationSpan DeclarationLocation(SyntaxNode node)
@@ -538,8 +817,10 @@ internal static class Analyzer
         }
     }
 
-    private static List<EdgeRecord> DiffEdges(List<EdgeRecord> before, List<EdgeRecord> after)
+    private static List<EdgeRecord> DiffEdges(Snapshot baseline, Snapshot currentSnapshot, List<string> warnings)
     {
+        var before = baseline.Edges;
+        var after = currentSnapshot.Edges;
         static (string Source, string Target, string Kind) Key(EdgeRecord edge) => (edge.Source, edge.Target, edge.Kind);
         var old = before.Distinct().GroupBy(Key).ToDictionary(g => g.Key, g => g.OrderBy(e => e.Path, StringComparer.Ordinal)
             .ThenBy(e => e.Line).ToList());
@@ -572,7 +853,57 @@ internal static class Analyzer
             }
             output.AddRange(available.Order().Select(i => previous[i] with { Change = "removed" }));
         }
-        return output.OrderBy(e => e.Path, StringComparer.Ordinal).ThenBy(e => e.Line)
+        bool OmittedRelationship(EdgeRecord edge, Snapshot present, Snapshot other)
+        {
+            bool OmittedEndpoint(string id) => !other.Entities.ContainsKey(id) &&
+                present.Entities.TryGetValue(id, out var entity) && WasOmitted(entity, other);
+            return OmittedEndpoint(edge.Source) || OmittedEndpoint(edge.Target);
+        }
+        bool ExaminedChange(EdgeRecord edge)
+        {
+            if (edge.Change == "unchanged") return true;
+            var other = edge.Change == "removed" ? currentSnapshot : baseline;
+            var scope = edge.Source.Split("::", 2, StringSplitOptions.None)[0];
+            if (!other.Limited || !other.SourceMembership.TryGetValue(scope, out var sources) ||
+                !sources.Contains(edge.Path) || other.AnalyzedSources.Contains((scope, edge.Path))) return true;
+            warnings.Add($"Relationship change at {edge.Path}:{edge.Line} is unknown because the other snapshot omitted its caller source; one-sided evidence is not classified.");
+            return false;
+        }
+        var resolved = output.Where(ExaminedChange)
+            .Where(e => e.Change != "removed" || !OmittedRelationship(e, baseline, currentSnapshot))
+            .Select(e => e.Change == "added" && OmittedRelationship(e, currentSnapshot, baseline) ? e with { Change = "unchanged" } : e)
+            .ToList();
+        var compared = new List<EdgeRecord>();
+        foreach (var group in resolved.GroupBy(Key))
+        {
+            if (!baseline.OmittedEdgeSources.Contains(group.Key.Source) &&
+                !currentSnapshot.OmittedEdgeSources.Contains(group.Key.Source) ||
+                !baseline.Entities.ContainsKey(group.Key.Source) || !currentSnapshot.Entities.ContainsKey(group.Key.Source) ||
+                !baseline.Entities.ContainsKey(group.Key.Target) || !currentSnapshot.Entities.ContainsKey(group.Key.Target))
+            {
+                compared.AddRange(group);
+                continue;
+            }
+            var knownBefore = baseline.RelationshipCounts.TryGetValue(group.Key, out var beforeCount) ||
+                !baseline.RelationshipProofsLimited;
+            var knownAfter = currentSnapshot.RelationshipCounts.TryGetValue(group.Key, out var afterCount) ||
+                !currentSnapshot.RelationshipProofsLimited;
+            if (!knownBefore || !knownAfter)
+            {
+                compared.AddRange(group.Where(e => e.Change == "unchanged"));
+                warnings.Add($"Relationship change from {group.Key.Source} to {group.Key.Target} is unknown at the comparison proof limit; one-sided evidence is not classified.");
+                continue;
+            }
+            var added = Math.Max(0, afterCount - beforeCount);
+            var removed = Math.Max(0, beforeCount - afterCount);
+            foreach (var edge in group)
+            {
+                if (edge.Change == "removed" && removed-- <= 0) continue;
+                compared.Add(edge.Change == "added" && added-- <= 0 ? edge with { Change = "unchanged" } : edge);
+            }
+        }
+        return compared
+            .OrderBy(e => e.Path, StringComparer.Ordinal).ThenBy(e => e.Line)
             .ThenBy(e => e.Source, StringComparer.Ordinal).ThenBy(e => e.Target, StringComparer.Ordinal)
             .ThenBy(e => e.Kind, StringComparer.Ordinal).ThenBy(e => e.Change, StringComparer.Ordinal).ToList();
     }

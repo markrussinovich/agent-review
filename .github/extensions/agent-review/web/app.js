@@ -4353,7 +4353,8 @@ function renderDetail(item) {
         field("Complexity", metrics.complexity_current),
         field("Complexity Δ", metrics.complexity_base != null ? `${metrics.complexity_base} → ${metrics.complexity_current}` : null),
         field("Coverage", metrics.coverage_percent != null ? `${metrics.coverage_percent}%` : null),
-        field("Direct callers", metrics.direct_callers),
+        field("Direct callers", metrics.direct_callers == null ? null : item.relationships_incomplete
+            ? `${metrics.direct_callers} resolved · incomplete` : metrics.direct_callers),
         field("90d churn", metrics.churn_lines_90d),
         field("Base signature", item.signatures?.base || item.signature_base),
         field("Current signature", item.signatures?.current || item.signature_current),
@@ -5021,7 +5022,9 @@ function layerVerifyBlock(layer) {
         return block;
     }
     if (status.state === "none") {
-        block.append(el("p", "", `No linked tests reach the changed code in ${label}.`));
+        block.append(el("p", "", state.payload?.decision_map?.limited || state.payload?.decision_map?.verification?.limited
+            ? `No test links were resolved for ${label} in incomplete analysis; omitted callers or tests remain unknown.`
+            : `No linked tests reach the changed code in ${label}.`));
         return block;
     }
     const run = state.payload?.test_run;
@@ -5975,7 +5978,8 @@ function renderDecisionView(model) {
         }
         return;
     }
-    if (map.limited) view.append(el("p", "flash", "Large review: code path extraction covered a bounded set of files and callables."));
+    const incomplete = map.limited || map.incomplete || map.callables?.some((item) => item.incomplete || item.truncated);
+    if (incomplete) view.append(el("p", "flash", "Partial path model: omitted or unmodelled code remains unknown. See analysis notes."));
     if (map.warnings?.length) {
         const notes = el("details", "code-path-notes");
         const key = `${state.payload?.review_generation}:${map.total_ms}`;
@@ -6171,7 +6175,8 @@ function renderLinkedTests(map) {
     section.addEventListener("toggle", () => { if (section.isConnected) state.linkedTestsOpen = section.open; });
     const tests = map.verification.tests;
     section.append(el("summary", "", `${countLabel(tests.length, "Linked test")}${
-        map.verification.omitted_tests ? ` shown of ${(tests.length + map.verification.omitted_tests).toLocaleString()}` : ""}`));
+        map.verification.omitted_tests ? ` shown of ${(tests.length + map.verification.omitted_tests).toLocaleString()}` : ""}${
+        map.verification.omitted_test_candidates ? ` · ${countLabel(map.verification.omitted_test_candidates, "test candidate")} not examined` : ""}`));
     const list = el("div", "linked-test-list");
     for (const test of tests) {
         const row = el("button", "linked-test");

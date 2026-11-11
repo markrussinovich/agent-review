@@ -124,7 +124,8 @@ export function pathEvidence(item, entry, run) {
     } else if (evidence.level === "possible" && first) {
         result = { level: "possible", tone: "weak", text: `Name match only: \`${testName(first.id)}\` (inferred)` };
     } else {
-        result = { level: "none", tone: "untested", text: "No test evidence" };
+        result = { level: "none", tone: "untested",
+            text: evidence.limited ? "No test evidence in incomplete analysis" : "No test evidence" };
     }
     const ran = current ? run.ran?.[item.id] ?? (run.ran ? 0 : run.planned) : 0;
     if (Array.isArray(executed) && ran > 0) {
@@ -285,7 +286,7 @@ export function decisionPromptContext(map, callables = map?.callables || [], { m
     }
     return {
         note: "Static extraction from saved source: exits, error handlers, and name-based wiring per changed callable, with governing conditions. 'only if' gates apply only when a value is present. It does not prove runtime reachability.",
-        evidence_note: map.verification ? "Test evidence per path: 'Confirmed' means a linked test run executed that line; 'inferred' links come from static analysis of test calls and assertions and are not proof; 'Not executed' means the linked tests ran without reaching it; 'No test evidence' means no test calls the function or its callers." : undefined,
+        evidence_note: map.verification ? "Test evidence per path: 'Confirmed' means a linked test run executed that line; 'inferred' links come from static analysis of test calls and assertions and are not proof; 'Not executed' means the linked tests ran without reaching it; 'No test evidence' means no resolved test link in the analyzed subset; omitted or unresolved relationships remain unknown." : undefined,
         limited: Boolean(map.limited || map.incomplete) || callables.some((item) => item.incomplete || item.truncated) || omitted > 0,
         callables: items,
         omitted_callables: omitted,

@@ -165,6 +165,8 @@ internal static class SelfTests
             Check(refs.Edges.Any(e => e.Source.EndsWith("::project", StringComparison.Ordinal) &&
                 e.Target.EndsWith("::project", StringComparison.Ordinal) && e.Kind == "project_reference"),
                 "project reference evidence uses actual project identities");
+            BoundedEvidence();
+            ReviewFindings();
             var testProjectFiles = new Dictionary<string, string>(refFiles)
             {
                 ["lib/Api.cs"] = "namespace Lib; public class Api { public static int Read() => 7; public int Number { get { if (System.DateTime.Now.Day < 5) return 1; return 2; } } }",
@@ -183,6 +185,171 @@ internal static class SelfTests
                     }
                     """
             };
+
+            static void BoundedEvidence()
+            {
+                const string plain = "<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>";
+                var baseline = new Dictionary<string, string>
+                {
+                    ["App.csproj"] = plain,
+                    ["Budget.cs"] = "public partial class Budget {" +
+                        string.Join("", Enumerable.Range(0, 19998).Select(i => $"public int M{i:D5}() => {i};")) + "}",
+                    ["ZPart.cs"] = "public partial class Budget {}"
+                };
+                var current = new Dictionary<string, string>(baseline)
+                {
+                    ["Budget.cs"] = baseline["Budget.cs"].Replace("M19997() => 19997", "M19997() => -1", StringComparison.Ordinal),
+                    ["ZAdded.cs"] = "public class Added { public int ZRun() => 42; }"
+                };
+                var capped = Analyzer.Analyze(new Request(baseline, current, UseCache: false));
+                Check(capped.Symbols.Any(s => s.Name == "M19997" && s.Classification == "modified"),
+                    "changed declaration at the end of a budget-sized file is retained");
+                Check(capped.CodePaths.Callables.Any(c => c.Qualname == "Budget.M19997()" && c.Entries.Count != 0) &&
+                    capped.CodePaths.Callables.Any(c => c.Qualname == "Added.ZRun()" && c.Change == "added"),
+                    "changed and added callables precede the ordinal callable cap");
+                Check(!capped.Symbols.Any(s => s.Classification == "removed") &&
+                    !capped.CodePaths.Callables.Any(c => c.Change == "removed"),
+                    "one-sided cap omissions do not become phantom symbol or decision removals");
+                Check(capped.Symbols.Single(s => s.Name == "Budget" && s.Kind == "class").Declarations?.Count == 2,
+                    "partial declarations remain merged even when the symbol budget is full");
+                Check(capped.CodePaths.Limited && capped.CodePaths.Verification.Limited,
+                    "symbol/callable omissions propagate to code-path and test limitations");
+                var unchanged = Analyzer.Analyze(new Request(baseline, baseline, UseCache: false));
+                Check(unchanged.Symbols.Count == 20000 && unchanged.Symbols.All(s => s.Classification == "unchanged") &&
+                    unchanged.CodePaths.Callables.All(c => c.Entries.Count == 0), "exact symbol boundary with unchanged source is stable");
+                var callerBefore = new Dictionary<string, string>(baseline)
+                {
+                    ["ZConsumer.cs"] = "public class Consumer { public int Run() => new Budget().M19997(); }"
+                };
+                var callerAfter = new Dictionary<string, string>(callerBefore) { ["Budget.cs"] = current["Budget.cs"] };
+                var callerCapped = Analyzer.Analyze(new Request(callerBefore, callerAfter, "graph", false));
+                Check(callerCapped.Symbols.Any(s => s.Qualname == "Consumer.Run()" && s.Classification == "unchanged") &&
+                    callerCapped.Edges.Any(e => e.Kind == "calls" && e.Source.Contains("Consumer.Run", StringComparison.Ordinal) &&
+                        e.Target.Contains("Budget.M19997", StringComparison.Ordinal)),
+                    "unchanged direct caller declarations precede unrelated symbols at the global budget");
+                var removedTarget = Analyzer.Analyze(new Request(callerBefore, new Dictionary<string, string>(callerBefore)
+                {
+                    ["Budget.cs"] = callerBefore["Budget.cs"].Replace("public int M19997() => 19997;", "", StringComparison.Ordinal)
+                }, "graph", false));
+                Check(removedTarget.Symbols.Any(s => s.Name == "M19997" && s.Classification == "removed") &&
+                    removedTarget.Symbols.Any(s => s.Qualname == "Consumer.Run()" && s.Classification == "unchanged") &&
+                    removedTarget.Edges.Any(e => e.Change == "removed" && e.Source.Contains("Consumer.Run", StringComparison.Ordinal) &&
+                        e.Target.Contains("Budget.M19997", StringComparison.Ordinal)),
+                    "baseline callers remain prioritized and genuine callee removals are not hidden by unrelated limits");
+                var namedBefore = new Dictionary<string, string>(baseline)
+                {
+                    ["Budget.cs"] = baseline["Budget.cs"][..^1] +
+                        "public int @event() => 1; public T Generic<T>(T value) => value; public Budget(int value) { if (value < 0) return; }}",
+                    ["ZConsumer.cs"] = "using B = Budget; public class Consumer { public int Run() => new B(0).@event() + new B(0).Generic<int>(1); }"
+                };
+                var namedAfter = new Dictionary<string, string>(namedBefore)
+                {
+                    ["Budget.cs"] = namedBefore["Budget.cs"].Replace("@event() => 1", "@event() => 2", StringComparison.Ordinal)
+                        .Replace("=> value; public Budget", "=> default(T); public Budget", StringComparison.Ordinal)
+                        .Replace("value < 0", "value < 1", StringComparison.Ordinal)
+                };
+                var namedCalls = Analyzer.Analyze(new Request(namedBefore, namedAfter, "graph", false));
+                Check(namedCalls.Edges.Any(e => e.Source.Contains("Consumer.Run", StringComparison.Ordinal) && e.Target.Contains("Budget.event", StringComparison.Ordinal)) &&
+                    namedCalls.Edges.Any(e => e.Source.Contains("Consumer.Run", StringComparison.Ordinal) && e.Target.Contains("Budget.Generic", StringComparison.Ordinal)) &&
+                    namedCalls.Edges.Any(e => e.Source.Contains("Consumer.Run", StringComparison.Ordinal) && e.Target.Contains("Budget.#ctor", StringComparison.Ordinal)),
+                    "caller prefilter preserves escaped and generic method names and alias-sensitive constructors");
+                var edgeBefore = new Dictionary<string, string>
+                {
+                    ["App.csproj"] = plain,
+                    ["ANoise.cs"] = "public class Noise { public static void Read() {} public void Calls() {" +
+                        string.Concat(Enumerable.Repeat("Read();\n", 100000)) + "} }",
+                    ["ZChanged.cs"] = "public class Changed { public void Run() {} }"
+                };
+                var edgeAfter = new Dictionary<string, string>(edgeBefore)
+                {
+                    ["ZChanged.cs"] = "public class Changed { public void Run() { Noise.Read(); } }"
+                };
+                var edgeCapped = Analyzer.Analyze(new Request(edgeBefore, edgeAfter, "graph", false));
+                Check(edgeCapped.CodePaths.Limited && edgeCapped.Warnings.Any(w => w.Contains("Edges capped", StringComparison.Ordinal)) &&
+                    edgeCapped.Edges.Any(e => e.Kind == "calls" && e.Source.Contains("Changed.Run", StringComparison.Ordinal) && e.Change == "added") &&
+                    !edgeCapped.Edges.Any(e => e.Change == "removed" && e.Path == "ANoise.cs"),
+                    "changed-callable edges beat the exact edge budget without phantom unchanged-source edge removals");
+                var fileBase = new Dictionary<string, string> { ["App.csproj"] = plain };
+                foreach (var i in Enumerable.Range(0, 1999)) fileBase[$"A{i:D4}.cs"] = $"public class A{i} {{}}";
+                var fileCurrent = new Dictionary<string, string>(fileBase) { ["ZChanged.cs"] = "public class ZChanged { public int Run() => 1; }" };
+                var fileCapped = Analyzer.Analyze(new Request(fileBase, fileCurrent, "graph", false));
+                Check(fileCapped.Symbols.Any(s => s.Name == "Run" && s.Classification == "added") &&
+                    !fileCapped.Symbols.Any(s => s.Classification == "removed") && fileCapped.CodePaths.Limited,
+                    "changed files beat the file cap without phantom unchanged-source removals");
+                var references = new Dictionary<string, string>
+                {
+                    ["lib/Lib.csproj"] = plain,
+                    ["lib/Api.cs"] = "namespace Lib; public class Api { public static int Read() => 1; }",
+                    ["tray/Tray.csproj"] = plain.Replace("net10.0", "net10.0-windows10.0.22621.0", StringComparison.Ordinal)
+                        .Replace("</Project>", "<ItemGroup><ProjectReference Include=\"../lib/Lib.csproj\"/></ItemGroup></Project>", StringComparison.Ordinal),
+                    ["tray/Caller.cs"] = "public class Caller { public int Run() => Lib.Api.Read(); }",
+                    ["tests/Directory.Build.props"] = "<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup><ItemGroup><Using Include=\"Xunit\"/></ItemGroup></Project>",
+                    ["tests/Tests.csproj"] = "<Project><ItemGroup><ProjectReference Include=\"../lib/Lib.csproj\"/></ItemGroup></Project>",
+                    ["tests/Tests.cs"] = "public class ApiTests { [Fact] public void Read() { Lib.Api.Read(); } }"
+                };
+                var linked = Analyzer.Analyze(new Request(references, new Dictionary<string, string>(references)
+                {
+                    ["lib/Api.cs"] = references["lib/Api.cs"].Replace("=> 1", "=> 2", StringComparison.Ordinal)
+                }));
+                Check(linked.Edges.Any(e => e.Kind == "calls" && e.Source.StartsWith("tray/", StringComparison.Ordinal) &&
+                    e.Target.StartsWith("lib/Lib.csproj@net10.0", StringComparison.Ordinal)),
+                    "Windows-specific consumer resolves the plain framework library");
+                Check(linked.Edges.Any(e => e.Kind == "project_reference" && e.Source.StartsWith("tray/", StringComparison.Ordinal)),
+                    "project edges use the same compatible context as semantic compilation");
+                Check(linked.CodePaths.Verification.Tests.Any(t => t.FullName == "ApiTests.Read" && t.Link == "direct") &&
+                    linked.Symbols.Any(s => s.Path == "tests/Tests.cs" && s.Id.Contains("@net10.0::", StringComparison.Ordinal)),
+                    "literal nearest Directory.Build.props restores test TFM and source-backed links without imports");
+                references.Remove("tests/Directory.Build.props");
+                var unknown = Analyzer.Analyze(new Request([], references));
+                Check(unknown.Edges.Any(e => e.Kind == "calls" && e.Source.StartsWith("tests/Tests.csproj@unknown", StringComparison.Ordinal)) &&
+                    unknown.Warnings.Any(w => w.Contains("single supplied context", StringComparison.Ordinal)) &&
+                    unknown.CodePaths.Verification.Limited, "unknown TFM single-context fallback is explicit and incomplete");
+                references["lib/Lib.csproj"] = plain.Replace("<TargetFramework>net10.0</TargetFramework>",
+                    "<TargetFrameworks>net9.0;net10.0</TargetFrameworks>", StringComparison.Ordinal);
+                var ambiguous = Analyzer.Analyze(new Request([], references));
+                Check(!ambiguous.Edges.Any(e => e.Kind == "calls" && e.Source.StartsWith("tests/", StringComparison.Ordinal)),
+                    "unknown TFM never guesses among multiple contexts");
+                references["tray/Tray.csproj"] = references["tray/Tray.csproj"].Replace("net10.0-windows10.0.22621.0", "net8.0", StringComparison.Ordinal);
+                var incompatible = Analyzer.Analyze(new Request([], references));
+                Check(!incompatible.Edges.Any(e => e.Kind == "calls" && e.Source.StartsWith("tray/", StringComparison.Ordinal)),
+                    "known incompatible TFM is not accepted by a fallback");
+                references["lib/Lib.csproj"] = plain;
+                references["tests/Directory.Build.props"] = "<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework><IsTestProject>true</IsTestProject></PropertyGroup></Project>";
+                references["tests/Tests.cs"] = "public class ApiTests {" +
+                    string.Join("", Enumerable.Range(0, 200).Select(i => $"[Fact] public void A{i:D3}() {{}}")) +
+                    "[Fact] public void ZLinked() { Lib.Api.Read(); }}";
+                var testCapped = Analyzer.Analyze(new Request([], references));
+                Check(testCapped.CodePaths.Verification.Tests.Any(t => t.FullName == "ApiTests.ZLinked") &&
+                    testCapped.CodePaths.Verification.OmittedTests == 0 &&
+                    testCapped.CodePaths.Verification.OmittedTestCandidates == 1 && testCapped.CodePaths.Verification.Limited,
+                    "direct changed-code tests beat the test budget and disclose omissions");
+                var noPathChange = Analyzer.Analyze(new Request(
+                    new Dictionary<string, string>(references) { ["lib/Api.cs"] = "namespace Lib; public class Api { public static void Read() { int x = 1; } }" },
+                    new Dictionary<string, string>(references) { ["lib/Api.cs"] = "namespace Lib; public class Api { public static void Read() { int x = 2; } }" }));
+                Check(noPathChange.CodePaths.Verification.Tests.Any(t => t.FullName == "ApiTests.ZLinked"),
+                    "test links follow changed callables even when lexical exit decisions do not change");
+                var friendFiles = new Dictionary<string, string>(references)
+                {
+                    ["lib/Lib.csproj"] = plain.Replace("<Project>", "<Project Sdk=\"Microsoft.NET.Sdk\">", StringComparison.Ordinal)
+                        .Replace("</PropertyGroup>", "<ImplicitUsings>enable</ImplicitUsings></PropertyGroup>", StringComparison.Ordinal)
+                        .Replace("</Project>", "<ItemGroup><InternalsVisibleTo Include=\"Tests\"/></ItemGroup></Project>", StringComparison.Ordinal),
+                    ["lib/Api.cs"] = "namespace Lib; public class Api { internal static int Read(TimeProvider clock) => 1; }",
+                    ["tests/Tests.csproj"] = "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup><ProjectReference Include=\"../lib/Lib.csproj\"/></ItemGroup></Project>",
+                    ["tests/Directory.Build.props"] = "<Project><PropertyGroup><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><IsTestProject>true</IsTestProject></PropertyGroup></Project>",
+                    ["tests/Tests.cs"] = "public class ApiTests { [Fact] public void InternalCall() { Lib.Api.Read(new Clock()); } private class Clock : TimeProvider {} }"
+                };
+                var internalLinks = Analyzer.Analyze(new Request([], friendFiles));
+                Check(internalLinks.CodePaths.Verification.Tests.Any(t => t.FullName == "ApiTests.InternalCall") &&
+                    internalLinks.Edges.Any(e => e.Kind == "calls" && e.Source.Contains("ApiTests.InternalCall", StringComparison.Ordinal) &&
+                        e.Target.Contains("Api.Read", StringComparison.Ordinal)),
+                    "literal SDK implicit usings and unsigned friend items restore internal test calls with resolved argument types");
+                friendFiles["tests2/Tests.csproj"] = plain;
+                var duplicateFriend = Analyzer.Analyze(new Request([], friendFiles));
+                Check(!duplicateFriend.Edges.Any(e => e.Kind == "calls" && e.Source.Contains("ApiTests.InternalCall", StringComparison.Ordinal) &&
+                    e.Target.Contains("Api.Read", StringComparison.Ordinal)) &&
+                    duplicateFriend.Warnings.Any(w => w.Contains("no unique supplied project identity", StringComparison.Ordinal)),
+                    "duplicate friend assembly names never grant guessed internal access");
+            }
             var syntaxTests = Analyzer.Analyze(new Request([], testProjectFiles, "decisions"));
             Check(syntaxTests.CodePaths.Verification.Tests.Count == 3 &&
                 syntaxTests.CodePaths.Verification.Tests.All(t => t.Id == t.FullName &&
@@ -212,12 +379,13 @@ internal static class SelfTests
                 ["Properties.cs"] = """
                     interface IValue { int Value { get; } }
                     class Values : IValue {
-                        int IValue.Value => 1;
+                        int IValue.Value { get => @event; }
                         public int @event { get; set; }
                         public int this[int index] => index;
                         public int Read(Values other) {
                             @event = 2;
-                            return other?.@event ?? ((IValue)this).Value + this[0] + @event;
+                            int Local() => this[0];
+                            return other?.@event ?? ((IValue)this).Value + Local() + @event;
                         }
                     }
                     """
@@ -231,6 +399,12 @@ internal static class SelfTests
             }
             Check(properties.Edges.Any(e => e.Kind == "writes" && e.Target.Contains("event", StringComparison.Ordinal)),
                 "escaped property writes preserved");
+            Check(properties.Edges.Any(e => e.Kind == "calls" &&
+                    e.Target == properties.Symbols.Single(s => s.Kind == "function" && s.Name == "Local").Id) &&
+                properties.Edges.Any(e => e.Kind == "reads" &&
+                    e.Source == properties.Symbols.Single(s => s.Qualname == "Values.IValue.Value" && s.Kind == "property").Id &&
+                    e.Target.Contains("event", StringComparison.Ordinal)),
+                "retained-owner binding preserves local calls and accessor property ownership");
             var assertionFiles = new Dictionary<string, string>(testProjectFiles)
             {
                 ["lib/Widget.cs"] = """
@@ -466,6 +640,120 @@ internal static class SelfTests
             Console.Error.WriteLine($"FAIL: {error}");
             return 1;
         }
+    }
+
+    private static void ReviewFindings()
+    {
+        const string project = "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>";
+        var friends = new Dictionary<string, string>
+        {
+            ["lib/Lib.csproj"] = project.Replace("</Project>", "<ItemGroup><InternalsVisibleTo Include=\"Tests\"/></ItemGroup></Project>", StringComparison.Ordinal),
+            ["lib/Api.cs"] = "namespace Demo; public static class Api { internal static int Read() => 1; }",
+            ["tests/Tests.csproj"] = project.Replace("</Project>", "<ItemGroup><ProjectReference Include=\"../lib/Lib.csproj\"/></ItemGroup></Project>", StringComparison.Ordinal),
+            ["tests/Tests.cs"] = "namespace Xunit { public sealed class FactAttribute : System.Attribute {} } public class ApiTests { [Xunit.Fact] public void ReadTest() { Demo.Api.Read(); } }"
+        };
+        foreach (var gate in new[] { "GenerateAssemblyInfo", "GenerateInternalsVisibleToAttributes" })
+        {
+            var disabled = new Dictionary<string, string>(friends)
+            {
+                ["lib/Lib.csproj"] = friends["lib/Lib.csproj"].Replace("</PropertyGroup>", $"<{gate}>false</{gate}></PropertyGroup>", StringComparison.Ordinal)
+            };
+            var result = Analyzer.Analyze(new Request([], disabled));
+            Check(!result.Edges.Any(e => e.Kind == "calls" && e.Source.Contains("ApiTests.ReadTest", StringComparison.Ordinal)) &&
+                result.CodePaths.Verification.Tests.Count == 0 &&
+                result.Warnings.Any(w => w.Contains("CS0122", StringComparison.Ordinal)) && result.CodePaths.Verification.Limited,
+                $"{gate}=false does not fabricate friend access or linked tests");
+            foreach (var setting in new[] { $"<{gate}>$(Unknown)</{gate}>", $"<{gate} Condition=\"'$(Configuration)' == 'Debug'\">true</{gate}>" })
+            {
+                disabled["lib/Lib.csproj"] = friends["lib/Lib.csproj"].Replace("</PropertyGroup>", setting + "</PropertyGroup>", StringComparison.Ordinal);
+                var unknown = Analyzer.Analyze(new Request([], disabled));
+                Check(!unknown.Edges.Any(e => e.Kind == "calls" && e.Source.Contains("ApiTests.ReadTest", StringComparison.Ordinal)) &&
+                    unknown.Warnings.Any(w => w.Contains($"{gate} unavailable", StringComparison.Ordinal)),
+                    $"{gate} unresolved values/conditions never grant friend access");
+            }
+            disabled["lib/Lib.csproj"] = friends["lib/Lib.csproj"].Replace("</PropertyGroup>", $"<{gate}>false</{gate}></PropertyGroup>", StringComparison.Ordinal);
+            var targetAssembly = "snapshot_" + Analyzer.Hash("tests/Tests.csproj@net10.0")[..24];
+            disabled["lib/Api.cs"] = $"[assembly: System.Runtime.CompilerServices.InternalsVisibleTo(\"{targetAssembly}\")] " + friends["lib/Api.cs"];
+            Check(Analyzer.Analyze(new Request([], disabled)).Edges.Any(e => e.Kind == "calls" &&
+                e.Source.Contains("ApiTests.ReadTest", StringComparison.Ordinal)),
+                $"{gate}=false does not erase a supplied source friend attribute");
+        }
+        var nearest = new Dictionary<string, string>
+        {
+            ["lib/Lib.csproj"] = project.Replace("<TargetFramework>net10.0</TargetFramework>",
+                "<TargetFrameworks>net8.0-windows10.0.17763.0;net10.0</TargetFrameworks>", StringComparison.Ordinal),
+            ["lib/Api.cs"] = "public static class Api { public static int Read() => 1; }",
+            ["tray/Tray.csproj"] = project.Replace("net10.0", "net10.0-windows10.0.22621.0", StringComparison.Ordinal)
+                .Replace("</Project>", "<ItemGroup><ProjectReference Include=\"../lib/Lib.csproj\"/></ItemGroup></Project>", StringComparison.Ordinal),
+            ["tray/Caller.cs"] = "public class Caller { public int Read() => Api.Read(); }"
+        };
+        var ranked = Analyzer.Analyze(new Request([], nearest));
+        Check(ranked.Edges.Any(e => e.Kind == "calls" && e.Source.StartsWith("tray/", StringComparison.Ordinal) &&
+            e.Target.StartsWith("lib/Lib.csproj@net10.0::", StringComparison.Ordinal)) &&
+            !ranked.Edges.Any(e => e.Kind == "project_reference" && e.Source.StartsWith("tray/", StringComparison.Ordinal) &&
+                e.Target.Contains("@net8.0-windows", StringComparison.Ordinal)),
+            "nearest framework version outranks an older platform-specific TFM");
+        nearest["lib/Lib.csproj"] = nearest["lib/Lib.csproj"].Replace("net8.0-windows10.0.17763.0;net10.0",
+            "net10.0-windows10.0.17763.0;net10.0-windows10.0.19041.0;net10.0", StringComparison.Ordinal);
+        Check(Analyzer.Analyze(new Request([], nearest)).Edges.Any(e => e.Kind == "calls" &&
+            e.Source.StartsWith("tray/", StringComparison.Ordinal) && e.Target.Contains("@net10.0-windows10.0.19041.0::", StringComparison.Ordinal)),
+            "equal framework versions choose the nearest compatible platform version");
+        var partial = new Dictionary<string, string>
+        {
+            ["App.csproj"] = project,
+            ["APart.cs"] = "public partial class Part { public int A() => 1; }",
+            ["ZPart.cs"] = "public partial class Part { public int B() => 2; }"
+        };
+        foreach (var i in Enumerable.Range(0, 1997)) partial[$"Empty{i:D4}.cs"] = "// supplied context";
+        var additions = new Dictionary<string, string>(partial) { ["ZAdded.cs"] = "public class Added {}" };
+        var stable = Analyzer.Analyze(new Request(partial, additions));
+        var part = stable.Symbols.Single(s => s.Qualname == "Part" && s.Kind == "class");
+        Check(part.Classification == "unchanged" && part.Declarations?.Count == 2 && part.BaselineDeclarations?.Count == 2 &&
+            !stable.Symbols.Any(s => s.Classification == "removed") && !stable.CodePaths.Callables.Any(c => c.Entries.Count != 0),
+            "unchanged omitted partial declarations reconcile before fingerprints and decision comparisons");
+        var partialMethod = new Dictionary<string, string>(partial)
+        {
+            ["APart.cs"] = "public partial class Part { public partial int Read(); public static int Target() => 1; }",
+            ["ZPart.cs"] = "public partial class Part { public partial int Read() => Target(); }"
+        };
+        var partialMethodAfter = new Dictionary<string, string>(partialMethod) { ["ZAdded.cs"] = "public class Added {}" };
+        var methods = Analyzer.Analyze(new Request(partialMethod, partialMethodAfter));
+        Check(methods.Symbols.Single(s => s.Qualname == "Part.Read()").Classification == "unchanged" &&
+            !methods.CodePaths.Callables.Any(c => c.Entries.Count != 0) &&
+            !methods.Edges.Any(e => e.Change == "removed") &&
+            methods.Warnings.Any(w => w.Contains("omitted its caller source", StringComparison.Ordinal)),
+            "omitted partial method bodies retain verified syntax but their semantic bindings remain explicitly unknown");
+        var excluded = new Dictionary<string, string>(additions)
+        {
+            ["App.csproj"] = project.Replace("</Project>", "<ItemGroup><Compile Remove=\"ZPart.cs\"/></ItemGroup></Project>", StringComparison.Ordinal)
+        };
+        var exclusion = Analyzer.Analyze(new Request(partial, excluded, "graph", false));
+        Check(exclusion.Symbols.Single(s => s.Qualname == "Part" && s.Kind == "class").Classification == "modified" &&
+            exclusion.Symbols.Any(s => s.Name == "B" && s.Classification == "removed"),
+            "literal compile membership changes remain genuine partial modifications and method removals");
+        var sourceChange = new Dictionary<string, string>(additions) { ["ZPart.cs"] = partial["ZPart.cs"].Replace("=> 2", "=> 3", StringComparison.Ordinal) };
+        Check(Analyzer.Analyze(new Request(partial, sourceChange)).Symbols.Any(s => s.Name == "B" && s.Classification == "modified"),
+            "changed partial source remains modified rather than reconciled away");
+        var accessible = new Dictionary<string, string>
+        {
+            ["App.csproj"] = project,
+            ["Api.cs"] = "public static class Api { public static void Changed() {} public static void Noise() {} }",
+            ["Caller.cs"] = "public class Caller { public void Run() { Api.Changed();\n" +
+                string.Concat(Enumerable.Repeat("Api.Noise();\n", 100001)) + "} }"
+        };
+        var inaccessible = new Dictionary<string, string>(accessible) { ["Api.cs"] = accessible["Api.cs"].Replace("public static void Changed", "private static void Changed", StringComparison.Ordinal) };
+        var access = Analyzer.Analyze(new Request(accessible, inaccessible, "graph", false));
+        Check(access.Edges.Any(e => e.Kind == "calls" && e.Change == "removed" && e.Source.Contains("Caller.Run", StringComparison.Ordinal) &&
+            e.Target.Contains("Api.Changed", StringComparison.Ordinal)) &&
+            access.Warnings.Any(w => w.Contains("CS0122", StringComparison.Ordinal)),
+            "capped caller proof counts preserve a genuine public-to-private binding removal");
+        var fewer = new Dictionary<string, string>(accessible)
+        {
+            ["Caller.cs"] = accessible["Caller.cs"].Replace("Api.Changed();", "", StringComparison.Ordinal)
+        };
+        Check(Analyzer.Analyze(new Request(accessible, fewer, "graph", false)).Edges.Any(e => e.Change == "removed" &&
+            e.Target.Contains("Api.Changed", StringComparison.Ordinal)),
+            "one-sided call-count changes remain removals even when the caller's other edges are capped");
     }
 
     private static void Check(bool value, string name)

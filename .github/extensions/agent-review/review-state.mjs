@@ -1253,7 +1253,9 @@ export class ReviewState {
         const worktree = this.reviewTarget.mode === "worktree";
         // Say "no linked tests" only when none exist; otherwise keep the runner's own reason (for example an unsupported test shape).
         const linked = (map?.verification?.tests || []).filter((test) => test.link !== "name-only").length;
-        let reason = scope && map?.status === "complete" && !linked ? "No linked tests reach this layer's changed code."
+        let reason = scope && map?.status === "complete" && !linked ? map.limited || map.verification?.limited
+            ? "No test links were resolved for this layer in incomplete analysis; omitted callers or tests remain unknown."
+            : "No linked tests reach this layer's changed code."
             : plan.reason || python.error || (!plan.tests.length ? "No runnable linked tests were planned." : null);
         if (this.loading) reason = "Wait for the analysis to finish.";
         else if (worktree && this.worktreeChanged) reason = "The worktree changed since this review. Reanalyze before running linked tests.";
