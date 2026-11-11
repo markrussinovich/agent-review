@@ -307,9 +307,14 @@ test("automatic summary captures originating history only after the bounded sear
         generateAnnotation: async (context) => { received = context; return "## Summary\n\n- Feature.\n\n## Review order\n\n- Source.\n\n## Gaps\n\n- Coverage."; },
     });
     state.model = { summary: {}, changes: [{ path: "main.py", status: "added", lines_added: 1, lines_removed: 0 }], nodes: [], attention: [], coverage: {}, warnings: [] };
+    state.lastAnalyzedAt = "2026-10-03T11:00:00Z";
     const request = state.overviewFor();
     assert.equal(received, undefined);
-    finishHistory({ contexts: [{ session_id: "authoring", turns: [],
+    finishHistory({ contexts: [{ session_id: "authoring", turns: [{
+        id: "authoring", session_id: "authoring", prompt_event_id: "authoring",
+        prompt: "Implement YAML configuration importing.", started_at: "2026-10-03T10:00:00Z",
+        agent_activity: [{ timestamp: "2026-10-03T10:01:00Z", operation: "write", referenced_files: ["main.py"] }],
+    }],
         intent: [{ timestamp: "2026-10-03T10:00:00Z", summary: "Implement YAML configuration importing." }],
         recent_activity: [], referenced_files: [], event_count: 1 }], failures: [] });
     await request;
@@ -334,6 +339,8 @@ test("commit summary intent cannot borrow goals from a newer same-repository fea
     assert.deepEqual(state.overviewContext().session_intent, ["Create cron planning."]);
     assert.equal(state.overviewContext().session_attribution[0].prompt, "Create cron planning.");
     state.reviewTarget = { mode: "worktree" };
+    assert.deepEqual(state.overviewContext().session_attribution, [], "an unknown snapshot time cannot establish an originating edit");
+    state.lastAnalyzedAt = "2026-10-03T12:00:00Z";
     assert.equal(state.overviewContext().session_attribution[0].prompt, "Create YAML importing.");
     state.lastAnalyzedAt = "2026-10-03T10:00:00Z";
     assert.equal(state.overviewContext().session_attribution[0].prompt, "Create cron planning.", "a saved worktree also excludes edits after its analysis");
@@ -366,6 +373,83 @@ test("historical reviews never fall back to unrelated repository intent", () => 
 
     assert.deepEqual(context.session_intent, []);
     assert.equal(context.commit_intent.subject, "Upgrade dependency");
+});
+
+test("read-only triage and filename mentions never become review purpose or originating context", async () => {
+    let source;
+    const state = new ReviewState("C:\\repo", { generateAnnotation: async (context) => {
+        source = context;
+        return "The saved value changes.";
+    } });
+    state.refreshHistoricalSessionContexts = () => null;
+    const before = "2026-11-01T12:00:00Z";
+    state.model = {
+        summary: {}, metadata: { generated_at: before },
+        changes: [{ path: "src/app.py", status: "modified", lines_added: 1, lines_removed: 1 }],
+        source_files: { "src/app.py": { current: "return 2", diff: "-return 1\n+return 2" } },
+        nodes: [], edges: [], evidence: {}, attention: [], coverage: {}, warnings: [],
+    };
+    state.lastAnalyzedAt = before;
+    for (const mode of ["pr", "commit", "worktree"]) {
+        state.reviewTarget = { mode, intent: { kind: mode, title: "Author's change", body: "Actual change description." } };
+        for (const prompt of ["Land the fix once you have confidence.", "Review app.py and merge the fix.",
+            "Create an explanation of app.py.", "app.py came up in another conversation."]) {
+            state.sessionContext = {
+                historical_search_complete: true,
+                intent: [{ timestamp: "2026-11-01T11:00:00Z", summary: prompt }],
+                turns: [{
+                    id: "triage", session_id: "triage", prompt_event_id: "triage", prompt,
+                    started_at: "2026-11-01T11:00:00Z",
+                    agent_activity: [{ timestamp: "2026-11-01T11:01:00Z", operation: "read",
+                        referenced_files: ["src/app.py"], summary: "Inspect the fix" }],
+                }],
+            };
+            const overview = state.overviewContext();
+            assert.deepEqual(overview.session_intent, [], `${mode}: ${prompt}`);
+            assert.deepEqual(overview.session_attribution, []);
+            assert.equal(overview.commit_intent.body, "Actual change description.");
+            state.annotations = {};
+            await state.annotationFor("file:src/app.py");
+            assert.deepEqual(source.session_intent, []);
+            assert.deepEqual(source.session_attribution, []);
+            const provenance = state.attributionStatusForPath("src/app.py");
+            assert.equal(provenance.status, "no_match");
+            assert.doesNotMatch(JSON.stringify({ overview, source, provenance, snapshot: state.snapshot(), canvas: state.contextFor() }),
+                /Land the fix|Review app\.py|Create an explanation|another conversation/);
+        }
+    }
+});
+
+test("default session context is status-only; transcripts remain available through explicit history access", () => {
+    const state = new ReviewState("C:\\repo");
+    const context = {
+        session_id: "authoring", session_summary: "Private session title", historical_search_complete: true,
+        intent: [{ summary: "Private prompt" }], turns: [{ prompt: "Private prompt" }],
+        timeline: [{ summary: "Private activity" }], recent_activity: [{ summary: "Private activity" }],
+    };
+    state.sessionContext = context;
+    state.sessionHistories.set("authoring", context);
+    assert.equal(state.snapshot().session_context.historical_search_complete, true);
+    assert.doesNotMatch(JSON.stringify(state.snapshot().session_context), /Private/);
+    assert.equal(state.sessionHistoryFor("authoring").turns[0].prompt, "Private prompt");
+});
+
+test("overview finds authoring evidence beyond its largest source files, including test-only edits", () => {
+    const state = new ReviewState("C:\\repo");
+    state.lastAnalyzedAt = "2026-11-01T12:00:00Z";
+    state.model = {
+        summary: {}, nodes: [], attention: [], coverage: {}, warnings: [],
+        changes: ["src/a.py", "src/b.py", "src/c.py", "tests/test_app.py"].map((path, index) => ({
+            path, status: "modified", lines_added: 10 - index, lines_removed: 1,
+        })),
+    };
+    state.sessionContext = { turns: [{
+        id: "tests", prompt: "Cover empty input.", started_at: "2026-11-01T11:00:00Z",
+        agent_activity: [{ timestamp: "2026-11-01T11:01:00Z", operation: "write",
+            referenced_files: ["tests/test_app.py"] }],
+    }] };
+    assert.deepEqual(state.overviewContext().session_intent, ["Cover empty input."]);
+    assert.equal(state.overviewContext().session_attribution[0].path, "tests/test_app.py");
 });
 
 test("base ref is re-resolved on every refresh", async () => {

@@ -7,7 +7,7 @@ export const ANNOTATION_HEADINGS = [
 ];
 
 // Bump when the item-explanation prompt changes meaningfully; saved explanations from older prompts are regenerated.
-export const ANNOTATION_PROMPT_VERSION = 5;
+export const ANNOTATION_PROMPT_VERSION = 6;
 
 export const INSTRUCTION_HEADINGS = [
     "What this document is", "How it reaches an agent", "What changed and how obligations change",
@@ -137,6 +137,7 @@ export function buildOverviewPrompt(context) {
         "Honor evidence_limits.status and completed/total counts; incomplete analysis is a gap even when no findings were supported. Omitted records are presentation limits, not unreviewed code.",
         "Lead with the behavioral change, not filenames, line counts, or complexity. If source evidence is partial, limit claims to what is visible.",
         "If session_intent states the request, begin the first bullet with **Requested:** and paraphrase it in at most 20 words, then state whether the change files plausibly fulfil it.",
+        "Empty session_intent means origin unknown: use the PR description or commit message, never invent a session goal.",
         "If commit_intent (the commit message or PR description) states claims such as validation rules or scope, compare them with the code: name any claim the diff does not support, e.g. a 'strict' check that applies only when a field is present.",
         "## Review order",
         "3-4 bullets, most important first. Format: **`path` or symbol** — a concrete decision, boundary, or integration behavior the reviewer should verify.",
