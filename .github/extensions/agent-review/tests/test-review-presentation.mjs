@@ -1,6 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { annotationSections, conciseReviewText, overviewBlurb, reviewCommands, reviewContext, reviewItemEvidence, reviewSignal } from "../web/review-presentation.mjs";
+import { annotationSections, conciseReviewText, internalReviewPresentation, overviewBlurb, reviewCommands, reviewContext, reviewItemEvidence, reviewSignal } from "../web/review-presentation.mjs";
+
+test("incomplete findings always carry analyzed coverage and uncertainty, even with supported findings", () => {
+    for (const status of ["partial", "running", "cancelled", "error"]) {
+        for (const findings of [[], [{ title: "Supported concern" }]]) {
+            const result = internalReviewPresentation({ status, findings,
+                coverage: { completed_files: 3, total_files: 10, completed_units: 26, total_units: 255 } });
+            assert.match(result.notice, /3 of 10 changed files and 26 of 255 evidence units/);
+            assert.match(result.notice, /Results incomplete.*may hide additional findings.*not a clean bill/);
+            assert.equal(result.empty, "No supported findings so far.");
+            assert.doesNotMatch(result.empty, /completed analysis/);
+            if (status === "running") assert.match(result.notice, /Review in progress/);
+            if (status === "cancelled") assert.match(result.notice, /Review stopped/);
+        }
+    }
+    assert.match(internalReviewPresentation({ status: "partial",
+        coverage: { completed_files: 10, total_files: 10, completed_units: 255, total_units: 255 },
+        gaps: [{ reason: "Unverified candidate" }] }).notice, /Results incomplete/);
+    assert.deepEqual(internalReviewPresentation({ status: "complete" }), { notice: "", empty: "No supported findings." });
+});
 
 test("static priority signals and AI-supported concerns are not labeled confirmed defects", () => {
     assert.equal(reviewSignal({ id: "attention:size" }).label, "Review priority");

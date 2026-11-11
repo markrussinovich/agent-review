@@ -328,7 +328,8 @@ test("unverified candidates survive as evidence gaps rather than final findings"
     assert.equal(result.status, "partial");
     assert.equal(result.findings.length, 0);
     assert.equal(result.unresolved_findings.length, 1);
-    assert.match(result.content, /No supported findings in the completed analysis/);
+    assert.match(result.content, /No supported findings so far/);
+    assert.match(result.content, /Results incomplete/);
 });
 
 test("deduplication preserves independent problems and trimming only limits presentation", () => {
@@ -344,6 +345,25 @@ test("deduplication preserves independent problems and trimming only limits pres
         coverage: { completed_files: 1, total_files: 1, completed_units: 2, total_units: 2 } });
     assert.match(text, /Showing 8 of 12 findings/);
     assert.equal((text.match(/^- \*\*/gm) || []).length, 8);
+});
+
+test("saved review text puts incomplete coverage beside both empty and supported findings", () => {
+    for (const status of ["partial", "running", "cancelled"]) {
+        for (const findings of [[], [{ severity: "high", title: "Supported concern",
+            detail: "Source-backed detail", citations: [{ path: "src/a.js", line: 1, side: "current" }] }]]) {
+            const text = renderReview({ status, findings, gaps: [{ reason: "Unfinished evidence" }],
+                coverage: { completed_files: 3, total_files: 10, completed_units: 26, total_units: 255 } });
+            const section = text.split("## Verification")[0];
+            assert.match(section, /3 of 10 changed files and 26 of 255 evidence units/);
+            assert.match(section, /Results incomplete.*not a clean bill/);
+            assert.doesNotMatch(section, /completed analysis/);
+            assert.match(section, findings.length ? /Supported concern/ : /No supported findings so far/);
+        }
+    }
+    const complete = renderReview({ status: "complete", findings: [], gaps: [],
+        coverage: { completed_files: 10, total_files: 10, completed_units: 255, total_units: 255 } });
+    assert.match(complete, /## Findings\n\nNo supported findings\./);
+    assert.doesNotMatch(complete, /Results incomplete|so far/);
 });
 
 test("request limits retain partial results and disk checkpoints resume without repeating completed units", async () => {

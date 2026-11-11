@@ -3,6 +3,20 @@ import { summarizeAnalysisWarnings } from "./analysis-limitations.mjs";
 import { impactSlice } from "./impact-model.mjs";
 import { countLabel } from "./count-format.mjs";
 
+export function internalReviewPresentation(review) {
+    const incomplete = review.status !== "complete";
+    const coverage = review.coverage;
+    const phase = review.status === "running" ? "Review in progress"
+        : review.status === "cancelled" ? "Review stopped"
+        : review.status === "error" ? "Review failed" : "Partial review";
+    return {
+        notice: incomplete ? `${phase} — ${coverage
+            ? `analyzed ${coverage.completed_files} of ${coverage.total_files} changed files and ${coverage.completed_units} of ${coverage.total_units} evidence units. `
+            : ""}Results incomplete; unreviewed evidence or unresolved gaps may hide additional findings. This is not a clean bill of health.` : "",
+        empty: incomplete ? "No supported findings so far." : "No supported findings.",
+    };
+}
+
 export function reviewSignal(item) {
     if (item.verification === "supported") return { label: "AI-supported concern", kind: "ai" };
     if (item.kind === "evidence") return { label: "Saved evidence", kind: "evidence" };
