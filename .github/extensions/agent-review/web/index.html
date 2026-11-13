@@ -163,6 +163,8 @@
                         <h2 id="graph-title">Structural change map</h2>
                         </div>
                     </div>
+                    <button id="graph-close" class="view-close" type="button" aria-label="Close exploration">Close</button>
+                    <div class="view-toolbar">
                     <div class="legend">
                         <span><i class="added"></i>Added</span>
                         <span><i class="modified"></i>Modified</span>
@@ -175,11 +177,15 @@
                         <input id="review-search" type="search" placeholder="Filter names…" aria-label="Filter review items">
                         <button id="detail-toggle" type="button" aria-pressed="false">Show details</button>
                     </div>
+                    </div>
                 </div>
                 <div id="graph" class="graph" aria-label="Interactive change graph"></div>
             </section>
             <aside id="detail-pane" class="detail">
-                <button id="detail-close" class="pane-close" type="button" aria-label="Close details pane">×</button>
+                <div class="detail-pane-heading">
+                    <button id="detail-back" class="view-back" type="button" aria-label="Back from details">← Back</button>
+                    <button id="detail-close" class="view-close" type="button" aria-label="Close details pane">Close</button>
+                </div>
                 <div id="detail">
                     <div class="empty-state">
                         <span class="focus-mark">◎</span>
@@ -193,11 +199,12 @@
             <div class="panel-heading">
                 <div class="source-heading">
                     <div class="source-nav" role="group" aria-label="Source navigation">
-                        <button id="source-back" class="source-nav-button" type="button" aria-label="Back" title="Back (Alt+←)" disabled>←</button>
+                        <button id="source-back" class="source-nav-button view-back" type="button" aria-label="Back" title="Back (Alt+←)" disabled>← Back</button>
                         <button id="source-forward" class="source-nav-button" type="button" aria-label="Forward" title="Forward (Alt+→)" disabled>→</button>
                     </div>
                     <div><p class="eyebrow">SOURCE / DIFF</p><h2 id="source-title"></h2><p id="source-position" class="source-position muted"></p></div>
                 </div>
+                <button id="source-close" class="source-close view-close" type="button" aria-label="Close source review">Close</button>
                 <div class="tablist" role="tablist">
                     <button class="tab active" data-tab="diff" type="button">Diff</button>
                     <button class="tab" data-tab="current" type="button">Current</button>
@@ -206,7 +213,6 @@
                         <button type="button" data-layout="unified" aria-pressed="true" title="Unified diff (U toggles)">Unified</button>
                         <button type="button" data-layout="split" aria-pressed="false" title="Split diff: base left, current right (U toggles)">Split</button>
                     </span>
-                    <button id="source-close" class="source-close" type="button" aria-label="Close source review">Close ×</button>
                     <button id="source-impact" type="button">Impact</button>
                     <button id="source-section" type="button">Layer</button>
                     <button id="source-focus" type="button" aria-pressed="false" disabled>Focus code</button>
@@ -260,6 +266,7 @@
                 </label>
                 <input id="file-review-note" type="text" maxlength="500" aria-label="Whole-file review note" placeholder="Optional file review note">
                 <button id="file-review-save" type="button">Save decision</button>
+                <button id="file-review-open-next" type="button">Next file</button>
                 <button id="file-review-next" type="submit">Mark file reviewed &amp; next</button>
                 <span id="file-review-status" class="muted" role="status"></span>
                 <button id="file-review-retry" class="link-button hidden" type="button">Reload saved progress</button>
@@ -272,7 +279,7 @@
                     <h2 id="session-history-title">Session transcript</h2>
                     <p id="session-history-meta" class="muted"></p>
                 </div>
-                <button id="session-history-close" class="source-close" type="button">Close ×</button>
+                <button id="session-history-close" class="source-close view-close" type="button" aria-label="Close session history">Close</button>
             </div>
             <div id="session-transcript" class="session-transcript"></div>
         </section>
@@ -324,7 +331,10 @@
         </section>
     </dialog>
     <dialog id="group-review-dialog" class="prompt-manager" aria-labelledby="group-review-title">
-        <h2 id="group-review-title">Mark group files reviewed</h2>
+        <div class="custom-heading">
+            <h2 id="group-review-title">Mark group files reviewed</h2>
+            <button id="group-review-close" type="button">Close</button>
+        </div>
         <p id="group-review-scope"></p>
         <p id="group-review-error" class="error hidden" role="alert"></p>
         <p class="muted">This records your whole-file review decisions. It does not run tests, resolve concerns, or establish correctness.</p>
@@ -341,7 +351,7 @@
         <p id="review-command-count" class="muted" role="status"></p>
         <ul id="review-command-results" class="review-command-results"></ul>
         <p class="muted">Searches this snapshot's file names, symbols, and findings—not full source text. Results are capped at 30.</p>
-        <p class="muted">With review or source focus: J/K next/previous item, M mark the open file reviewed and go to the next, U switch unified/split diff (wide windows), C comment on the line you are reading (or click a changed line's number), A ask, I impact, F focus code. Ctrl+K opens this finder outside editable fields. Escape exits focus mode, clears a highlighted range, or returns from source opened in Explore; use Close × to close a file in Review. Ctrl+Enter sends a discussion question or saves a line comment.</p>
+        <p class="muted">With review or source focus: J/K next/previous item, M mark the open file reviewed and go to the next, U switch unified/split diff (wide windows), C comment on the line you are reading (or click a changed line's number), A ask, I impact, F focus code. Ctrl+K opens this finder outside editable fields. Back (Alt+←) retraces your reading or exploration steps. Close returns to the view's opener. Escape exits focus mode, clears a highlighted range, or closes an exploration overlay; use Close to close a file in Review. Ctrl+Enter sends a discussion question or saves a line comment.</p>
     </dialog>
     <dialog id="repository-picker" class="prompt-manager" aria-labelledby="repository-picker-title">
         <div class="custom-heading">
