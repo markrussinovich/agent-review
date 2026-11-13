@@ -193,10 +193,6 @@ class GoAdapterTests(unittest.TestCase):
                 "type Resource struct{}\nfunc (r Resource) Close() {}\n",
                 "func Run() { Close() }\n",
             ),
-            "receiver method deferred": (
-                "type Resource struct{}\nfunc (r Resource) Close() {}\n",
-                "func (r Resource) Run() { r.Close() }\n",
-            ),
             "method expression deferred": (
                 "type Resource struct{}\nfunc (r Resource) Close() {}\n",
                 "func Run(r Resource) { Resource.Close(r) }\n",
@@ -351,6 +347,274 @@ class GoAdapterTests(unittest.TestCase):
         model = ReviewModel({})
         analyze_go(files, files, model, set())
         self.assertEqual([], [edge for edge in model.edges if edge["kind"] == "calls"])
+
+    def test_explicit_concrete_receivers_resolve_exact_methods(self):
+        cases = {
+            "value receiver": ("func (r Resource) Run() { r.Close() }\n", "Close"),
+            "pointer receiver": ("func (r *Resource) Run() { r.Close() }\n", "Close"),
+            "compact pointer receiver": ("func (r*Resource) Run() { r.Close() }\n", "Close"),
+            "value parameter": ("func Run(r Resource) { r.Close() }\n", "Close"),
+            "pointer parameter": ("func Run(r *Resource) { r.Close() }\n", "Close"),
+            "compact pointer parameter": ("func Run(r*Resource) { r.Close() }\n", "Close"),
+            "grouped parameters": ("func Run(r, other *Resource) { r.Close() }\n", "Close"),
+            "builtin-like method name": ("func Run(r Resource) { r.close() }\n", "close"),
+        }
+        for label, (body, method) in cases.items():
+            for definition in ("struct{}", "int", "/* saved type */ bool"):
+                with self.subTest(case=label, definition=definition):
+                    files = {
+                        "types.go": (
+                            f"package demo\ntype Resource {definition}\ntype Other struct{{}}\n"
+                            "func (r *Resource) Close() {}\nfunc (r Other) Close() {}\n"
+                            "func (r Resource) close() {}\nfunc close() {}\n"
+                            "func Close() {}\n"
+                        ).encode(),
+                        "run.go": ("package demo\n" + body).encode(),
+                    }
+                    model = ReviewModel({})
+                    analyze_go(files, files, model, set())
+                    names = {symbol["id"]: symbol["qualname"] for symbol in model.symbols}
+                    calls = [edge for edge in model.edges if edge["kind"] == "calls"]
+                    self.assertEqual(1, len(calls))
+                    self.assertTrue(names[calls[0]["source"]].endswith("Run"))
+                    self.assertEqual(f"Resource.{method}", names[calls[0]["target"]])
+                    self.assertEqual(f"r.{method}", calls[0]["detail"])
+                    self.assertEqual("unchanged", calls[0]["change"])
+                    target = next(node for node in model.to_dict()["nodes"]
+                                  if node["id"] == calls[0]["target"])
+                    self.assertEqual(1, target["metrics"]["direct_callers"])
+
+    def test_explicit_imported_receiver_uses_the_declared_type_package(self):
+        cases = {
+            "qualified type": (
+                "func Run(r *m.Resource) { r.Close() }\n", "go:model:model:Resource.Close"),
+            "parameter shadows import alias": (
+                "func Run(m Resource) { m.Close() }\n", "go:app:app:Resource.Close"),
+            "signature uses import alias before parameter scope": (
+                "func Run(m Resource, r *m.Resource) { r.Close() }\n", "go:model:model:Resource.Close"),
+        }
+        for label, (body, target) in cases.items():
+            with self.subTest(case=label):
+                files = {
+                    "go.mod": b"module example.com/demo\n",
+                    "model/model.go": (
+                        b"package model\ntype Resource struct{}\n"
+                        b"func (r Resource) Close() {}\nfunc Close() {}\n"
+                    ),
+                    "app/app.go": (
+                        'package app\nimport m "example.com/demo/model"\n'
+                        "var _ m.Resource\n"
+                        "type Resource struct{}\nfunc (r Resource) Close() {}\n"
+                        + body
+                    ).encode(),
+                }
+                model = ReviewModel({})
+                analyze_go(files, files, model, set())
+                identities = {symbol["id"]: symbol["identity"] for symbol in model.symbols}
+                self.assertEqual(
+                    [("go:app:app:Run", target, "unchanged")],
+                    [(identities[edge["source"]], identities[edge["target"]], edge["change"])
+                     for edge in model.edges if edge["kind"] == "calls"],
+                )
+
+    def test_receiver_resolution_omits_unestablished_or_shadowed_types(self):
+        cases = {
+            "interface": "func Run(r Closer) { r.Close() }\n",
+            "type alias": "func Run(r Alias) { r.Close() }\n",
+            "unknown type": "func Run(r Missing) { r.Close() }\n",
+            "inferred local": "func Run() { r := Resource{}; r.Close() }\n",
+            "named result": "func Run() (r *Resource) { r.Close(); return }\n",
+            "shadowed parameter": (
+                "func Run(r Resource, value Closer) { "
+                "if true { r := value; r.Close() }; r.Close() }\n"
+            ),
+            "shadowed receiver": (
+                "func (r Resource) Run(value Closer) { "
+                "func(r Closer) { r.Close() }(value); r.Close() }\n"
+            ),
+            "promoted method": "func Run(r Holder) { r.Close() }\n",
+            "function field": "func Run(r Callback) { r.Close() }\n",
+            "receiver type parameter": (
+                "type Box[Resource Closer] struct{}\n"
+                "func (b Box[Resource]) Run(r Resource) { r.Close() }\n"
+            ),
+        }
+        for label, body in cases.items():
+            with self.subTest(case=label):
+                files = {"demo.go": (
+                    "package demo\ntype Resource struct{}\n"
+                    "type Closer interface { Close() }\ntype Alias = Resource\n"
+                    "type Holder struct{ Resource }\ntype Callback struct{ Close func() }\n"
+                    "func (r Resource) Close() {}\nfunc Close() {}\n" + body
+                ).encode()}
+                model = ReviewModel({})
+                analyze_go(files, files, model, set())
+                self.assertTrue(any(symbol["name"] == "Run" for symbol in model.symbols))
+                self.assertEqual([], [edge for edge in model.edges if edge["kind"] == "calls"])
+
+    def test_receiver_target_changes_are_resolved_per_snapshot(self):
+        declarations = (
+            "package demo\ntype Resource struct{}\ntype Other struct{}\n"
+            "func (r Resource) Close() {}\nfunc (r Other) Close() {}\n"
+        )
+        before = {"demo.go": (declarations + "func Run(r Resource) { r.Close() }\n").encode()}
+        after = {"demo.go": (declarations + "func Run(r Other) { r.Close() }\n").encode()}
+        model = ReviewModel({})
+        analyze_go(before, after, model, set())
+        names = {symbol["id"]: symbol["qualname"] for symbol in model.symbols}
+        self.assertEqual({
+            ("Run", "Resource.Close", "removed"), ("Run", "Other.Close", "added"),
+        }, {
+            (names[edge["source"]], names[edge["target"]], edge["change"])
+            for edge in model.edges if edge["kind"] == "calls"
+        })
+
+    def test_imported_receiver_resolves_with_each_snapshots_module_path(self):
+        def files(module):
+            return {
+                "go.mod": f"module {module}\n".encode(),
+                "model/model.go": (
+                    b"package model\ntype Resource struct{}\nfunc (r Resource) Close() {}\n"
+                ),
+                "app/app.go": (
+                    f'package app\nimport m "{module}/model"\n'
+                    "func Run(r m.Resource) { r.Close() }\n"
+                ).encode(),
+            }
+        model = ReviewModel({})
+        analyze_go(files("example.com/before"), files("example.com/after"), model, set())
+        identities = {symbol["id"]: symbol["identity"] for symbol in model.symbols}
+        self.assertEqual(
+            [("go:app:app:Run", "go:model:model:Resource.Close", "unchanged")],
+            [(identities[edge["source"]], identities[edge["target"]], edge["change"])
+             for edge in model.edges if edge["kind"] == "calls"],
+        )
+
+    def test_receiver_imports_use_saved_package_names_not_directory_names(self):
+        files = {
+            "go.mod": b"module example.com/demo\n",
+            "model/value.go": (
+                b"package other\ntype Resource struct{}\nfunc (r Resource) Close() {}\n"
+            ),
+            "other/value.go": (
+                b"package model\ntype Resource struct{}\nfunc (r Resource) Close() {}\n"
+            ),
+            "app/app.go": (
+                b'package app\nimport (\n"example.com/demo/model"\n"example.com/demo/other"\n)\n'
+                b"var _ other.Resource\nfunc Run(r model.Resource) { r.Close() }\n"
+            ),
+        }
+        model = ReviewModel({})
+        analyze_go(files, files, model, set())
+        identities = {symbol["id"]: symbol["identity"] for symbol in model.symbols}
+        self.assertEqual(
+            [("go:app:app:Run", "go:other:model:Resource.Close")],
+            [(identities[edge["source"]], identities[edge["target"]])
+             for edge in model.edges if edge["kind"] == "calls"],
+        )
+
+    def test_external_test_packages_do_not_change_imported_receiver_edges(self):
+        for package in ("model", "model_test"):
+            with self.subTest(package=package):
+                before = {
+                    "go.mod": b"module example.com/demo\n",
+                    "model/model.go": (
+                        f"package {package}\ntype Resource struct{{}}\n"
+                        "func (r Resource) Close() {}\n"
+                    ).encode(),
+                    "app/app.go": (
+                        'package app\nimport m "example.com/demo/model"\n'
+                        "func Run(r m.Resource) { r.Close() }\n"
+                    ).encode(),
+                }
+                after = {**before, "model/model_test.go": (
+                    f"package {package}_test\ntype Resource struct{{}}\n"
+                    "func (r Resource) Close() {}\nfunc Check(r Resource) { r.Close() }\n"
+                ).encode()}
+                for baseline, current, change in ((before, after, "added"), (after, before, "removed")):
+                    with self.subTest(change=change):
+                        model = ReviewModel({})
+                        analyze_go(baseline, current, model, set())
+                        identities = {symbol["id"]: symbol["identity"] for symbol in model.symbols}
+                        self.assertEqual({
+                            ("go:app:app:Run", f"go:model:{package}:Resource.Close", "unchanged"),
+                            (f"go:model:{package}_test:Check",
+                             f"go:model:{package}_test:Resource.Close", change),
+                        }, {
+                            (identities[edge["source"]], identities[edge["target"]], edge["change"])
+                            for edge in model.edges if edge["kind"] == "calls"
+                        })
+
+    def test_local_type_declarations_do_not_replace_package_types(self):
+        source = (
+            "package demo\ntype Resource struct{}\nfunc (r Resource) Close() {}\n"
+            "func Run(r Resource) { r.Close() }\n"
+        )
+        cases = {
+            "function": "func Other() {\n type Resource struct{}\n _ = Resource{}\n}\n",
+            "pointer-returning function": (
+                "func Other() *Resource {\n type Resource struct{}\n _ = Resource{}\n return nil\n}\n"
+            ),
+            "function literal": (
+                "var other = func() {\n type Resource struct{}\n _ = Resource{}\n}\n"
+            ),
+        }
+        for label, other in cases.items():
+            with self.subTest(case=label):
+                before = {"demo.go": source.encode()}
+                after = {"demo.go": (source + other).encode()}
+                model = ReviewModel({})
+                analyze_go(before, after, model, set())
+                names = {symbol["id"]: symbol["qualname"] for symbol in model.symbols}
+                self.assertEqual([("Run", "Resource.Close", "unchanged")], [
+                    (names[edge["source"]], names[edge["target"]], edge["change"])
+                    for edge in model.edges if edge["kind"] == "calls"
+                ])
+                resource = [symbol for symbol in model.symbols if symbol["qualname"] == "Resource"]
+                self.assertEqual(1, len(resource))
+                self.assertEqual(2, resource[0]["range"]["start_line"])
+
+    def test_function_type_composites_do_not_shadow_receiver_parameters(self):
+        for declared in (
+            "[]func(r int)", "[0]func(r int)", "map[string]func(r int)",
+            "[]*func(r int)", "[0]*func(r int)", "map[string]*func(r int)",
+            "[][]*func(r int)",
+        ):
+            with self.subTest(declared=declared):
+                source = (
+                    "package demo\ntype Resource struct{}\nfunc (r Resource) Close() {}\n"
+                    "func Run(r Resource) {\n"
+                    f" var callbacks {declared}; _ = callbacks\n r.Close()\n}}\n"
+                )
+                before = {"demo.go": source.encode()}
+                after = {"demo.go": source.replace(
+                    f"var callbacks {declared}", f"callbacks := {declared}{{}}").encode()}
+                model = ReviewModel({})
+                analyze_go(before, after, model, set())
+                names = {symbol["id"]: symbol["qualname"] for symbol in model.symbols}
+                self.assertEqual([("Run", "Resource.Close", "unchanged")], [
+                    (names[edge["source"]], names[edge["target"]], edge["change"])
+                    for edge in model.edges if edge["kind"] == "calls"
+                ])
+
+    def test_ambiguous_saved_receiver_declarations_are_not_chosen_arbitrarily(self):
+        for ambiguous in ("type", "method"):
+            with self.subTest(ambiguous=ambiguous):
+                definition = ("type Resource struct{}\n" if ambiguous == "type"
+                              else "func (r Resource) Close() {}\n")
+                common = ("func (r Resource) Close() {}\n" if ambiguous == "type"
+                          else "type Resource struct{}\n")
+                files = {
+                    "demo.go": (
+                        "package demo\n" + common + "func Run(r Resource) { r.Close() }\n"
+                    ).encode(),
+                    "linux.go": ("//go:build linux\n\npackage demo\n" + definition).encode(),
+                    "darwin.go": ("//go:build darwin\n\npackage demo\n" + definition).encode(),
+                }
+                model = ReviewModel({})
+                analyze_go(files, files, model, set())
+                self.assertTrue(any(symbol["name"] == "Run" for symbol in model.symbols))
+                self.assertEqual([], [edge for edge in model.edges if edge["kind"] == "calls"])
 
     def test_function_calls_remain_resolved_when_methods_share_the_name(self):
         files = {
