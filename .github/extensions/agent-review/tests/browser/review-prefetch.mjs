@@ -36,9 +36,12 @@ try {
     for (const theme of ["light", "dark"]) {
         const overview = deferred(), layers = deferred(), discussion = deferred();
         pending.push(overview, layers, discussion);
-        const generations = [], requests = [];
+        const generations = [], requests = [], posts = [];
         let layerContext;
         state = new ReviewState(repo, { ...options,
+            reviewTarget: theme === "light"
+                ? { mode: "commit", currentRef: "a".repeat(40), baseRef: "b".repeat(40), label: "Saved commit" }
+                : { mode: "worktree", currentRef: null, label: "Worktree" },
             generateAnnotation: (context) => {
                 if (context.kind === "overview") return overview.promise;
                 const gate = { ...deferred(), id: context.item.id };
@@ -52,15 +55,14 @@ try {
                 discussion.promise.then(resolve, reject);
             }),
         });
-        state.model = analyzed.model;
-        state.reviewTarget = analyzed.reviewTarget;
-        state.decisionMap = map;
         server = await startReviewServer(state);
         const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
         const errors = [];
         page.on("pageerror", (error) => errors.push(error.message));
         page.on("request", (request) => {
-            if (new URL(request.url()).pathname === "/api/annotation") requests.push(request.postDataJSON().id);
+            const path = new URL(request.url()).pathname;
+            if (request.method() === "POST") posts.push(path);
+            if (path === "/api/annotation") requests.push(request.postDataJSON().id);
         });
         const screenshot = async (name) => {
             if (!process.env.AGENT_REVIEW_SCREENSHOT_DIR) return;
@@ -78,8 +80,31 @@ try {
             return matching[count - 1];
         };
         await page.goto(`${server.url}?scoutTheme=${theme}`);
+        const restoredMessage = theme === "light"
+            ? "Review target restored. Select Reanalyze to review its saved commits."
+            : "Review target restored. Select Reanalyze to review the current worktree.";
+        await page.getByText(restoredMessage, { exact: true }).waitFor();
+        assert.equal(await page.locator("#status").textContent(), "Reanalyze to continue");
+        assert.equal(await page.locator("#refresh").isEnabled(), true);
+        await page.waitForTimeout(100);
+        assert.equal(state.model, null);
+        assert.equal(state.loading, false);
+        assert.deepEqual(posts, [], "restoring a target must not automatically start analysis");
+        state.model = analyzed.model;
+        state.reviewTarget = analyzed.reviewTarget;
+        state.decisionMap = map;
+        state.broadcast("refreshed");
         await page.locator("#overview-description .ai-pending-line").first().waitFor();
         await page.locator("#overview-layers .ai-pending-line").first().waitFor();
+        const settingsUpdate = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/ai-settings");
+        await page.locator("#ai-settings > summary").click();
+        await page.locator("#ai-model").selectOption("fusion");
+        assert.equal((await settingsUpdate).status(), 200);
+        const languageUpdate = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/ai-settings");
+        await page.locator("#ai-language").selectOption("plain");
+        assert.equal((await languageUpdate).status(), 200);
+        assert.deepEqual(state.aiSettings, { model: "fusion", language: "plain" }, "the settings apply to server-side AI calls");
+        await page.keyboard.press("Escape");
         assert.equal(await page.locator("#overview-layers .is-supporting .ai-pending-line").count(), 0, "supporting files are not sent for AI layer summaries");
         assert.equal(requests.length, 0, "item prefetch waits for the overview");
         await screenshot("overview-generating");
@@ -145,10 +170,18 @@ try {
         assert.equal(await pane.locator(".ai-pending-line").count(), 0, "stopped answers remove the bars");
         discussion.resolve({ answer: "Stopped answer", limitation: "", citations: [], requests: [] });
 
+        state.ruleCheck = { status: "running", coverage: { completed_units: 3, total_units: 10 } };
+        state.broadcast("rule-check-progress");
         state.annotations.overview = { ...state.annotations.overview, refining: true };
         state.broadcast("annotation");
         await page.locator("#workflow-overview").click();
-        await page.locator("#overview-description .ai-pending-line").first().waitFor();
+        await page.getByText("Waiting for the repository rules review (3 of 10 evidence units reviewed)...").waitFor();
+        state.ruleCheck.coverage.completed_units = 4;
+        state.broadcast("rule-check-progress");
+        await page.getByText("Waiting for the repository rules review (4 of 10 evidence units reviewed)...").waitFor();
+        state.ruleCheck.status = "complete";
+        state.broadcast("rule-check");
+        await page.getByText("Copilot is refining this overview with deeper review evidence...").waitFor();
         state.annotations.overview.refining = false;
         state.broadcast("annotation");
         await page.waitForFunction(() => !document.querySelector("#overview-description .ai-pending-line"));

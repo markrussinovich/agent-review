@@ -5,10 +5,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { listReviewTargets, resolveReviewTarget } from "../review-target.mjs";
+import { listReviewTargets, resolveReviewTarget, restoredReviewTarget } from "../review-target.mjs";
 import { ReviewState } from "../review-state.mjs";
 
 const exec = promisify(execFile);
+
+test("restored targets keep pinned commits and reject malformed snapshots", () => {
+    const head = "a".repeat(40), base = "b".repeat(40);
+    const target = { mode: "pr", ref: "https://github.com/example/repo/pull/12",
+        url: "https://github.com/example/repo/pull/12", currentRef: head, baseRef: base, label: "PR" };
+    assert.deepEqual(restoredReviewTarget(target), target);
+    assert.deepEqual(restoredReviewTarget({ mode: "commit", currentRef: head, baseRef: null }),
+        { mode: "commit", currentRef: head, baseRef: null });
+    assert.deepEqual(restoredReviewTarget({ mode: "worktree", label: "Worktree", currentRef: null }),
+        { mode: "worktree", label: "Worktree", currentRef: null });
+    assert.throws(() => restoredReviewTarget({ ...target, currentRef: "main" }), /saved review target is invalid/i);
+    assert.throws(() => restoredReviewTarget({ ...target, baseRef: null }), /saved review target is invalid/i);
+});
 
 test("commit review uses immutable source, diffs and AI context despite dirty worktree", async () => {
     const repo = await mkdtemp(join(tmpdir(), "review-target-"));
@@ -40,6 +53,13 @@ test("commit review uses immutable source, diffs and AI context despite dirty wo
         await resumed.refresh();
         assert.equal(resumed.model.metadata.head_sha, head);
         assert.match((await resumed.sourceForPath("main.py")).current, /return 2/);
+        const missingRef = "f".repeat(40);
+        const missing = new ReviewState(repo, { reviewTarget: { ...state.reviewTarget, currentRef: missingRef } });
+        await assert.rejects(missing.refresh(), /bad object|unknown revision|not a valid|not a tree object|invalid object/i);
+        assert.equal(missing.model, null);
+        assert.equal(missing.reviewTarget.currentRef, missingRef);
+        assert.ok(missing.error);
+        await missing.dispose();
         const source = await state.sourceForPath("main.py");
         assert.match(source.current, /return 2/);
         assert.doesNotMatch(source.current, /dirty_only/);

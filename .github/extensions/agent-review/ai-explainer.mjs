@@ -7,6 +7,45 @@ import {
 
 export { selectedModelFromEvents, validateExplanation } from "./ai-response.mjs";
 
+export const LANGUAGE_LEVELS = ["default", "medium", "plain"];
+
+const LANGUAGE_INSTRUCTIONS = {
+    medium: "Write for a reader with moderate technical background: prefer concrete wording over jargon and briefly explain specialized terms the first time you use them.",
+    plain: "Write in plain English for a non-specialist reader: use short sentences and everyday words, explain any technical term you must use, and avoid jargon.",
+};
+
+export function withLanguageLevel(prompt, languageLevel) {
+    const instruction = LANGUAGE_INSTRUCTIONS[languageLevel];
+    return instruction
+        ? `${prompt}\n\nReading level: ${instruction} Keep every required heading, field, format, identifier, and citation exactly as specified.`
+        : prompt;
+}
+
+// modelChoice is "session" (the session's model), "fusion" (Copilot Auto with Fusion routing), or a model ID.
+export function explanationModelPreference(models, fallbackModel, modelChoice) {
+    if (modelChoice === "fusion" && models.some((model) => model.id === "auto" && model.policy?.state !== "disabled")) {
+        return { modelId: "auto", autoTier: "hydrafusion" };
+    }
+    if (modelChoice && modelChoice !== "session" && modelChoice !== "fusion") return { modelId: modelChoice, autoTier: undefined };
+    return { modelId: fallbackModel, autoTier: undefined };
+}
+
+async function resolveModelPreference(client, fallbackModel, modelChoice) {
+    return explanationModelPreference(modelChoice === "fusion" ? await client.listModels() : [], fallbackModel, modelChoice);
+}
+
+export async function listExplanationModels(workingDirectory) {
+    const client = await createClient(workingDirectory);
+    await client.start();
+    try {
+        return (await client.listModels())
+            .filter((model) => model.id && model.policy?.state !== "disabled")
+            .map((model) => ({ id: model.id, name: model.name || model.id }));
+    } finally {
+        await client.stop();
+    }
+}
+
 async function createClient(workingDirectory) {
     const { CopilotClient, RuntimeConnection } = await import("@github/copilot-sdk");
     return new CopilotClient({
@@ -27,6 +66,9 @@ async function generateOnce({
     signal,
     runtimeClient = null,
     modelId,
+    autoTier,
+    modelChoice = "session",
+    languageLevel = "default",
     responseSchema,
 }) {
     signal?.throwIfAborted();
@@ -38,9 +80,13 @@ async function generateOnce({
     signal?.addEventListener("abort", abort, { once: true });
     try {
         if (!runtimeClient) await client.start();
-        const model = modelId === undefined ? selectedModelFromEvents(sourceEvents) : modelId;
+        const selectedModel = modelId === undefined ? selectedModelFromEvents(sourceEvents) : modelId;
+        const preference = runtimeClient
+            ? { modelId: selectedModel, autoTier }
+            : await resolveModelPreference(client, selectedModel, modelChoice);
         isolated = await client.createSession({
-            ...(model ? { model } : {}),
+            ...(preference.modelId ? { model: preference.modelId } : {}),
+            ...(preference.autoTier ? { autoTier: preference.autoTier } : {}),
             availableTools: [],
             excludedTools: ["builtin:*", "mcp:*", "custom:*"],
             onPermissionRequest: () => ({
@@ -49,7 +95,7 @@ async function generateOnce({
             }),
         });
         signal?.throwIfAborted();
-        const response = await isolated.sendAndWait({ prompt, ...(responseSchema ? { responseSchema } : {}) }, timeoutMs);
+        const response = await isolated.sendAndWait({ prompt: withLanguageLevel(prompt, languageLevel), ...(responseSchema ? { responseSchema } : {}) }, timeoutMs);
         signal?.throwIfAborted();
         if (response?.data?.toolRequests?.length) {
             throw new ExplanationValidationError("Copilot attempted to call a tool from an explanation-only session.");
@@ -72,10 +118,16 @@ async function generateOnce({
     }
 }
 
-export async function createExplanationRuntime(workingDirectory, modelId = null) {
+export async function createExplanationRuntime(workingDirectory, modelId = null, { modelChoice = "session" } = {}) {
     const client = await createClient(workingDirectory);
     await client.start();
-    return { client, modelId, dispose: () => client.stop() };
+    try {
+        const preference = await resolveModelPreference(client, modelId, modelChoice);
+        return { client, ...preference, dispose: () => client.stop() };
+    } catch (error) {
+        await client.stop();
+        throw error;
+    }
 }
 
 export async function generateIsolatedExplanation(options) {

@@ -8,6 +8,17 @@ const MAX_PR_COMMITS = 30;
 
 const clip = (text, limit = MAX_MESSAGE) => (text.length > limit ? `${text.slice(0, limit)}\n… (truncated)` : text);
 
+export function restoredReviewTarget(target) {
+    const none = { mode: "none", label: "Choose review target", currentRef: null };
+    if (target == null || target.mode === "none") return none;
+    if (target.mode === "worktree" && target.currentRef == null) return { ...target, currentRef: null };
+    const sha = (value) => typeof value === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value);
+    if (["commit", "pr"].includes(target.mode) && sha(target.currentRef)
+        && (sha(target.baseRef) || (target.mode === "commit" && target.baseRef === null))
+        && (target.mode !== "pr" || typeof target.url === "string")) return { ...target };
+    throw new Error("The saved review target is invalid. Choose the review again.");
+}
+
 // The author's own statement of intent for a historical snapshot.
 async function commitIntent(git, sha) {
     const [author = "", date = "", ...rest] = (await git("show", "-s", "--format=%an%x00%aI%x00%B", sha)).split("\0");

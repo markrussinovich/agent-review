@@ -416,6 +416,12 @@ The default Copilot provider separately checks draft code explanations and final
 discussion answers against the supplied source before presenting them. This
 bounded AI source-fidelity pass shares the generation time limit; it is not test
 execution or a guarantee that every interpretation is correct.
+The review toolbar's **Settings** (gear) menu chooses the model for AI calls: this
+session's model (the default), **Fusion** (Copilot Auto with Fusion routing,
+falling back to the session's model when Auto is unavailable), or any model
+Copilot lists. Its **Language** option keeps standard technical wording or asks
+for medium-technical or plain-English explanations. Settings apply to new AI
+requests; **Reanalyze** regenerates saved results.
 **Ask for a deeper walkthrough** opens the same snapshot-pinned discussion with
 a suggested question, preserving an existing draft and never sending it
 automatically. That discussion can retrieve additional saved source.
@@ -762,6 +768,10 @@ For development or when the distribution is not yet available:
 
 When updating a source installation, copy the changed runtime files and the
 rebuilt trusted Roslyn helper, then **reload extensions and reopen the canvas**.
+The installed folder is a snapshot, not a live link to the source checkout;
+update it before reloading each session. A personal installation is available
+across that user's local repositories, while other users need their own prepared,
+version-pinned installation.
 An existing canvas provider keeps its already-loaded JavaScript; retrying a
 failed review before reloading does not activate the new analyzer transport.
 The provider serves supported HTML, CSS, JavaScript, and module files directly
@@ -1052,6 +1062,12 @@ Opening Agent Review does not analyze any snapshot. Choose Worktree, Commit, or
 Pull request first. Selecting Worktree starts its analysis immediately; switching
 to Commit or Pull request loads a list, and selecting an item starts that review.
 PR objects are fetched without checking out files or changing your worktree.
+After a provider reload, the selected target is remembered but its in-memory
+analysis and running AI work are not. Select **Reanalyze** to continue. Commit
+and PR targets retain their exact recorded commits; a worktree review instead
+reads the current worktree. Missing commits are reported rather than replaced.
+Older recovery markers migrate when you reopen that canvas in its session; if
+an older provider never saved the target, choose it again.
 
 The PR list uses the existing local repository's `origin` remote: an Azure DevOps
 Services origin lists its ADO PRs; any other origin keeps the GitHub flow. The

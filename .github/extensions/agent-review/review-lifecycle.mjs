@@ -2,11 +2,12 @@ import { markerFile, removeCanvasMarker } from "./canvas-persistence.mjs";
 import { watchSessionOwnership } from "./ownership-guard.mjs";
 
 export class ReviewLifecycle {
-    constructor(session, instances, reviewStates, pendingInstances) {
+    constructor(session, instances, reviewStates, pendingInstances, { markerDirectory } = {}) {
         this.session = session;
         this.instances = instances;
         this.reviewStates = reviewStates;
         this.pendingInstances = pendingInstances;
+        this.markerDirectory = markerDirectory;
         this.closedInstances = new Set();
         this.closingInstances = new Map();
         this.closed = false;
@@ -16,7 +17,7 @@ export class ReviewLifecycle {
     }
 
     register(instanceId) {
-        return this.guard.registerMarker(markerFile(this.session.sessionId, instanceId));
+        return this.guard.registerMarker(markerFile(this.session.sessionId, instanceId, this.markerDirectory));
     }
 
     acquire(instanceId, state) {
@@ -51,6 +52,7 @@ export class ReviewLifecycle {
         if (instance) {
             this.instances.delete(instanceId);
             instance.unsubscribeMarker?.();
+            await instance.flushMarker?.();
         }
         if (ownedState && ![...this.owners.values()].includes(ownedState)) {
             for (const [key, state] of this.reviewStates) {
@@ -60,8 +62,8 @@ export class ReviewLifecycle {
         }
         if (instance) await instance.server.close();
         if (!preserveMarker) {
-            await removeCanvasMarker(this.session.sessionId, instanceId);
-            this.guard.unregisterMarker(markerFile(this.session.sessionId, instanceId));
+            await removeCanvasMarker(this.session.sessionId, instanceId, this.markerDirectory);
+            this.guard.unregisterMarker(markerFile(this.session.sessionId, instanceId, this.markerDirectory));
         }
     }
 

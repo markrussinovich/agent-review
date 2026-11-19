@@ -31,6 +31,7 @@ import { answerDiscussion } from "./item-discussion.mjs";
 import { layerSummaryContext } from "./layer-summaries.mjs";
 import { workspaceNavigation } from "./web/review-workspace.mjs";
 import { ExplanationValidationError } from "./ai-response.mjs";
+import { LANGUAGE_LEVELS } from "./ai-explainer.mjs";
 import { groupFindings } from "./web/findings.mjs";
 import { buildReviewPlan, concernPriorities } from "./web/review-plan.mjs";
 import { ANNOTATION_PROMPT_VERSION } from "./ai-prompts.mjs";
@@ -366,6 +367,8 @@ export class ReviewState {
         this.generateReviewPass = options.generateReviewPass || null;
         this.createReviewRuntime = options.createReviewRuntime || null;
         this.reviewModelId = options.reviewModelId || (() => null);
+        this.listModels = options.listModels || (async () => []);
+        this.aiSettings = { model: "session", language: "default" };
         this.reviewDirectory = options.reviewDirectory || (this.workspacePath
             ? join(this.workspacePath, "files", "agent-review-reviews") : null);
         this.reviewLimits = options.reviewLimits || {};
@@ -695,6 +698,7 @@ export class ReviewState {
             decision_map: this.decisionMap,
             test_run: this.testRun ? { ...this.testRun, stale: this.testRun.status === "complete" && this.testRunStale() } : null,
             rule_check: this.ruleCheck,
+            ai_settings: { ...this.aiSettings },
             document_roles: this.documentRoles?.snapshot === (this.model && reviewSnapshotKey(this.model, this.reviewTarget))
                 ? this.documentRoles : null,
             discussion_update: this.discussionUpdate,
@@ -1575,6 +1579,18 @@ export class ReviewState {
         return thread;
     }
 
+    aiRequestOptions() {
+        return { modelChoice: this.aiSettings.model, languageLevel: this.aiSettings.language };
+    }
+
+    updateAiSettings({ model, language }) {
+        if (typeof model !== "string" || !model.trim() || model.length > 200) throw new Error("model must be a model ID, \"session\", or \"fusion\".");
+        if (!LANGUAGE_LEVELS.includes(language)) throw new Error(`language must be one of: ${LANGUAGE_LEVELS.join(", ")}.`);
+        this.aiSettings = { model: model.trim(), language };
+        this.broadcast("ai-settings");
+        return { ...this.aiSettings };
+    }
+
     async internalReview(instruction, { sources = [], onProgress, force = false, scope = "rules" } = {}) {
         await this.rolesForReview();
         const controller = new AbortController();
@@ -1587,11 +1603,13 @@ export class ReviewState {
         try {
             let modelId = await this.reviewModelId();
             controller.signal.throwIfAborted();
-            runtime = await this.createReviewRuntime?.(modelId);
+            runtime = await this.createReviewRuntime?.(modelId, { modelChoice: this.aiSettings.model });
             modelId = runtime?.modelId || modelId;
             controller.signal.throwIfAborted();
             const result = await runReview({ model, instruction, sources,
-                generate: (context, options) => this.generateReviewPass(context, { ...options, runtimeClient: runtime?.client, modelId }),
+                generate: (context, options) => this.generateReviewPass(context, {
+                    ...options, runtimeClient: runtime?.client, modelId, autoTier: runtime?.autoTier,
+                }),
                 modelId, directory: this.reviewDirectory, limits: this.reviewLimits,
                 signal: controller.signal, onProgress, force,
                 intent: this.reviewTarget.intent || null,
@@ -2156,7 +2174,6 @@ export class ReviewState {
             this.broadcast("annotation");
         }
         if (this.overviewRefinePromise) {
-            this.overviewRefineAgain = true;
             return this.overviewRefinePromise;
         }
         const generation = this.reviewGeneration;

@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "analyzer"))
-from git_snapshot import Snapshot, baseline_files, current_files, create_snapshot, SELF_REPOSITORY_MARKERS
+from git_snapshot import Snapshot, baseline_files, current_files, create_snapshot, text_lines, SELF_REPOSITORY_MARKERS
 
 
 class SnapshotTests(unittest.TestCase):
@@ -108,6 +108,21 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn("--- old value\n", source["diff"])
         self.assertIn("+++ new value\n", source["diff"])
         self.assertIn("--- a/large.js\n+++ b/large.js\n", source["diff"])
+
+    def test_large_diff_ignores_checkout_crlf_conversion(self) -> None:
+        before = b"".join(f"line {index}\n".encode() for index in range(6000))
+        after = before.replace(b"\n", b"\r\n").replace(b"line 5000\r\n", b"changed\r\n")
+        change = Snapshot(Path("unused"), "base", {"app.js": before}, {"app.js": after}).changes()[0]
+        self.assertEqual((1, 1, [5001], [5001]),
+                         (change["lines_added"], change["lines_removed"], change["added_lines"], change["removed_lines"]))
+
+    def test_lines_end_only_at_crlf_cr_or_lf_on_every_platform(self) -> None:
+        self.assertEqual(["a", "b", "c"], text_lines(b"a\nb\r\nc\r"))
+        self.assertEqual(["a\fb\u2028c\x85d"], text_lines("a\fb\u2028c\x85d\n"))
+        self.assertEqual(["", ""], text_lines(b"\r\n\n"))
+        snapshot = Snapshot(Path("unused"), "base", {"a.py": b"x = 1\ny = 2\n"}, {"a.py": "x = 1\r\ny = 3\r\n\u2028\r\n".encode()})
+        change = snapshot.changes()[0]
+        self.assertEqual((3, [2, 3], [2]), (change["current_lines"], change["added_lines"], change["removed_lines"]))
 
     def test_generated_bundles_stay_files_but_unchanged_text_is_sent_once_or_omitted(self) -> None:
         from generated_sources import generated_paths, is_generated_source
@@ -321,8 +336,8 @@ class SnapshotTests(unittest.TestCase):
             path = record["path"]
             before = snapshot.baseline.get(path)
             after = snapshot.current.get(path)
-            old_lines = before.decode(errors="replace").splitlines() if before is not None else []
-            new_lines = after.decode(errors="replace").splitlines() if after is not None else []
+            old_lines = text_lines(before)
+            new_lines = text_lines(after)
             added, removed = [], []
             for tag, start, end, new_start, new_end in difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False).get_opcodes():
                 if tag in ("insert", "replace"):
@@ -365,8 +380,8 @@ class SnapshotTests(unittest.TestCase):
                     snapshot = Snapshot(Path("unused"), "HEAD", {"path name.txt": before}, {"path name.txt": after})
                     changes = snapshot.changes()
                     expected = "".join(difflib.unified_diff(
-                        [f"{line}\n" for line in before.decode().splitlines()],
-                        [f"{line}\n" for line in after.decode().splitlines()],
+                        [f"{line}\n" for line in text_lines(before)],
+                        [f"{line}\n" for line in text_lines(after)],
                         fromfile="a/path name.txt", tofile="b/path name.txt", n=4,
                     ))
                     with patch("git_snapshot.difflib.unified_diff", side_effect=AssertionError("no matching needed for an empty side")):

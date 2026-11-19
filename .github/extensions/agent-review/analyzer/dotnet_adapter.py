@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from git_snapshot import text_lines
 from language_adapters import AdapterUnavailable, AnalysisSnapshot
 from review_model import ReviewModel, stable_id
 
@@ -213,7 +214,7 @@ class DotnetAdapter:
         if "code_paths" in facts:
             model.code_paths["csharp"] = normalize_code_paths(facts)
         model.warnings.extend(facts.get("warnings", []))
-        model.repository["csharp_loc"] = sum(len(data.splitlines()) for path, data in trees["current"].items()
+        model.repository["csharp_loc"] = sum(len(text_lines(data)) for path, data in trees["current"].items()
                                              if path.lower().endswith(".cs"))
         model.repository["review_languages"] = sorted({"csharp", *(
             ["python"] if any(path.endswith(".py") for path in set(snapshot.baseline) | set(snapshot.current)) else []

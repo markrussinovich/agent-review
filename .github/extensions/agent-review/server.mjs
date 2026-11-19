@@ -139,6 +139,14 @@ export function startReviewServer(state, options = {}) {
                 sendJson(res, browserSnapshot(state.snapshot()));
                 return;
             }
+            if (req.method === "POST" && pathname === "/api/ai-settings") {
+                sendJson(res, { ok: true, ai_settings: state.updateAiSettings(await readJson(req)) });
+                return;
+            }
+            if (req.method === "GET" && pathname === "/api/ai-models") {
+                sendJson(res, { models: await state.listModels() });
+                return;
+            }
             if (req.method === "GET" && pathname === "/api/review-progress") {
                 sendJson(res, await state.progressForReview());
                 return;

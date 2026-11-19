@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
     preferredPort,
+    providerMarkerDirectory,
     readCanvasMarkers,
     markerFile,
     removeCanvasMarker,
@@ -55,6 +56,43 @@ test("markers are scoped to a session and removed on close", async () => {
         assert.deepEqual(own.map((marker) => marker.port), [41234]);
         await removeCanvasMarker("s1", "i1", directory);
         assert.deepEqual(await readCanvasMarkers("s1", directory), []);
+    } finally {
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test("providers in the same session keep their recovery markers separate", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-review-"));
+    try {
+        const preview = providerMarkerDirectory("user:agent-review-preview", root);
+        const installed = providerMarkerDirectory("plugin:agent-review:agent-review", root);
+        await writeCanvasMarker({ sessionId: "s1", instanceId: "canvas", port: 41234 }, preview);
+        await writeCanvasMarker({ sessionId: "s1", instanceId: "canvas", port: 41235 }, installed);
+        assert.deepEqual((await readCanvasMarkers("s1", preview)).map((marker) => marker.port), [41234]);
+        assert.deepEqual((await readCanvasMarkers("s1", installed)).map((marker) => marker.port), [41235]);
+        assert.deepEqual(await readCanvasMarkers("s1", root), []);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test("reading a marker during updates never observes a partially written target", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "agent-review-"));
+    const marker = (ref) => ({ sessionId: "s1", instanceId: "canvas", port: 41234, input: { ref, padding: "x".repeat(8000) } });
+    try {
+        await writeCanvasMarker(marker("before"), directory);
+        const reader = (async () => {
+            for (let index = 0; index < 15; index++) {
+                const value = JSON.parse(await readFile(markerFile("s1", "canvas", directory), "utf8"));
+                assert.ok(["before", "after"].includes(value.input.ref));
+                assert.equal(value.input.padding.length, 8000);
+                await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+        })();
+        const writer = (async () => {
+            for (let index = 0; index < 20; index++) await writeCanvasMarker(marker(index % 2 ? "before" : "after"), directory);
+        })();
+        await Promise.all([reader, writer]);
     } finally {
         await rm(directory, { recursive: true, force: true });
     }

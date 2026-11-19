@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from git_snapshot import text_lines
 from language_adapters import AnalysisSnapshot
 from node_adapter import NODE_ADAPTER
 from review_model import ReviewModel
@@ -52,7 +53,7 @@ class CppAdapter:
         for key, values in facts["aggregates"].items():
             model.aggregates[key].extend(values)
         model.code_paths["cpp"] = facts["code_paths"]
-        model.repository["cpp_loc"] = sum(len(text.splitlines()) for text in trees["current"].values())
+        model.repository["cpp_loc"] = sum(len(text_lines(text)) for text in trees["current"].values())
         progress(f"Analyzed {len(trees['current']):,} C/C++ files and {len(facts['symbols']):,} symbols", 67)
 
     def resolve_package_usage(self, model: ReviewModel, dependencies: dict[str, Any]) -> None:
