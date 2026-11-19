@@ -136,7 +136,7 @@ const elements = Object.fromEntries([
     "source-coverage", "source-position", "diff-layout", "source-strip", "source-strip-toggle", "source-strip-body", "overview-layers", "overview-stats", "overview-limitation",
     "review-target-form", "review-mode", "review-ref", "review-target-label", "repository-identity", "review-list-refresh", "review-more", "review-options-status", "review-picker-notice", "clean-review", "change-brief",
     "review-overview", "review-background", "overview-title", "overview-description", "overview-progress", "overview-scope", "overview-start", "overview-files",
-    "review-workflow", "workflow-overview", "workflow-review", "workflow-finish", "review-finish", "workspace-target", "workspace-freshness", "workspace-find", "workspace-nav-toggle",
+    "review-workflow", "workflow-overview", "workflow-review", "workflow-finish", "review-finish", "workspace-target", "workspace-freshness", "workspace-find", "workspace-nav-toggle", "use-fusion",
     "workspace-return-source", "review-navigation", "workspace-groups", "workspace-files", "workspace-search", "workspace-count",
     "workspace-nav-list", "workspace-code", "workspace-context", "workspace-group-label", "workspace-group-retry", "workspace-prefetch", "overview-prefetch",
     "workspace-discuss", "workspace-comment", "source-review-context", "source-origin",
@@ -3221,8 +3221,15 @@ function renderReviewOverview() {
             ? "The AI overview is unavailable. You can review the saved code now, or open change details to retry."
             : "Review the saved changes and available evidence. Open change details for intent, metrics and AI summary status."));
     }
-    if (payload.annotations?.overview?.refining) elements.overview_description.append(
-        aiPlaceholder("overview-refine", "Copilot is refining this overview with deeper review evidence...", 2));
+    if (payload.annotations?.overview?.refining) {
+        const rules = payload.rule_check;
+        const coverage = rules?.coverage;
+        const label = rules?.status === "running"
+            ? `Waiting for the repository rules review${coverage
+                ? ` (${coverage.completed_units} of ${coverage.total_units} evidence units reviewed)` : ""}...`
+            : "Copilot is refining this overview with deeper review evidence...";
+        elements.overview_description.append(aiPlaceholder("overview-refine", label, 2));
+    }
     elements.overview_progress.textContent = `${progress.reviewed} of ${countLabel(changed, "changed file")} reviewed${
         progress.followUp ? ` · ${countLabel(progress.followUp, "follow-up")}` : ""}`;
     elements.overview_scope.textContent = "";
@@ -7355,6 +7362,7 @@ function render() {
 
 function renderView() {
     const targetMode = state.payload?.review_target?.mode || "none";
+    elements.use_fusion.checked = state.payload?.use_fusion === true;
     elements.review_target_label.textContent = state.payload?.review_target?.label || "Choose review target";
     const targetKey = JSON.stringify(state.payload?.review_target || {});
     if (state.reviewTargetKey !== targetKey) {
@@ -8285,6 +8293,19 @@ elements.review_list_refresh.addEventListener("click", () => loadReviewOptions({
 elements.review_target_form.addEventListener("submit", async (event) => {
     event.preventDefault();
     await openSelectedReview();
+});
+elements.use_fusion.addEventListener("change", async () => {
+    const previous = state.payload?.use_fusion === true;
+    const enabled = elements.use_fusion.checked;
+    elements.use_fusion.disabled = true;
+    try {
+        await api("/api/ai-settings", { method: "POST", body: JSON.stringify({ use_fusion: enabled }) });
+    } catch (error) {
+        elements.use_fusion.checked = previous;
+        showError(error);
+    } finally {
+        elements.use_fusion.disabled = false;
+    }
 });
 
 async function openSelectedReview() {

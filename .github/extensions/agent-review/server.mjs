@@ -139,6 +139,14 @@ export function startReviewServer(state, options = {}) {
                 sendJson(res, browserSnapshot(state.snapshot()));
                 return;
             }
+            if (req.method === "POST" && pathname === "/api/ai-settings") {
+                const input = await readJson(req);
+                if (typeof input.use_fusion !== "boolean") throw new Error("use_fusion must be a boolean.");
+                state.useFusion = input.use_fusion;
+                state.broadcast("ai-settings");
+                sendJson(res, { ok: true, use_fusion: state.useFusion });
+                return;
+            }
             if (req.method === "GET" && pathname === "/api/review-progress") {
                 sendJson(res, await state.progressForReview());
                 return;

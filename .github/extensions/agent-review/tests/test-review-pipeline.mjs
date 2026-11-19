@@ -433,6 +433,16 @@ test("browser payloads omit repository source without changing review ledger ide
         const remote = await fetch(new URL("/api/state", server.url)).then((response) => response.json());
         assert.equal(reviewSnapshotKey(remote.model, remote.review_target), originalKey);
         assert.equal(remote.model.source_files["src/module-0000.js"].current, undefined);
+        assert.equal(remote.use_fusion, false);
+        const setting = await fetch(new URL("/api/ai-settings", server.url), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ use_fusion: true }),
+        });
+        assert.equal(setting.status, 200);
+        assert.equal((await setting.json()).use_fusion, true);
+        const updated = await fetch(new URL("/api/state", server.url)).then((response) => response.json());
+        assert.equal(updated.use_fusion, true);
     } finally {
         await server.close();
     }
@@ -536,6 +546,29 @@ test("summaries reuse accumulated review evidence and share one runtime across i
     assert.equal(summary.evidence_limits.completed_files, 150);
 });
 
+test("internal review passes receive the selected HydraFusion runtime", async () => {
+    let runtimeOptions, passOptions;
+    const state = new ReviewState("C:\\repo", {
+        reviewModelId: async () => "claude-sonnet-5",
+        createReviewRuntime: async (_modelId, options) => {
+            runtimeOptions = options;
+            return { client: "fusion-runtime", modelId: "auto", autoTier: "hydrafusion", dispose: async () => {} };
+        },
+        generateReviewPass: async (context, options) => {
+            passOptions = options;
+            return response(context);
+        },
+    });
+    state.model = model();
+    state.useFusion = true;
+    const result = await state.internalReview("Review the change.", { scope: "overview" });
+    assert.equal(result.status, "complete");
+    assert.deepEqual(runtimeOptions, { useFusion: true });
+    assert.equal(passOptions.runtimeClient, "fusion-runtime");
+    assert.equal(passOptions.modelId, "auto");
+    assert.equal(passOptions.autoTier, "hydrafusion");
+});
+
 test("a quick summary arrives while the deep rules pass runs, then is refined from its evidence", async () => {
     let releaseReview;
     const reviewGate = new Promise((resolve) => { releaseReview = resolve; });
@@ -567,6 +600,7 @@ test("a quick summary arrives while the deep rules pass runs, then is refined fr
     assert.equal(state.annotations.overview.basis, "review");
     assert.equal(state.annotations.overview.refining, false);
     assert.ok(summaries.at(-1).review_evidence.some((item) => item.claim?.includes("delay")));
+    assert.equal(summaries.length, 2, "one quick summary and one summary for the completed evidence revision");
     assert.equal(await state.overviewFor(), state.annotations.overview, "the refined summary is the cached one");
 });
 

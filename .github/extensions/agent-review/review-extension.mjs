@@ -86,10 +86,11 @@ function createReviewState(requestedPath, input) {
         currentSessionId: session.sessionId,
         workspacePath: session.workspacePath,
         reviewModelId: async () => selectedModelFromEvents(await session.getEvents()),
-        createReviewRuntime: (modelId) => createExplanationRuntime(state.repoRoot, modelId),
+        createReviewRuntime: (modelId, options) => createExplanationRuntime(state.repoRoot, modelId, options),
         generateDiscussion: async (context, { signal }) => generateIsolatedExplanation({
             workingDirectory: state.repoRoot, prompt: discussionPrompt(context),
             responseSchema: discussionSchema(context), sourceEvents: await session.getEvents(),
+            useFusion: state.useFusion,
             verifyPrompt: (content) => buildDiscussionVerificationPrompt(context, content),
             signal, attempts: 1,
             validateResponse: (content) => {
@@ -97,13 +98,14 @@ function createReviewState(requestedPath, input) {
                 return content;
             },
         }),
-        generateReviewPass: async (context, { signal, runtimeClient, modelId }) => generateIsolatedExplanation({
+        generateReviewPass: async (context, { signal, runtimeClient, modelId, autoTier }) => generateIsolatedExplanation({
             workingDirectory: state.repoRoot,
             prompt: buildReviewPrompt(context),
             responseSchema: reviewResponseSchema(context),
             signal,
             runtimeClient,
             modelId,
+            autoTier,
             attempts: 1,
             validateResponse: (content) => validateReviewResponse(content, context),
         }),
@@ -114,6 +116,7 @@ function createReviewState(requestedPath, input) {
                 workingDirectory: state.repoRoot,
                 prompt: overview ? buildOverviewPrompt(context) : buildAnnotationPrompt(context),
                 sourceEvents: await session.getEvents(),
+                useFusion: state.useFusion,
                 requiredHeadings: overview ? OVERVIEW_HEADINGS : annotationHeadings(context),
                 ...(!overview ? { verifyPrompt: (draft) => buildAnnotationVerificationPrompt(context, draft) } : {}),
             });
@@ -123,18 +126,21 @@ function createReviewState(requestedPath, input) {
             prompt: layerSummaryPrompt(context),
             responseSchema: layerSummarySchema(context),
             sourceEvents: await session.getEvents(),
+            useFusion: state.useFusion,
             validateResponse: (content) => { validateLayerSummaries(content, context); return content; },
         }), context),
         generatePackageExplanation: async ({ dependency, assessment, usageContext }) => generateIsolatedExplanation({
             workingDirectory: state.repoRoot,
             prompt: buildPackagePrompt(dependency, assessment, usageContext),
             sourceEvents: await session.getEvents(),
+            useFusion: state.useFusion,
             requiredHeadings: PACKAGE_HEADINGS,
         }),
         generateCustomAnalysis: async ({ prompt, context }) => generateIsolatedExplanation({
             workingDirectory: state.repoRoot,
             prompt: buildCustomAnalysisPrompt(prompt, context),
             sourceEvents: await session.getEvents(),
+            useFusion: state.useFusion,
             requiredHeadings: CUSTOM_ANALYSIS_HEADINGS,
             validateResponse: (content) => validateCustomAnalysis(content, context),
         }),

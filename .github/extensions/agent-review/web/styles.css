@@ -2134,6 +2134,8 @@ html { scrollbar-gutter: stable; }
 
 :root { --workflow-height: 44px; --workspace-navigation-width: 260px; }
 .review-workflow { position: sticky; top: 0; z-index: 140; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 12px; border-bottom: 1px solid var(--cp-border); background: var(--cp-surface); }
+.fusion-toggle { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; color: var(--cp-text-muted); font-size: 12px; white-space: nowrap; }
+.fusion-toggle input { margin: 0; }
 .review-workflow button, .workspace-nav-tabs button, .workspace-reading-tools button, .workspace-explore > summary { min-height: 30px; padding: 4px 10px; border: 1px solid var(--cp-border); border-radius: 6px; background: var(--cp-surface); color: var(--cp-text); cursor: pointer; font-size: 12px; }
 .review-workflow button[aria-current="page"], .workspace-nav-tabs button[aria-pressed="true"], .workspace-reading-tools button[aria-pressed="true"] { color: var(--cp-link); border-color: var(--cp-link); background: var(--cp-surface-soft); }
 .review-workflow button:hover:not(:disabled), .workspace-nav-tabs button:hover, .workspace-reading-tools button:hover:not(:disabled), .workspace-explore > summary:hover { background: var(--pr-hover); }

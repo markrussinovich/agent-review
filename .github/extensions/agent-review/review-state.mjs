@@ -366,6 +366,7 @@ export class ReviewState {
         this.generateReviewPass = options.generateReviewPass || null;
         this.createReviewRuntime = options.createReviewRuntime || null;
         this.reviewModelId = options.reviewModelId || (() => null);
+        this.useFusion = false;
         this.reviewDirectory = options.reviewDirectory || (this.workspacePath
             ? join(this.workspacePath, "files", "agent-review-reviews") : null);
         this.reviewLimits = options.reviewLimits || {};
@@ -695,6 +696,7 @@ export class ReviewState {
             decision_map: this.decisionMap,
             test_run: this.testRun ? { ...this.testRun, stale: this.testRun.status === "complete" && this.testRunStale() } : null,
             rule_check: this.ruleCheck,
+            use_fusion: this.useFusion,
             document_roles: this.documentRoles?.snapshot === (this.model && reviewSnapshotKey(this.model, this.reviewTarget))
                 ? this.documentRoles : null,
             discussion_update: this.discussionUpdate,
@@ -1587,11 +1589,13 @@ export class ReviewState {
         try {
             let modelId = await this.reviewModelId();
             controller.signal.throwIfAborted();
-            runtime = await this.createReviewRuntime?.(modelId);
+            runtime = await this.createReviewRuntime?.(modelId, { useFusion: this.useFusion });
             modelId = runtime?.modelId || modelId;
             controller.signal.throwIfAborted();
             const result = await runReview({ model, instruction, sources,
-                generate: (context, options) => this.generateReviewPass(context, { ...options, runtimeClient: runtime?.client, modelId }),
+                generate: (context, options) => this.generateReviewPass(context, {
+                    ...options, runtimeClient: runtime?.client, modelId, autoTier: runtime?.autoTier,
+                }),
                 modelId, directory: this.reviewDirectory, limits: this.reviewLimits,
                 signal: controller.signal, onProgress, force,
                 intent: this.reviewTarget.intent || null,
@@ -2156,7 +2160,6 @@ export class ReviewState {
             this.broadcast("annotation");
         }
         if (this.overviewRefinePromise) {
-            this.overviewRefineAgain = true;
             return this.overviewRefinePromise;
         }
         const generation = this.reviewGeneration;

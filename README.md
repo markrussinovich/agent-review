@@ -416,6 +416,9 @@ The default Copilot provider separately checks draft code explanations and final
 discussion answers against the supplied source before presenting them. This
 bounded AI source-fidelity pass shares the generation time limit; it is not test
 execution or a guarantee that every interpretation is correct.
+The **Prefer HydraFusion** checkbox in the review toolbar routes AI calls through
+Copilot Auto with HydraFusion when Auto is available; otherwise, Agent Review
+uses the session's selected model.
 **Ask for a deeper walkthrough** opens the same snapshot-pinned discussion with
 a suggested question, preserving an existing draft and never sending it
 automatically. That discussion can retrieve additional saved source.

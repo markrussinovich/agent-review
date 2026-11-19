@@ -7,6 +7,13 @@ import {
 
 export { selectedModelFromEvents, validateExplanation } from "./ai-response.mjs";
 
+export function explanationModelPreference(models, fallbackModel, useFusion) {
+    if (useFusion && models.some((model) => model.id === "auto" && model.policy?.state !== "disabled")) {
+        return { modelId: "auto", autoTier: "hydrafusion" };
+    }
+    return { modelId: fallbackModel, autoTier: undefined };
+}
+
 async function createClient(workingDirectory) {
     const { CopilotClient, RuntimeConnection } = await import("@github/copilot-sdk");
     return new CopilotClient({
@@ -27,6 +34,8 @@ async function generateOnce({
     signal,
     runtimeClient = null,
     modelId,
+    autoTier,
+    useFusion = false,
     responseSchema,
 }) {
     signal?.throwIfAborted();
@@ -38,9 +47,13 @@ async function generateOnce({
     signal?.addEventListener("abort", abort, { once: true });
     try {
         if (!runtimeClient) await client.start();
-        const model = modelId === undefined ? selectedModelFromEvents(sourceEvents) : modelId;
+        const selectedModel = modelId === undefined ? selectedModelFromEvents(sourceEvents) : modelId;
+        const preference = useFusion && !runtimeClient
+            ? explanationModelPreference(await client.listModels(), selectedModel, true)
+            : { modelId: selectedModel, autoTier };
         isolated = await client.createSession({
-            ...(model ? { model } : {}),
+            ...(preference.modelId ? { model: preference.modelId } : {}),
+            ...(preference.autoTier ? { autoTier: preference.autoTier } : {}),
             availableTools: [],
             excludedTools: ["builtin:*", "mcp:*", "custom:*"],
             onPermissionRequest: () => ({
@@ -72,10 +85,18 @@ async function generateOnce({
     }
 }
 
-export async function createExplanationRuntime(workingDirectory, modelId = null) {
+export async function createExplanationRuntime(workingDirectory, modelId = null, { useFusion = false } = {}) {
     const client = await createClient(workingDirectory);
     await client.start();
-    return { client, modelId, dispose: () => client.stop() };
+    try {
+        const preference = useFusion
+            ? explanationModelPreference(await client.listModels(), modelId, true)
+            : { modelId, autoTier: undefined };
+        return { client, ...preference, dispose: () => client.stop() };
+    } catch (error) {
+        await client.stop();
+        throw error;
+    }
 }
 
 export async function generateIsolatedExplanation(options) {

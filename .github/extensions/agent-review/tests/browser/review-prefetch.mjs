@@ -80,6 +80,10 @@ try {
         await page.goto(`${server.url}?scoutTheme=${theme}`);
         await page.locator("#overview-description .ai-pending-line").first().waitFor();
         await page.locator("#overview-layers .ai-pending-line").first().waitFor();
+        const fusionUpdate = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/ai-settings");
+        await page.getByLabel("Prefer HydraFusion").check();
+        assert.equal((await fusionUpdate).status(), 200);
+        assert.equal(state.useFusion, true, "the checkbox applies to server-side AI calls");
         assert.equal(await page.locator("#overview-layers .is-supporting .ai-pending-line").count(), 0, "supporting files are not sent for AI layer summaries");
         assert.equal(requests.length, 0, "item prefetch waits for the overview");
         await screenshot("overview-generating");
@@ -145,10 +149,11 @@ try {
         assert.equal(await pane.locator(".ai-pending-line").count(), 0, "stopped answers remove the bars");
         discussion.resolve({ answer: "Stopped answer", limitation: "", citations: [], requests: [] });
 
+        state.ruleCheck = { status: "running", coverage: { completed_units: 3, total_units: 10 } };
         state.annotations.overview = { ...state.annotations.overview, refining: true };
         state.broadcast("annotation");
         await page.locator("#workflow-overview").click();
-        await page.locator("#overview-description .ai-pending-line").first().waitFor();
+        await page.getByText("Waiting for the repository rules review (3 of 10 evidence units reviewed)...").waitFor();
         state.annotations.overview.refining = false;
         state.broadcast("annotation");
         await page.waitForFunction(() => !document.querySelector("#overview-description .ai-pending-line"));

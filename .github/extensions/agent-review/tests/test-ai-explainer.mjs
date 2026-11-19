@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { generateIsolatedExplanation } from "../ai-explainer.mjs";
+import { explanationModelPreference, generateIsolatedExplanation } from "../ai-explainer.mjs";
 import { currentAnnotations } from "../review-state.mjs";
 
 test("saved explanations, overviews and derived layers from the previous intent policy are regenerated", async () => {
@@ -46,6 +46,15 @@ const validExplanation = ANNOTATION_HEADINGS
         : `## ${heading}\n\n- Evidence-backed detail.`)
     .join("\n\n");
 
+test("HydraFusion preference uses Auto only when the enabled model is available", () => {
+    assert.deepEqual(explanationModelPreference([{ id: "auto" }], "claude-sonnet-5", true),
+        { modelId: "auto", autoTier: "hydrafusion" });
+    assert.deepEqual(explanationModelPreference([{ id: "auto", policy: { state: "disabled" } }], "claude-sonnet-5", true),
+        { modelId: "claude-sonnet-5", autoTier: undefined });
+    assert.deepEqual(explanationModelPreference([{ id: "auto" }], "claude-sonnet-5", false),
+        { modelId: "claude-sonnet-5", autoTier: undefined });
+});
+
 test("selects the most recent model event", () => {
     assert.equal(selectedModelFromEvents([
         { type: "session.start", data: { selectedModel: "older-model" } },
@@ -78,6 +87,7 @@ test("an injected explanation runtime uses the production validation and read-on
     let options, request, disconnected = false;
     const body = await generateIsolatedExplanation({
         workingDirectory: "C:\\repo", prompt: "Explain saved code.", requiredHeadings: ANNOTATION_HEADINGS,
+        modelId: "auto", autoTier: "hydrafusion",
         runtimeClient: { createSession: async (input) => {
             options = input;
             return { sendAndWait: async (input) => { request = input; return { data: { content: validExplanation } }; },
@@ -86,6 +96,8 @@ test("an injected explanation runtime uses the production validation and read-on
     });
     assert.equal(body, validExplanation);
     assert.equal(request.prompt, "Explain saved code.");
+    assert.equal(options.model, "auto");
+    assert.equal(options.autoTier, "hydrafusion");
     assert.deepEqual(options.availableTools, []);
     assert.deepEqual(options.excludedTools, ["builtin:*", "mcp:*", "custom:*"]);
     assert.equal(disconnected, true);
