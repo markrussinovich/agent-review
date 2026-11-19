@@ -140,11 +140,11 @@ export function startReviewServer(state, options = {}) {
                 return;
             }
             if (req.method === "POST" && pathname === "/api/ai-settings") {
-                const input = await readJson(req);
-                if (typeof input.use_fusion !== "boolean") throw new Error("use_fusion must be a boolean.");
-                state.useFusion = input.use_fusion;
-                state.broadcast("ai-settings");
-                sendJson(res, { ok: true, use_fusion: state.useFusion });
+                sendJson(res, { ok: true, ai_settings: state.updateAiSettings(await readJson(req)) });
+                return;
+            }
+            if (req.method === "GET" && pathname === "/api/ai-models") {
+                sendJson(res, { models: await state.listModels() });
                 return;
             }
             if (req.method === "GET" && pathname === "/api/review-progress") {

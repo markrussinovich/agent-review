@@ -433,16 +433,23 @@ test("browser payloads omit repository source without changing review ledger ide
         const remote = await fetch(new URL("/api/state", server.url)).then((response) => response.json());
         assert.equal(reviewSnapshotKey(remote.model, remote.review_target), originalKey);
         assert.equal(remote.model.source_files["src/module-0000.js"].current, undefined);
-        assert.equal(remote.use_fusion, false);
+        assert.deepEqual(remote.ai_settings, { model: "session", language: "default" });
         const setting = await fetch(new URL("/api/ai-settings", server.url), {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ use_fusion: true }),
+            body: JSON.stringify({ model: "fusion", language: "plain" }),
         });
         assert.equal(setting.status, 200);
-        assert.equal((await setting.json()).use_fusion, true);
+        assert.deepEqual((await setting.json()).ai_settings, { model: "fusion", language: "plain" });
         const updated = await fetch(new URL("/api/state", server.url)).then((response) => response.json());
-        assert.equal(updated.use_fusion, true);
+        assert.deepEqual(updated.ai_settings, { model: "fusion", language: "plain" });
+        const invalid = await fetch(new URL("/api/ai-settings", server.url), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ model: "fusion", language: "pirate" }),
+        });
+        assert.notEqual(invalid.status, 200);
+        assert.deepEqual(state.aiSettings, { model: "fusion", language: "plain" });
     } finally {
         await server.close();
     }
@@ -546,7 +553,7 @@ test("summaries reuse accumulated review evidence and share one runtime across i
     assert.equal(summary.evidence_limits.completed_files, 150);
 });
 
-test("internal review passes receive the selected HydraFusion runtime", async () => {
+test("internal review passes receive the selected Fusion runtime", async () => {
     let runtimeOptions, passOptions;
     const state = new ReviewState("C:\\repo", {
         reviewModelId: async () => "claude-sonnet-5",
@@ -560,10 +567,10 @@ test("internal review passes receive the selected HydraFusion runtime", async ()
         },
     });
     state.model = model();
-    state.useFusion = true;
+    state.aiSettings = { model: "fusion", language: "default" };
     const result = await state.internalReview("Review the change.", { scope: "overview" });
     assert.equal(result.status, "complete");
-    assert.deepEqual(runtimeOptions, { useFusion: true });
+    assert.deepEqual(runtimeOptions, { modelChoice: "fusion" });
     assert.equal(passOptions.runtimeClient, "fusion-runtime");
     assert.equal(passOptions.modelId, "auto");
     assert.equal(passOptions.autoTier, "hydrafusion");

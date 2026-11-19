@@ -4,6 +4,7 @@ import fnmatch
 import difflib
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -20,6 +21,82 @@ SELF_REPOSITORY_MARKERS = tuple(json.loads(
     Path(__file__).with_name("self-repository-markers.json").read_text(encoding="utf-8")
 ))
 EXTENSION_SOURCE = ".github/extensions/agent-review"
+LINE_BREAK = re.compile(r"\r\n|\r|\n")
+# SequenceMatcher is quadratic on repeated lines; larger files are matched by Git.
+LARGE_DIFF_LINES = 5000
+
+
+def text_lines(data: bytes | str | None) -> list[str]:
+    """The one line definition for counts, diffs and coverage: only CRLF, CR and LF end
+    a line, as in Git and the review page, so checkout line endings never change counts."""
+    if data is None:
+        return []
+    text = data.decode("utf-8", errors="replace") if isinstance(data, bytes) else data
+    lines = LINE_BREAK.split(text)
+    return lines[:-1] if lines[-1] == "" else lines
+
+
+def _git_line_diff(path: str, before: list[str], after: list[str]) -> str:
+    with tempfile.TemporaryDirectory(prefix="agent-review-diff-") as directory:
+        root = Path(directory)
+        (root / "before").write_text("".join(f"{line}\n" for line in before), encoding="utf-8", newline="\n")
+        (root / "after").write_text("".join(f"{line}\n" for line in after), encoding="utf-8", newline="\n")
+        process = subprocess.run(
+            ["git", "-c", "core.autocrlf=false", "diff", "--no-index", "--no-ext-diff",
+             "--no-textconv", "--text", "--unified=4", "--", "before", "after"],
+            cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+    if process.returncode not in (0, 1):
+        raise RuntimeError(process.stderr.decode("utf-8", errors="replace").strip()
+                           or f"Unable to diff saved source: {path}")
+    patch = []
+    in_hunk = False
+    output = process.stdout.decode("utf-8", errors="replace").split("\n")
+    for line in output[:-1] if output[-1] == "" else output:
+        in_hunk = in_hunk or line.startswith("@@ ")
+        if not in_hunk:
+            if line.startswith(("diff --git ", "index ")):
+                continue
+            if line.startswith("--- "):
+                line = f"--- a/{path}"
+            elif line.startswith("+++ "):
+                line = f"+++ b/{path}"
+        patch.append(f"{line}\n")
+    return "".join(patch)
+
+
+def line_delta(before: list[str], after: list[str], path: str = "file") -> tuple[list[int], list[int], str | None]:
+    """Added and removed 1-based line numbers, plus Git's patch when the file is large."""
+    added: list[int] = []
+    removed: list[int] = []
+    if max(len(before), len(after)) > LARGE_DIFF_LINES:
+        patch = _git_line_diff(path, before, after)
+        old_line = new_line = None
+        for line in patch.split("\n"):
+            if line.startswith("@@ "):
+                old_range, new_range = line.split()[1:3]
+                old_line = int(old_range[1:].split(",")[0])
+                new_line = int(new_range[1:].split(",")[0])
+            elif old_line is None:
+                continue
+            elif line.startswith("-"):
+                removed.append(old_line)
+                old_line += 1
+            elif line.startswith("+"):
+                added.append(new_line)
+                new_line += 1
+            elif line.startswith(" "):
+                old_line += 1
+                new_line += 1
+        return added, removed, patch
+    for tag, old_start, old_end, new_start, new_end in difflib.SequenceMatcher(
+        None, before, after, autojunk=False
+    ).get_opcodes():
+        if tag in ("insert", "replace"):
+            added.extend(range(new_start + 1, new_end + 1))
+        if tag in ("delete", "replace"):
+            removed.extend(range(old_start + 1, old_end + 1))
+    return added, removed, None
 
 
 def default_excludes(repo: Path, refs: tuple[str, ...] = ()) -> tuple[str, ...]:
@@ -234,38 +311,6 @@ class Snapshot:
     _large_diffs: dict[str, str] = field(default_factory=dict, compare=False, repr=False)
     excluded_changes: tuple[dict[str, object], ...] = ()
 
-    def _large_diff(self, path: str, before: bytes, after: bytes) -> str:
-        if path not in self._large_diffs:
-            # Repeated lines make difflib's exact matcher quadratic. Git handles these
-            # snapshots without consulting the live worktree or repository diff drivers.
-            with tempfile.TemporaryDirectory(prefix="agent-review-diff-") as directory:
-                root = Path(directory)
-                (root / "before").write_bytes(before)
-                (root / "after").write_bytes(after)
-                process = subprocess.run(
-                    ["git", "-c", "core.autocrlf=false", "diff", "--no-index", "--no-ext-diff",
-                     "--no-textconv", "--text", "--unified=4", "--", "before", "after"],
-                    cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
-                )
-                if process.returncode not in (0, 1):
-                    raise RuntimeError(process.stderr.decode("utf-8", errors="replace").strip()
-                                       or f"Unable to diff saved source: {path}")
-                lines = process.stdout.decode("utf-8", errors="replace").splitlines(keepends=True)
-                patch = []
-                in_hunk = False
-                for line in lines:
-                    in_hunk = in_hunk or line.startswith("@@ ")
-                    if not in_hunk:
-                        if line.startswith(("diff --git ", "index ")):
-                            continue
-                        if line.startswith("--- "):
-                            line = f"--- a/{path}\n"
-                        elif line.startswith("+++ "):
-                            line = f"+++ b/{path}\n"
-                    patch.append(line)
-                self._large_diffs[path] = "".join(patch)
-        return self._large_diffs[path]
-
     def source_files(self, changes: list[dict[str, object]], generated: set[str] | frozenset[str] = frozenset()) -> dict[str, dict[str, object]]:
         result: dict[str, dict[str, object]] = {}
         retain_baseline = any(
@@ -294,10 +339,12 @@ class Snapshot:
             elif not base or not current:
                 diff = _complete_file_diff(path, current or base, added=not base)
             else:
-                diff = "".join(difflib.unified_diff(
-                    [f"{line}\n" for line in base.splitlines()], [f"{line}\n" for line in current.splitlines()],
-                    fromfile=f"a/{path}", tofile=f"b/{path}", n=4,
-                ))
+                old_lines, new_lines = text_lines(base), text_lines(current)
+                diff = _git_line_diff(path, old_lines, new_lines) if max(len(old_lines), len(new_lines)) > LARGE_DIFF_LINES \
+                    else "".join(difflib.unified_diff(
+                        [f"{line}\n" for line in old_lines], [f"{line}\n" for line in new_lines],
+                        fromfile=f"a/{path}", tofile=f"b/{path}", n=4,
+                    ))
             result[path] = {"current": current, "diff": diff}
             if path in generated:
                 result[path]["generated"] = True
@@ -323,48 +370,18 @@ class Snapshot:
                 if _content_equal(before, after)
                 else "modified"
             )
-            before_lines = before.decode("utf-8", errors="replace").splitlines() if before is not None else []
-            after_lines = (
-                before_lines if before is not None and before == after
-                else after.decode("utf-8", errors="replace").splitlines() if after is not None else []
-            )
-            added = removed = 0
+            before_lines = text_lines(before)
+            after_lines = before_lines if before is not None and before == after else text_lines(after)
             added_lines: list[int] = []
             removed_lines: list[int] = []
             if status == "added":
-                added = len(after_lines)
-                added_lines = list(range(1, added + 1))
+                added_lines = list(range(1, len(after_lines) + 1))
             elif status == "deleted":
-                removed = len(before_lines)
-                removed_lines = list(range(1, removed + 1))
+                removed_lines = list(range(1, len(before_lines) + 1))
             elif status == "modified":
-                if max(len(before_lines), len(after_lines)) > 5000:
-                    old_line = new_line = None
-                    for line in self._large_diff(path, before, after).splitlines():
-                        if line.startswith("@@ "):
-                            old_range, new_range = line.split()[1:3]
-                            old_line = int(old_range[1:].split(",")[0])
-                            new_line = int(new_range[1:].split(",")[0])
-                        elif old_line is not None and line.startswith("-"):
-                            removed_lines.append(old_line)
-                            old_line += 1
-                        elif new_line is not None and line.startswith("+"):
-                            added_lines.append(new_line)
-                            new_line += 1
-                        elif old_line is not None and line.startswith(" "):
-                            old_line += 1
-                            new_line += 1
-                    added, removed = len(added_lines), len(removed_lines)
-                else:
-                    for tag, old_start, old_end, new_start, new_end in difflib.SequenceMatcher(
-                        None, before_lines, after_lines, autojunk=False
-                    ).get_opcodes():
-                        if tag in ("insert", "replace"):
-                            added += new_end - new_start
-                            added_lines.extend(range(new_start + 1, new_end + 1))
-                        if tag in ("delete", "replace"):
-                            removed += old_end - old_start
-                            removed_lines.extend(range(old_start + 1, old_end + 1))
+                added_lines, removed_lines, patch = line_delta(before_lines, after_lines, path)
+                if patch is not None:
+                    self._large_diffs[path] = patch
             records.append(
                 {
                     "path": path,
@@ -373,8 +390,8 @@ class Snapshot:
                     "current_size": len(after) if after is not None else None,
                     "baseline_lines": len(before_lines),
                     "current_lines": len(after_lines),
-                    "lines_added": added,
-                    "lines_removed": removed,
+                    "lines_added": len(added_lines),
+                    "lines_removed": len(removed_lines),
                     "added_lines": added_lines,
                     "removed_lines": removed_lines,
                 }
@@ -383,7 +400,7 @@ class Snapshot:
 
 
 def _complete_file_diff(path: str, text: str, *, added: bool) -> str:
-    lines = text.splitlines()
+    lines = text_lines(text)
     if not lines:
         return ""
     extent = "1" if len(lines) == 1 else f"1,{len(lines)}"
@@ -430,24 +447,9 @@ def create_snapshot(
 
 
 def changed_lines(repo: Path, base_ref: str | None, path: str) -> set[int]:
-    if not base_ref:
-        content = repo.joinpath(path)
-        if not content.exists():
-            return set()
-        return set(range(1, len(content.read_text(errors="replace").splitlines()) + 1))
-    output = run_git(
-        repo, "diff", "--unified=0", "--no-ext-diff", base_ref, "--", path, check=False
-    )
-    result: set[int] = set()
-    for line in output.splitlines():
-        if not line.startswith("@@"):
-            continue
-        new_range = line.split(" ")[2][1:]
-        start_text, _, count_text = new_range.partition(",")
-        start = int(start_text)
-        count = int(count_text or "1")
-        result.update(range(start, start + count))
-    if not run_git(repo, "ls-tree", "--name-only", base_ref, "--", path, check=False).strip() and repo.joinpath(path).exists():
-        count = len(repo.joinpath(path).read_text(errors="replace").splitlines())
-        result.update(range(1, count + 1))
-    return result
+    content = repo.joinpath(path)
+    if not content.exists():
+        return set()
+    after = text_lines(content.read_bytes())
+    before = text_lines(run_git(repo, "show", f"{base_ref}:{path}", check=False)) if base_ref else []
+    return set(line_delta(before, after, path)[0])

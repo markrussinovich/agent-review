@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rm, rmdir, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { renameWithRetry } from "./atomic-file.mjs";
 
 const SCOPES = new Set(["repository", "global"]);
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,119}$/;
@@ -109,18 +110,7 @@ async function atomicWrite(file, config, label) {
         await mkdir(dirname(file), { recursive: true, mode: 0o700 });
         await writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
         created = true;
-        const deadline = Date.now() + 500;
-        while (true) {
-            try {
-                await rename(temporary, file);
-                break;
-            } catch (error) {
-                // Windows indexers/readers can briefly deny an otherwise valid rename.
-                if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(error.code) ||
-                    Date.now() >= deadline) throw error;
-                await delay(25);
-            }
-        }
+        await renameWithRetry(temporary, file);
     } catch (error) {
         // Only this operation's temporary file may be removed.
         if (created || error.code !== "EEXIST") {

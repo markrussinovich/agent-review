@@ -1,12 +1,13 @@
 """Source- and revision-matched LCOV ingestion from saved snapshot bytes."""
 from __future__ import annotations
 
-import difflib
 import hashlib
 import json
 import posixpath
 from pathlib import PurePosixPath
 from typing import Any
+
+from git_snapshot import line_delta, text_lines
 
 
 def _path(value: str) -> str:
@@ -85,12 +86,7 @@ def load_snapshot_lcov(snapshot: Any, *, name: str, language: str, extensions: t
     for path, lines in sorted(records.items()):
         executable = sorted(lines)
         covered = sorted(number for number, hits in lines.items() if hits > 0)
-        before = snapshot.baseline.get(path, b"").decode("utf-8", errors="replace").splitlines()
-        after = snapshot.current[path].decode("utf-8", errors="replace").splitlines()
-        changed: set[int] = set()
-        for tag, _, _, start, end in difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes():
-            if tag in ("insert", "replace"):
-                changed.update(range(start + 1, end + 1))
+        changed = set(line_delta(text_lines(snapshot.baseline.get(path)), text_lines(snapshot.current[path]), path)[0])
         changed_executable = changed & set(executable)
         changed_covered = sorted(changed_executable & set(covered))
         changed_uncovered = sorted(changed_executable - set(covered))

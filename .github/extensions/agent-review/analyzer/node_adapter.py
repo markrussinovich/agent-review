@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from git_snapshot import text_lines
 from language_adapters import AdapterUnavailable, AnalysisSnapshot
 from node_packages import package_diff, parse_locked_packages, parse_packages
 from review_model import ReviewModel
@@ -113,8 +114,7 @@ class NodeAdapter:
     ) -> None:
         if self.applies(set(snapshot.baseline) | set(snapshot.current)):
             model.repository["node_loc"] = sum(
-                len((content.decode("utf-8", errors="replace") if isinstance(content, bytes)
-                     else content).splitlines())
+                len(text_lines(content))
                 for path, content in snapshot.current.items()
                 if (pure := _reviewed_path(path)) and pure.suffix.lower() in EXTENSIONS
             )

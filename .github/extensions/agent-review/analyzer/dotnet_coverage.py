@@ -1,7 +1,6 @@
 """Cobertura coverage for C# from current snapshot bytes, never the checkout."""
 from __future__ import annotations
 
-import difflib
 import posixpath
 import re
 from pathlib import PurePosixPath
@@ -9,6 +8,7 @@ from typing import Any
 from xml.parsers import expat
 
 from dotnet_packages import _xml_document
+from git_snapshot import line_delta, text_lines
 
 
 def _path(value: str) -> str:
@@ -111,7 +111,7 @@ def load_dotnet_coverage(snapshot: Any) -> dict[str, Any]:
                     reason = "ambiguous" if ambiguous else "not present"
                     warnings.append(f"{report}: {filename}: source path is {reason} in the current snapshot; export project-relative filenames and matching Cobertura sources.")
                     continue
-                count = len(current[path].decode("utf-8", errors="replace").splitlines())
+                count = len(text_lines(current[path]))
                 for line in node.findall("./lines/line"):
                     number, hits = int(line.get("number", "")), int(line.get("hits", ""))
                     if number < 1 or hits < 0:
@@ -143,12 +143,8 @@ def load_dotnet_coverage(snapshot: Any) -> dict[str, Any]:
     for path, lines in sorted(records.items()):
         covered = {number for number, (hit, _) in lines.items() if hit}
         executable = set(lines)
-        after = current[path].decode("utf-8", errors="replace").splitlines()
-        before = baseline.get(path, b"").decode("utf-8", errors="replace").splitlines()
-        changed = set()
-        for tag, _, _, start, end in difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes():
-            if tag in ("insert", "replace"):
-                changed.update(range(start + 1, end + 1))
+        after = text_lines(current[path])
+        changed = set(line_delta(text_lines(baseline.get(path)), after, path)[0])
         branches = [
             {"line": number, "covered": branch[0], "total": branch[1]}
             for number, (_, branch) in sorted(lines.items()) if branch is not None

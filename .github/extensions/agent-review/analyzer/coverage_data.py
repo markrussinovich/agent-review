@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
-from git_snapshot import changed_lines
+from git_snapshot import changed_lines, text_lines
 
 
 def _xml(path: Path) -> dict[str, dict[str, set[int]]] | None:
@@ -75,7 +75,7 @@ def load_coverage(repo: Path, base_ref: str | None, python_paths: list[str]) -> 
             continue
         covered_lines = record["covered"]
         executable_lines = record["executable"]
-        total_lines = len((repo / path).read_text(errors="replace").splitlines())
+        total_lines = len(text_lines((repo / path).read_bytes()))
         files.append({
             "path": path,
             "covered_lines": sorted(covered_lines),

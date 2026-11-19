@@ -136,7 +136,7 @@ const elements = Object.fromEntries([
     "source-coverage", "source-position", "diff-layout", "source-strip", "source-strip-toggle", "source-strip-body", "overview-layers", "overview-stats", "overview-limitation",
     "review-target-form", "review-mode", "review-ref", "review-target-label", "repository-identity", "review-list-refresh", "review-more", "review-options-status", "review-picker-notice", "clean-review", "change-brief",
     "review-overview", "review-background", "overview-title", "overview-description", "overview-progress", "overview-scope", "overview-start", "overview-files",
-    "review-workflow", "workflow-overview", "workflow-review", "workflow-finish", "review-finish", "workspace-target", "workspace-freshness", "workspace-find", "workspace-nav-toggle", "use-fusion",
+    "review-workflow", "workflow-overview", "workflow-review", "workflow-finish", "review-finish", "workspace-target", "workspace-freshness", "workspace-find", "workspace-nav-toggle", "ai-settings", "ai-model", "ai-language", "ai-settings-note",
     "workspace-return-source", "review-navigation", "workspace-groups", "workspace-files", "workspace-search", "workspace-count",
     "workspace-nav-list", "workspace-code", "workspace-context", "workspace-group-label", "workspace-group-retry", "workspace-prefetch", "overview-prefetch",
     "workspace-discuss", "workspace-comment", "source-review-context", "source-origin",
@@ -249,7 +249,7 @@ function sourceScrollPosition() {
 
 function captureReturnFocus() {
     let active = document.activeElement;
-    if (active?.closest(".workspace-explore")) active = document.querySelector(".workspace-explore > summary");
+    if (active?.closest(".workspace-explore")) active = active.closest(".workspace-explore").querySelector("summary");
     const selector = active?.id ? `#${CSS.escape(active.id)}`
         : active?.dataset.nodeId ? `[data-node-id="${CSS.escape(active.dataset.nodeId)}"]`
             : active?.dataset.reviewId ? `[data-review-id="${CSS.escape(active.dataset.reviewId)}"]` : null;
@@ -433,19 +433,18 @@ document.querySelector(".workspace-explore").addEventListener("toggle", (event) 
         renderWorkspaceShell();
     }
 });
-{
-    const explore = document.querySelector(".workspace-explore");
+for (const menu of document.querySelectorAll("details.workspace-explore")) {
     document.addEventListener("pointerdown", (event) => {
-        if (explore.open && !explore.contains(event.target)) explore.open = false;
+        if (menu.open && !menu.contains(event.target)) menu.open = false;
     }, true);
     document.addEventListener("keydown", (event) => {
-        if (event.key !== "Escape" || !explore.open) return;
-        explore.open = false;
-        if (explore.contains(document.activeElement)) explore.querySelector("summary")?.focus();
+        if (event.key !== "Escape" || !menu.open) return;
+        menu.open = false;
+        if (menu.contains(document.activeElement)) menu.querySelector("summary")?.focus();
         event.stopPropagation();
     }, true);
     document.addEventListener("focusin", (event) => {
-        if (explore.open && !explore.contains(event.target)) explore.open = false;
+        if (menu.open && !menu.contains(event.target)) menu.open = false;
     });
 }
 for (const [button, mode] of [[elements.explore_priorities, "walkthrough"], [elements.explore_concerns, "findings"], [elements.explore_groups, "sections"], [elements.explore_architecture, "graph"],
@@ -7362,7 +7361,7 @@ function render() {
 
 function renderView() {
     const targetMode = state.payload?.review_target?.mode || "none";
-    elements.use_fusion.checked = state.payload?.use_fusion === true;
+    renderAiSettings();
     elements.review_target_label.textContent = state.payload?.review_target?.label || "Choose review target";
     const targetKey = JSON.stringify(state.payload?.review_target || {});
     if (state.reviewTargetKey !== targetKey) {
@@ -7405,7 +7404,7 @@ function renderView() {
     const progress = payload?.progress;
     elements.status.textContent = payload?.loading ? `Analyzing ${progress?.percent || 0}%`
         : payload?.cancelled ? "Analysis cancelled" : payload?.error ? "Analysis failed" : model ? payload.restored_from_cache ? "Saved review" : "Analysis current"
-            : targetMode === "none" ? "Choose review" : "Waiting";
+            : targetMode === "none" ? "Choose review" : "Reanalyze to continue";
     elements.status.title = payload?.loading ? progress?.message || "Analyzing repository"
         : payload?.analyzed_at ? `Analyzed ${new Date(payload.analyzed_at).toLocaleString()}${payload.restored_from_cache ? ". Reanalyze to update." : ""}` : "";
     elements.status.classList.toggle("working", Boolean(payload?.loading));
@@ -8158,14 +8157,20 @@ function renderReviewPickerNotice() {
     const pending = Boolean(state.reviewPickerPending || state.reviewSubmitting
         || (state.payload?.loading && !state.payload.model));
     const fatal = Boolean(state.payload?.error);
+    const restored = !pending && !fatal && !state.payload?.cancelled && !state.payload?.model
+        && ["worktree", "commit", "pr"].includes(state.payload?.review_target?.mode);
     for (const element of [elements.review_overview, elements.review_background, elements.change_brief, elements.summary, document.querySelector(".workspace")]) {
         element.classList.toggle("hidden", pending || isEmptyReview(state.payload) || (fatal && !state.payload.model));
     }
     // renderBreadcrumbs owns their visibility once a review is open; the picker only hides them.
     if (pending) elements.breadcrumbs.classList.add("hidden");
     const loading = state.reviewSubmitting || state.reviewOptionsLoading || state.payload?.loading;
-    elements.review_picker_notice.classList.toggle("hidden", fatal || !pending || (loading && !state.reviewOpenError));
-    if (pending) {
+    elements.review_picker_notice.classList.toggle("hidden", fatal || (!pending && !restored) || (loading && !state.reviewOpenError));
+    if (restored) {
+        elements.review_picker_notice.textContent = state.payload.review_target.mode === "worktree"
+            ? "Review target restored. Select Reanalyze to review the current worktree."
+            : "Review target restored. Select Reanalyze to review its saved commits.";
+    } else if (pending) {
         if (!loading) elements.review_target_label.textContent = "Choose a review target";
         if (!state.payload?.loading) elements.status.textContent = fatal ? "Analysis failed" : loading ? "Loading review…" : "Choose review";
         if (fatal) {
@@ -8294,19 +8299,54 @@ elements.review_target_form.addEventListener("submit", async (event) => {
     event.preventDefault();
     await openSelectedReview();
 });
-elements.use_fusion.addEventListener("change", async () => {
-    const previous = state.payload?.use_fusion === true;
-    const enabled = elements.use_fusion.checked;
-    elements.use_fusion.disabled = true;
+const AI_SETTINGS_NOTE = "Applies to new AI requests. Reanalyze refreshes saved results.";
+
+function renderAiSettings() {
+    const settings = state.payload?.ai_settings || { model: "session", language: "default" };
+    if (![...elements.ai_model.options].some((option) => option.value === settings.model)) {
+        elements.ai_model.append(new Option(settings.model, settings.model));
+    }
+    elements.ai_model.value = settings.model;
+    elements.ai_language.value = settings.language;
+}
+
+async function loadAiModels() {
+    if (state.aiModelsLoaded) return;
+    state.aiModelsLoaded = true;
+    elements.ai_settings_note.textContent = "Loading available models…";
     try {
-        await api("/api/ai-settings", { method: "POST", body: JSON.stringify({ use_fusion: enabled }) });
+        const { models } = await api("/api/ai-models");
+        for (const option of [...elements.ai_model.options]) {
+            if (option.value !== "session" && option.value !== "fusion") option.remove();
+        }
+        for (const model of models) elements.ai_model.append(new Option(model.name, model.id));
+        renderAiSettings();
+        elements.ai_settings_note.textContent = AI_SETTINGS_NOTE;
     } catch (error) {
-        elements.use_fusion.checked = previous;
+        state.aiModelsLoaded = false;
+        elements.ai_settings_note.textContent = `Couldn't list models: ${error.message}`;
+    }
+}
+
+async function saveAiSettings() {
+    const settings = { model: elements.ai_model.value, language: elements.ai_language.value };
+    elements.ai_model.disabled = elements.ai_language.disabled = true;
+    try {
+        const result = await api("/api/ai-settings", { method: "POST", body: JSON.stringify(settings) });
+        if (state.payload) state.payload.ai_settings = result.ai_settings;
+    } catch (error) {
         showError(error);
     } finally {
-        elements.use_fusion.disabled = false;
+        elements.ai_model.disabled = elements.ai_language.disabled = false;
+        renderAiSettings();
     }
+}
+
+elements.ai_settings.addEventListener("toggle", () => {
+    if (elements.ai_settings.open) void loadAiModels();
 });
+elements.ai_model.addEventListener("change", saveAiSettings);
+elements.ai_language.addEventListener("change", saveAiSettings);
 
 async function openSelectedReview() {
     if (state.reviewSubmitting || state.payload?.loading || state.reviewOptionsLoading

@@ -1,12 +1,18 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { renameWithRetry } from "./atomic-file.mjs";
 
 const MAX_MARKER_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export function markerDirectory() {
     return process.env.AGENT_REVIEW_STATE_DIR || join(homedir(), ".copilot", "agent-review", "canvases");
+}
+
+export function providerMarkerDirectory(extensionId, directory = markerDirectory()) {
+    const key = createHash("sha256").update(extensionId).digest("base64url").slice(0, 22);
+    return join(directory, "providers", key);
 }
 
 function safe(value) {
@@ -26,11 +32,16 @@ export function preferredPort(repoPath, baseRef = "") {
 
 export async function writeCanvasMarker(marker, directory = markerDirectory()) {
     await mkdir(directory, { recursive: true });
-    await writeFile(
-        markerFile(marker.sessionId, marker.instanceId, directory),
-        JSON.stringify({ ...marker, providerPid: process.pid, updatedAt: new Date().toISOString() }),
-        "utf8",
-    );
+    const path = markerFile(marker.sessionId, marker.instanceId, directory);
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    try {
+        await writeFile(temporary, JSON.stringify({ ...marker, providerPid: process.pid, updatedAt: new Date().toISOString() }), "utf8");
+        await renameWithRetry(temporary, path);
+    } catch (error) {
+        await rm(temporary, { force: true }).catch((cleanupError) =>
+            console.error("[agent-review] Unable to remove temporary Canvas marker:", cleanupError));
+        throw error;
+    }
 }
 
 export async function removeCanvasMarker(sessionId, instanceId, directory = markerDirectory()) {

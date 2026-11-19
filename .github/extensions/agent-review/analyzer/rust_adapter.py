@@ -4,6 +4,7 @@ from collections.abc import Callable
 from pathlib import PurePosixPath
 from typing import Any
 
+from git_snapshot import text_lines
 from language_adapters import AnalysisSnapshot
 from review_model import ReviewModel
 from rust_graph import analyze_rust
@@ -36,7 +37,7 @@ class RustAdapter:
             saved["current"] = (snapshot.current[path].decode("utf-8-sig", errors="replace")
                                 if path in snapshot.current else None)
         model.repository["rust_loc"] = sum(
-            len(raw.decode("utf-8", errors="replace").splitlines())
+            len(text_lines(raw))
             for path, raw in snapshot.current.items() if path.lower().endswith(".rs")
         )
         facts = analyze_rust(snapshot.baseline, snapshot.current, model,

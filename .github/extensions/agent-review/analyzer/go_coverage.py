@@ -1,13 +1,14 @@
 """Saved Go coverprofile ingestion with exact source-hash proof."""
 from __future__ import annotations
 
-import difflib
 import hashlib
 import json
 import posixpath
 import re
 from pathlib import PurePosixPath
 from typing import Any
+
+from git_snapshot import line_delta, text_lines
 
 
 _ROW = re.compile(r"^(.+):(\d+)\.(\d+),(\d+)\.(\d+)\s+(\d+)\s+(\d+)$")
@@ -90,7 +91,7 @@ def load_go_coverage(snapshot: Any) -> dict[str, Any]:
                 pending.pop(path, None)
                 continue
             start_line, end_line = int(start), int(end)
-            if start_line < 1 or end_line < start_line or end_line > len(current[path].splitlines()):
+            if start_line < 1 or end_line < start_line or end_line > len(text_lines(current[path])):
                 warnings.append(f"{report}:{line_number}: {path}: range exceeds saved source; coverage ignored.")
                 pending.pop(path, None)
                 continue
@@ -110,12 +111,8 @@ def load_go_coverage(snapshot: Any) -> dict[str, Any]:
     for path, lines in sorted(records.items()):
         executable = set(lines)
         covered = {number for number, hit in lines.items() if hit}
-        before = baseline.get(path, b"").decode("utf-8", errors="replace").splitlines()
-        after = current[path].decode("utf-8", errors="replace").splitlines()
-        changed = set()
-        for tag, _, _, start, end in difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes():
-            if tag in ("insert", "replace"):
-                changed.update(range(start + 1, end + 1))
+        after = text_lines(current[path])
+        changed = set(line_delta(text_lines(baseline.get(path)), after, path)[0])
         changed &= executable
         changed_covered = changed & covered
         files.append({"path": path, "line_count": len(after),

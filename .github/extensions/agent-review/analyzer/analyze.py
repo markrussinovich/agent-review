@@ -12,7 +12,7 @@ from typing import Any, TextIO
 from churn import analyze_churn
 from codeboarding_adapter import load_codeboarding
 from generated_sources import generated_paths
-from git_snapshot import create_snapshot, discover_base, discover_repo, run_git
+from git_snapshot import create_snapshot, discover_base, discover_repo, run_git, text_lines
 from language_adapters import AdapterUnavailable, AnalysisSnapshot, LanguageAdapter, active_adapters, merge_coverage
 from review_model import ReviewModel
 
@@ -59,7 +59,7 @@ def build_review(
                 "rules": list(snapshot.excluded_changes),
             }} if snapshot.excluded_changes else {}),
             "python_loc": sum(
-                len(content.decode("utf-8", errors="replace").splitlines())
+                len(text_lines(content))
                 for path, content in snapshot.current.items() if path.endswith(".py")
             ),
         }

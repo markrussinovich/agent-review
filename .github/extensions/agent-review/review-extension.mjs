@@ -1,6 +1,6 @@
 import { CanvasError, createCanvas } from "@github/copilot-sdk/extension";
 import { canvasDefinition } from "./canvas-definition.mjs";
-import { createExplanationRuntime, generateIsolatedExplanation } from "./ai-explainer.mjs";
+import { createExplanationRuntime, generateIsolatedExplanation, listExplanationModels } from "./ai-explainer.mjs";
 import { buildCustomAnalysisPrompt, CUSTOM_ANALYSIS_HEADINGS, validateCustomAnalysis } from "./custom-analysis.mjs";
 import {
     annotationHeadings,
@@ -13,9 +13,10 @@ import {
 } from "./ai-prompts.mjs";
 import { loadHistoricalSessionContexts } from "./historical-sessions.mjs";
 import { loadReviewConfig, resolveRepoRoot, ReviewState } from "./review-state.mjs";
-import { preferredPort, readCanvasMarkers, writeCanvasMarker } from "./canvas-persistence.mjs";
+import { preferredPort, providerMarkerDirectory, readCanvasMarkers, removeCanvasMarker, writeCanvasMarker } from "./canvas-persistence.mjs";
 import { startReviewServer } from "./server.mjs";
 import { ReviewLifecycle } from "./review-lifecycle.mjs";
+import { restoredReviewTarget } from "./review-target.mjs";
 import { pruneStaleArtifacts } from "./storage-cleanup.mjs";
 import { buildReviewPrompt, reviewResponseSchema, validateReviewResponse } from "./review-pipeline.mjs";
 import { selectedModelFromEvents } from "./ai-response.mjs";
@@ -27,6 +28,26 @@ const pendingInstances = new Map();
 const reviewStates = new Map();
 let session;
 let lifecycle;
+let providerId;
+let providerDirectory;
+
+function configureProvider(extensionId) {
+    if (!extensionId || (providerId && providerId !== extensionId)) throw new Error("Agent Review provider identity changed.");
+    providerId = extensionId;
+    providerDirectory = providerMarkerDirectory(extensionId);
+    lifecycle.markerDirectory = providerDirectory;
+}
+
+async function persistedMarker(instanceId) {
+    const own = (await readCanvasMarkers(session.sessionId, providerDirectory)).find((marker) => marker.instanceId === instanceId);
+    if (own) return own;
+    const legacy = (await readCanvasMarkers(session.sessionId)).find((marker) => marker.instanceId === instanceId);
+    if (legacy) {
+        await writeCanvasMarker(legacy, providerDirectory);
+        await removeCanvasMarker(session.sessionId, instanceId);
+    }
+    return legacy;
+}
 
 function instanceFor(ctx) {
     const instance = instances.get(ctx.instanceId);
@@ -53,13 +74,18 @@ export const canvas = createCanvas({
     ...canvasDefinition,
     actions: canvasDefinition.actions.map((action) => ({ ...action, handler: handlers[action.name] })),
     open: async (ctx) => {
+        configureProvider(ctx.extensionId);
         await lifecycle.reopenInstance(ctx.instanceId);
         let instance = instances.get(ctx.instanceId);
-        if (!instance && pendingInstances.has(ctx.instanceId)) {
-            const wait = new Promise((resolve) => setTimeout(() => resolve(null), 4_000));
-            instance = await Promise.race([pendingInstances.get(ctx.instanceId).catch(() => null), wait]);
+        if (!instance) {
+            const marker = await persistedMarker(ctx.instanceId);
+            instance = instances.get(ctx.instanceId);
+            if (!instance && pendingInstances.has(ctx.instanceId)) {
+                const wait = new Promise((resolve) => setTimeout(() => resolve(null), 4_000));
+                instance = await Promise.race([pendingInstances.get(ctx.instanceId).catch(() => null), wait]);
+            }
+            if (!instance) instance = await createInstance(ctx.instanceId, marker?.input || ctx.input || {});
         }
-        if (!instance) instance = await createInstance(ctx.instanceId, ctx.input || {});
         return { title: "Agent Review", status: "Architecture-to-source change review", url: instance.server.url };
     },
     onClose: async (ctx) => {
@@ -68,9 +94,15 @@ export const canvas = createCanvas({
 });
 
 function createReviewState(requestedPath, input) {
+    let target, recoveryError;
+    try { target = restoredReviewTarget(input.reviewTarget); }
+    catch (error) {
+        target = restoredReviewTarget(null);
+        recoveryError = error;
+    }
     const state = new ReviewState(requestedPath, {
         baseRef: input.baseRef,
-        reviewTarget: { mode: "none", label: "Choose review target", currentRef: null },
+        reviewTarget: target,
         // Re-read on every refresh so a base_ref added by a later commit or checkout takes effect.
         resolveBaseRef: async () => {
             if (input.baseRef) return input.baseRef;
@@ -87,10 +119,11 @@ function createReviewState(requestedPath, input) {
         workspacePath: session.workspacePath,
         reviewModelId: async () => selectedModelFromEvents(await session.getEvents()),
         createReviewRuntime: (modelId, options) => createExplanationRuntime(state.repoRoot, modelId, options),
+        listModels: () => listExplanationModels(state.repoRoot),
         generateDiscussion: async (context, { signal }) => generateIsolatedExplanation({
             workingDirectory: state.repoRoot, prompt: discussionPrompt(context),
             responseSchema: discussionSchema(context), sourceEvents: await session.getEvents(),
-            useFusion: state.useFusion,
+            ...state.aiRequestOptions(),
             verifyPrompt: (content) => buildDiscussionVerificationPrompt(context, content),
             signal, attempts: 1,
             validateResponse: (content) => {
@@ -106,6 +139,7 @@ function createReviewState(requestedPath, input) {
             runtimeClient,
             modelId,
             autoTier,
+            languageLevel: state.aiSettings.language,
             attempts: 1,
             validateResponse: (content) => validateReviewResponse(content, context),
         }),
@@ -116,7 +150,7 @@ function createReviewState(requestedPath, input) {
                 workingDirectory: state.repoRoot,
                 prompt: overview ? buildOverviewPrompt(context) : buildAnnotationPrompt(context),
                 sourceEvents: await session.getEvents(),
-                useFusion: state.useFusion,
+                ...state.aiRequestOptions(),
                 requiredHeadings: overview ? OVERVIEW_HEADINGS : annotationHeadings(context),
                 ...(!overview ? { verifyPrompt: (draft) => buildAnnotationVerificationPrompt(context, draft) } : {}),
             });
@@ -126,25 +160,26 @@ function createReviewState(requestedPath, input) {
             prompt: layerSummaryPrompt(context),
             responseSchema: layerSummarySchema(context),
             sourceEvents: await session.getEvents(),
-            useFusion: state.useFusion,
+            ...state.aiRequestOptions(),
             validateResponse: (content) => { validateLayerSummaries(content, context); return content; },
         }), context),
         generatePackageExplanation: async ({ dependency, assessment, usageContext }) => generateIsolatedExplanation({
             workingDirectory: state.repoRoot,
             prompt: buildPackagePrompt(dependency, assessment, usageContext),
             sourceEvents: await session.getEvents(),
-            useFusion: state.useFusion,
+            ...state.aiRequestOptions(),
             requiredHeadings: PACKAGE_HEADINGS,
         }),
         generateCustomAnalysis: async ({ prompt, context }) => generateIsolatedExplanation({
             workingDirectory: state.repoRoot,
             prompt: buildCustomAnalysisPrompt(prompt, context),
             sourceEvents: await session.getEvents(),
-            useFusion: state.useFusion,
+            ...state.aiRequestOptions(),
             requiredHeadings: CUSTOM_ANALYSIS_HEADINGS,
             validateResponse: (content) => validateCustomAnalysis(content, context),
         }),
     });
+    if (recoveryError) state.failInitialization(recoveryError);
     return state;
 }
 
@@ -152,8 +187,9 @@ function createInstance(instanceId, input, serverOptions = {}) {
     if (lifecycle.closed || lifecycle.closedInstances.has(instanceId)) {
         throw new CanvasError("canvas_not_open", "This Agent Review canvas has been closed.");
     }
-    const pending = buildInstance(instanceId, input, serverOptions)
-        .finally(() => pendingInstances.delete(instanceId));
+    const pending = buildInstance(instanceId, input, serverOptions).finally(() => {
+        if (pendingInstances.get(instanceId) === pending) pendingInstances.delete(instanceId);
+    });
     pendingInstances.set(instanceId, pending);
     return pending;
 }
@@ -195,22 +231,28 @@ async function buildInstance(instanceId, input, serverOptions) {
         await server.close();
         return existing;
     }
-    const persistMarker = () => writeCanvasMarker({
-        sessionId: session.sessionId,
-        instanceId,
-        port: server.port,
-        input: { repoPath: state.repoRoot,
-            baseRef: state.repositoryBaseOverride !== undefined ? state.repositoryBaseOverride : input.baseRef || null,
-            reviewTarget: state.reviewTarget },
-    });
-    const instance = { state, server, unsubscribeMarker: state.subscribe((event) => {
+    let markerWrite = Promise.resolve();
+    const persistMarker = () => {
+        const marker = {
+            sessionId: session.sessionId,
+            instanceId,
+            port: server.port,
+            input: { repoPath: state.repoRoot,
+                baseRef: state.repositoryBaseOverride !== undefined ? state.repositoryBaseOverride : input.baseRef || null,
+                reviewTarget: state.reviewTarget },
+        };
+        markerWrite = markerWrite.then(() => writeCanvasMarker(marker, providerDirectory))
+            .catch((error) => console.error("[agent-review] Unable to persist Canvas marker:", error));
+        return markerWrite;
+    };
+    const instance = { state, server, flushMarker: () => markerWrite, unsubscribeMarker: state.subscribe((event) => {
         if (event.type === "repository-changed") {
             for (const [key, value] of reviewStates) if (value === state) reviewStates.delete(key);
             const key = `${state.repoRoot}|${state.repositoryBaseOverride || ""}`;
             reviewStates.set(reviewStates.has(key) ? `${key}|${instanceId}` : key, state);
         }
-        if (["refreshed", "repository-changed"].includes(event.type)) {
-            persistMarker().catch((error) => console.error("[agent-review] Unable to persist review target:", error));
+        if (["refresh-started", "refreshed", "repository-changed"].includes(event.type)) {
+            persistMarker();
         }
     }) };
     instances.set(instanceId, instance);
@@ -227,7 +269,7 @@ async function buildInstance(instanceId, input, serverOptions) {
         await server.close();
         throw error;
     }
-    await persistMarker().catch((error) => console.error("[agent-review] Unable to persist Canvas marker:", error));
+    await persistMarker();
     if (!state.model && state.reviewTarget.mode === "none") {
         resolveRepoRoot(requestedPath)
             .then(async (repoRoot) => {
@@ -256,7 +298,7 @@ async function buildInstance(instanceId, input, serverOptions) {
 // which kills a Canvas server that is already open. Re-serve the same URL for any
 // Canvas this session had open so the page reconnects instead of staying stale.
 async function reclaimPersistedCanvases() {
-    const markers = await readCanvasMarkers(session.sessionId);
+    const markers = await readCanvasMarkers(session.sessionId, providerDirectory);
     await Promise.all(markers.map((marker) => {
         if (instances.has(marker.instanceId) || pendingInstances.has(marker.instanceId)) return null;
         return createInstance(marker.instanceId, marker.input || {}, {
@@ -269,6 +311,14 @@ async function reclaimPersistedCanvases() {
 export async function initialize(reviewSession) {
     session = reviewSession;
     lifecycle = new ReviewLifecycle(session, instances, reviewStates, pendingInstances);
+    try {
+        const { extensions } = await session.rpc.extensions.list();
+        const own = extensions.find((extension) => extension.pid === process.pid);
+        if (own) configureProvider(own.id);
+        else console.error("[agent-review] Provider identity unavailable; saved canvases will recover when reopened.");
+    } catch (error) {
+        console.error("[agent-review] Unable to identify provider; saved canvases will recover when reopened:", error.message);
+    }
     for (const signal of ["SIGTERM", "SIGINT"]) {
         process.once(signal, () => {
             lifecycle.dispose({ preserveMarkers: true }).then(() => process.exit(0)).catch((error) => {
@@ -278,5 +328,5 @@ export async function initialize(reviewSession) {
         });
     }
     await session.log("Agent Review canvas ready.", { ephemeral: true });
-    reclaimPersistedCanvases().catch((error) => console.error("[agent-review] Canvas reclaim failed:", error));
+    if (providerDirectory) reclaimPersistedCanvases().catch((error) => console.error("[agent-review] Canvas reclaim failed:", error));
 }
