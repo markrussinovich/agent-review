@@ -1,7 +1,7 @@
 {
   "name": "agent-review",
   "description": "Review agent-made changes with architecture, code paths, findings, and test evidence in a Copilot Canvas.",
-  "version": "0.1.0+e9e5aa5",
+  "version": "0.1.0+d63ab5d",
   "author": {
     "name": "Mark Russinovich",
     "url": "https://github.com/markrussinovich"
