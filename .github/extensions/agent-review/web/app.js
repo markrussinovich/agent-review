@@ -218,7 +218,7 @@ function renderWorkspaceShell() {
     elements.workspace_target.title = meta?.repo_root || "";
     elements.workspace_target.title = meta?.repo_root || "";
     const narrow = matchMedia("(max-width: 900px)").matches;
-    const drawer = reviewing && narrow && state.navigationOpen;
+    const drawer = reviewing && narrow && !state.sourceFocused && state.navigationOpen;
     elements.review_navigation.classList.toggle("hidden", !reviewing || Boolean(state.sourceFocused) || (narrow && !drawer));
     elements.workspace_nav_toggle.setAttribute("aria-expanded", String(Boolean(drawer)));
     elements.source_panel.inert = Boolean(drawer);
@@ -266,7 +266,7 @@ function captureReturnFocus() {
 const RETURN_FIELDS = ["reviewPage", "exploring", "mode", "selected", "source", "sourceTab", "readingPane", "discussionMode",
     "sourceFocused", "sourceFocusReturn", "areaGroup", "activeReviewGroup", "navigationMode", "navigationQuery", "navigationOpen", "navigationCursor",
     "query", "changedOnly", "detailVisible", "attribution", "attributionStatus", "attributionMessage", "workspaceReturn", "sourceReturnView",
-    "packageSelectionClosed", "sectionFocus", "sourceReturnFocus", "sourceOriginItemId"];
+    "packageSelectionClosed", "sectionFocus", "sourceReturnFocus", "sourceOriginItemId", "finishFilesOpen"];
 function captureViewReturn(kind = "view") {
     const visibleSource = !elements.source_panel.classList.contains("hidden");
     return {
@@ -293,6 +293,7 @@ async function restoreViewReturn(saved) {
     }
     state.selectionEpoch++;
     sourceRenderVersion++;
+    setSourceFocus(false);
     Object.assign(state, saved.values);
     state.stack = [...saved.stack];
     state.impact = saved.impact && { ...saved.impact };
@@ -322,8 +323,8 @@ function returnPreviousView({ close = false } = {}) {
     if (close) while (state.viewHistory.at(-1)?.kind === "level") state.viewHistory.pop();
     return restoreViewReturn(state.viewHistory.pop()).catch(showError);
 }
-function rememberSourceOrigin({ overview = false } = {}) {
-    if ((state.exploring || (overview && state.reviewPage !== "review")) && elements.source_panel.classList.contains("hidden")) {
+function rememberSourceOrigin() {
+    if ((state.exploring || state.reviewPage !== "review") && elements.source_panel.classList.contains("hidden")) {
         state.sourceReturnView = captureViewReturn();
         state.sourceHistory = { entries: [], index: -1, pending: -1 };
     }
@@ -411,6 +412,7 @@ elements.workflow_finish.addEventListener("click", () => openFinishReview());
 elements.workspace_return_source.addEventListener("click", () => returnWorkspaceSource({ code: true }).catch(showError));
 elements.workspace_find.addEventListener("click", openReviewCommands);
 elements.workspace_nav_toggle.addEventListener("click", () => {
+    if (!state.navigationOpen && state.sourceFocused) setSourceFocus(false);
     state.navigationOpen = !state.navigationOpen;
     renderWorkspaceShell();
     if (state.navigationOpen) elements.workspace_search.focus();
@@ -467,6 +469,7 @@ for (const [button, mode] of [[elements.explore_priorities, "walkthrough"], [ele
 for (const [button, pane] of [[elements.workspace_code, "code"], [elements.workspace_context, "context"]]) {
     button.addEventListener("click", () => {
         const scroll = sourceScrollPosition();
+        if (pane === "context" && state.sourceFocused) setSourceFocus(false);
         state.readingPane = pane;
         renderWorkspaceShell();
         if (pane === "code") {
@@ -769,9 +772,9 @@ function renderWorkspaceNavigation() {
 }
 
 async function openWorkspaceFile(file, group = null) {
+    rememberSourceOrigin();
     rememberCurrentSource();
-    state.viewHistory = [];
-    state.sourceReturnView = null;
+    if (!state.sourceReturnView) state.viewHistory = [];
     state.reviewPage = "review";
     state.exploring = false;
     state.readingPane = "code";
@@ -864,8 +867,10 @@ function setSourceFocus(active) {
     elements.source_focus.setAttribute("aria-pressed", String(active));
     elements.source_focus.textContent = active ? "Exit focus" : "Focus code";
     elements.source_focus.title = active ? "Exit focus mode (F or Esc)" : "Hide the rail and context; keep Mark & next (F)";
-    if (active) state.readingPane = "code";
-    else if (previous) state.readingPane = previous.pane;
+    if (active) {
+        state.readingPane = "code";
+        state.navigationOpen = false;
+    } else if (previous) state.readingPane = previous.pane;
     renderWorkspaceShell();
     if (previous) elements.source_panel.querySelector(".source-side").scrollTop = previous.side;
 }
@@ -2164,6 +2169,8 @@ function renderFinishReview() {
         }
     } else for (const file of uniqueReviewFiles()) list.append(fileButton(file, null));
     const details = el("details", "");
+    details.open = Boolean(state.finishFilesOpen);
+    details.addEventListener("toggle", () => { if (details.isConnected) state.finishFilesOpen = details.open; });
     details.append(el("summary", "", "All file decisions"), list);
     panel.append(details);
     const pr = state.prReview;
@@ -2553,6 +2560,7 @@ function openSections(location = null) {
         return;
     }
     if (state.reviewPage === "review" && !state.exploring) {
+        if (state.sourceFocused) setSourceFocus(false);
         state.navigationMode = "groups";
         state.navigationKey = null;
         state.navigationQuery = "";
@@ -3491,7 +3499,7 @@ function ruleCitations(content, path) {
 }
 
 async function openRuleFile(path, ranges, side = "current") {
-    rememberSourceOrigin({ overview: true });
+    rememberSourceOrigin();
     rememberCurrentSource();
     const epoch = ++state.selectionEpoch;
     try {
@@ -3789,9 +3797,10 @@ function renderSourceNavigation() {
     const history = state.sourceHistory;
     const back = history.entries[history.index - 1];
     const forward = history.entries[history.index + 1];
-    elements.source_back.disabled = !back;
+    const origin = state.sourceReturnView;
+    elements.source_back.disabled = !back && !origin;
     elements.source_forward.disabled = !forward;
-    elements.source_back.title = back ? `Back to ${back.label} (Alt+←)` : "Back (Alt+←)";
+    elements.source_back.title = back || origin ? `Back to ${(back || origin).label} (Alt+←)` : "Back (Alt+←)";
     elements.source_forward.title = forward ? `Forward to ${forward.label} (Alt+→)` : "Forward (Alt+→)";
 }
 
@@ -3799,7 +3808,10 @@ async function navigateSource(delta) {
     const history = state.sourceHistory;
     const target = history.index + delta;
     const entry = history.entries[target];
-    if (!entry) return;
+    if (!entry) {
+        if (delta < 0 && state.sourceReturnView) return restoreViewReturn(state.sourceReturnView).catch(showError);
+        return;
+    }
     rememberCurrentSource();
     history.pending = target;
     const epoch = ++state.selectionEpoch;
@@ -4188,7 +4200,7 @@ function sourceReferenceButton(label, reference, title = null) {
 }
 
 async function openSourceReference(reference, { focus = false, tab = reference.side || "current", nav = "push" } = {}) {
-    rememberSourceOrigin({ overview: true });
+    rememberSourceOrigin();
     rememberCurrentSource();
     rememberSourceReturnFocus();
     const epoch = ++state.selectionEpoch;
@@ -5800,7 +5812,7 @@ function collectionTitle(mode) {
     if (mode === "areas") return state.areaGroup?.title || "Large change areas";
     return {
         impact: "Change impact", sections: "Review sections",
-        walkthrough: "Attention",
+        walkthrough: "Attention", graph: "Architecture",
         files: "Changed files", lines: "Lines changed by file", symbols: "Changed symbols",
         edges: "New relationships", packages: "Package changes", findings: "Ranked findings",
         decisions: "Code path changes",
@@ -8080,6 +8092,7 @@ function resetReviewNavigation() {
     state.viewHistory = [];
     state.sourceReturnView = null;
     state.packageSelectionClosed = false;
+    state.finishFilesOpen = false;
     state.annotationDisclosures.clear();
     state.annotationView = null;
     state.annotationGeneration = null;
