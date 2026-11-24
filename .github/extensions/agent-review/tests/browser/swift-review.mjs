@@ -58,7 +58,7 @@ try {
     state = new ReviewState(repo, {
         baseRef: process.env.AGENT_REVIEW_UX_BASE || "HEAD", getSessionEvents: async () => [],
         getHistoricalSessionContexts: async () => ({ contexts: [], failures: [] }),
-        generateAnnotation: async () => "## Summary\n\n- The saved Swift threshold changed.\n\n## Review order\n\n- Follow source-backed callers and inferred tests.\n\n## Gaps\n\n- Compiler semantics and per-test path evidence are unavailable.",
+        generateAnnotation: async () => "## Summary\n\n- Browser validation uses controlled AI text, not a semantic assessment of this change.\n\n## Review order\n\n- Inspect the saved source, source-backed callers and inferred tests.\n\n## Gaps\n\n- Compiler semantics and per-test path evidence are unavailable.",
         generatePackageExplanation: async () => "## Evidence\n\n- A literal SwiftPM declaration and saved lock pin are separate evidence.\n\n## Limits\n\n- No manifest was evaluated and no public-registry risk assessment was performed.",
     });
     await state.refresh();
