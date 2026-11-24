@@ -2352,7 +2352,7 @@ export class ReviewState {
         }
         const declared = dependency.declared_current?.map((item) => item.specifier).filter(Boolean) || [];
         const resolutionError = dependency.declared_current?.find((item) => item.resolution_error)?.resolution_error;
-        if (resolutionError) throw new Error(resolutionError);
+        if (resolutionError && dependency.ecosystem !== "swiftpm") throw new Error(resolutionError);
         const exactPins = [...new Set(declared
             .map((value) => /^(?:===|==)\s*([^*,;<>=\s]+)$/.exec(value)?.[1])
             .filter(Boolean))];
@@ -2363,7 +2363,7 @@ export class ReviewState {
         }
         if (requestedVersion && requestedVersion !== version) throw new Error(`Requested version ${requestedVersion} does not match the reviewed project version ${name}@${version}.`);
         const packageEcosystem = dependency.ecosystem || "pypi";
-        if (!["npm", "nuget", "pypi", "gomod", "cargo"].includes(packageEcosystem)) {
+        if (!["npm", "nuget", "pypi", "gomod", "cargo", "swiftpm"].includes(packageEcosystem)) {
             throw new Error(`Package assessment for ${packageEcosystem} is not implemented.`);
         }
         const cacheKey = `${packageEcosystem === "pypi" ? "" : `${packageEcosystem}:`}${name}@${version ?? "<unresolved>"}`;
@@ -2392,6 +2392,12 @@ export class ReviewState {
     // Public-registry indicators are fast and independent of the slower Copilot explanation.
     packageAssessmentFor(cacheKey, name, version, ecosystem = "pypi") {
         if (this.disposed) return Promise.reject(new Error("This review has been closed."));
+        if (ecosystem === "swiftpm") return Promise.resolve({
+            name, version, ecosystem, sources: {}, indicators: {},
+            risk: { level: "unknown", reasons: [
+                "SwiftPM support includes saved declarations and lock evidence only. Public-registry and vulnerability assessment is not implemented; no registry was queried.",
+            ] },
+        });
         if (this.packageAssessments.has(cacheKey)) return Promise.resolve(this.packageAssessments.get(cacheKey));
         if (!this.packageAssessmentPromises.has(cacheKey)) {
             const generation = this.reviewGeneration;

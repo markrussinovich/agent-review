@@ -58,6 +58,8 @@ export function describeAnalysisWarning(warning, model) {
     const configuration = /^configuration incomplete;/.test(message);
     const rustSyntax = /^Rust saved-syntax analysis does not expand macros/.test(message);
     const rustCoverage = /^Rust coverage ignored:/.test(message);
+    const swiftSyntax = /^Swift Tree-sitter analysis uses saved syntax only/.test(message);
+    const swiftCoverage = /^Swift coverage ignored:/.test(message);
     const adapterFailure = /^(.+?) facts unavailable: (dependencies|scan|package usage|coverage) failed: (.*?)(?: Graph, package usage and coverage facts for this language were omitted; source diffs remain available\.)?$/.exec(text);
     const subject = adapterFailure?.[1] || call?.[1] || module?.[1] || heritage?.[1] || packageReference?.[1] || null;
     const kind = call ? "Unresolved call" : module ? "Unresolved import" : heritage ? "Unresolved inheritance"
@@ -65,7 +67,9 @@ export function describeAnalysisWarning(warning, model) {
             : configuration ? "Project configuration partially analyzed"
                 : rustSyntax ? "Rust syntax analysis is conservative"
                     : rustCoverage ? "Rust coverage unavailable"
-                        : adapterFailure ? "Language facts unavailable" : "Analyzer note";
+                        : swiftSyntax ? "Swift syntax analysis is conservative"
+                            : swiftCoverage ? "Swift coverage unavailable"
+                                : adapterFailure ? "Language facts unavailable" : "Analyzer note";
     const explanation = adapterFailure
         ? "This language's analysis did not complete. Its graph, package and coverage facts were omitted together; other languages and saved source diffs remain reviewable. Missing facts are not successful zero-usage or zero-coverage results."
         : call
@@ -80,6 +84,8 @@ export function describeAnalysisWarning(warning, model) {
                         : configuration ? "Only supported literal project settings and saved source files were analyzed. MSBuild was not run, so the resulting graph may be incomplete."
                             : rustSyntax ? "Analysis uses only saved Rust syntax and never runs Cargo or rustc. Macro-generated, cfg-selected, build-script-generated, and type-directed relationships may be incomplete."
                                 : rustCoverage ? "Rust LCOV is accepted only with metadata proving the exact reviewed revision and SHA-256 of each saved source file."
+                                    : swiftSyntax ? "The bundled Swift grammar requires no Swift/Xcode installation. Relationships are inferred from saved syntax; macros, conditional compilation, compiler semantics and concurrency correctness remain unknown."
+                                        : swiftCoverage ? "Swift LCOV requires an exact revision, complete Swift/package source hashes, and a hash of the report. Aggregate coverage does not confirm a test-to-path relationship."
                 : null;
     return { raw, message: adapterFailure ? `${adapterFailure[2]} failed: ${adapterFailure[3]}` : message, subject, kind, explanation,
         ...(adapterFailure ? { adapter_unavailable: true } : {}), snapshot, framework: project?.[2] || null,

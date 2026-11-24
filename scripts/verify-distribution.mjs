@@ -29,6 +29,12 @@ export async function verifyDistribution(extension) {
         "Bundled C grammar did not analyze the snapshot.");
     assert(cpp.symbols.some((symbol) => symbol.kind === "method" && symbol.qualname === "Item::get"),
         "Bundled C++ grammar did not analyze the snapshot.");
+    const { analyzeSwiftSnapshot } = await import(pathToFileURL(join(extension, "swift-analyzer.mjs")));
+    const swift = await analyzeSwiftSnapshot({ baseline: { "App.swift": "func score() -> Int { return 1 }" },
+        current: { "App.swift": "func score() -> Int { return 2 }" } });
+    assert(swift.symbols.some((symbol) => symbol.name === "score" && symbol.classification === "modified"),
+        "Bundled Swift WASM grammar did not analyze the snapshot.");
+    await access(join(extension, "swift-grammar-LICENSE.txt"));
 
     const helper = join(extension, "dotnet-analyzer", "bin", "Release", "net10.0", "AgentReview.Dotnet.dll");
     for (const name of ["Microsoft.CodeAnalysis.dll", "Microsoft.CodeAnalysis.CSharp.dll"]) {
@@ -63,7 +69,7 @@ print("Bundled Python-to-Roslyn bridge passed.")
     assert(python, "Python 3.11+ was not found.");
     console.log(stdout.trim());
     console.log(python.stdout.trim());
-    console.log("Prepared distribution passed Node, C/C++, C#, and Python bridge checks.");
+    console.log("Prepared distribution passed Node, C/C++, Swift, C#, and Python bridge checks.");
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

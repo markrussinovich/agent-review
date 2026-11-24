@@ -81,6 +81,10 @@ def active_adapters(
 
         if CPP_ADAPTER.applies(paths):
             adapters = (*adapters, CPP_ADAPTER)
+        from swift_adapter import SWIFT_ADAPTER
+
+        if SWIFT_ADAPTER.applies(paths):
+            adapters = (*adapters, SWIFT_ADAPTER)
     ids = [adapter.id for adapter in adapters]
     if len(ids) != len(set(ids)):
         raise ValueError("Language adapters must have unique IDs.")

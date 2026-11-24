@@ -38,7 +38,7 @@ export async function buildDistribution({
             sdk: { version: sdk[1], rollForward: "disable" },
         }));
         for (const entry of await readdir(sourceRoot, { withFileTypes: true })) {
-            if (entry.isFile() && /\.(?:mjs|json)$/.test(entry.name)) {
+            if (entry.isFile() && (/\.(?:mjs|json)$/.test(entry.name) || entry.name === "swift-grammar-LICENSE.txt")) {
                 await cp(join(sourceRoot, entry.name), join(extension, entry.name));
             }
         }
@@ -66,7 +66,9 @@ export async function buildDistribution({
         }
         await cp(join(tooling, "node_modules"), join(extension, "node_modules"), {
             recursive: true,
-            filter: (path) => ![".bin", ".package-lock.json"].includes(path.split(sep).at(-1)),
+            filter: (path) => ![".bin", ".package-lock.json"].includes(path.split(sep).at(-1))
+                && !(path.includes(join("@repomix", "tree-sitter-wasms", "out")) && path.endsWith(".wasm")
+                    && !path.endsWith("tree-sitter-swift.wasm")),
         });
 
         const helper = join(scratch, "helper");

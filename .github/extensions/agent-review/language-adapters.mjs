@@ -5,11 +5,12 @@ import { GO_REVIEW_ADAPTER } from "./go-review-adapter.mjs";
 import { RUST_REVIEW_ADAPTER } from "./rust-review-adapter.mjs";
 import { MARKDOWN_REVIEW_ADAPTER } from "./markdown-review-adapter.mjs";
 import { CPP_REVIEW_ADAPTER } from "./cpp-review-adapter.mjs";
+import { SWIFT_REVIEW_ADAPTER } from "./swift-review-adapter.mjs";
 import { languageForPath } from "./web/languages.mjs";
 
 export const REVIEW_ADAPTERS = Object.freeze([
     PYTHON_REVIEW_ADAPTER, NODE_REVIEW_ADAPTER, DOTNET_REVIEW_ADAPTER, GO_REVIEW_ADAPTER, RUST_REVIEW_ADAPTER,
-    MARKDOWN_REVIEW_ADAPTER, CPP_REVIEW_ADAPTER,
+    MARKDOWN_REVIEW_ADAPTER, CPP_REVIEW_ADAPTER, SWIFT_REVIEW_ADAPTER,
 ]);
 
 export function reviewAdapter(id = "python") {
@@ -45,9 +46,11 @@ export function mergeCodePathMaps(maps) {
         adapter_ids: maps.map((map) => map.adapter_id),
         callables: [], totals: {}, limited: false, warnings: [], elapsed_ms: 0,
         verification: { tests: [], omitted_tests: 0, test_files_examined: 0, limited: false },
+        source_hashes_by_adapter: {},
     };
     const callableIds = new Set();
     for (const map of maps) {
+        if (map.source_hashes) result.source_hashes_by_adapter[map.adapter_id] = map.source_hashes;
         for (const callable of map.callables || []) {
             if (callableIds.has(callable.id)) throw new Error(`Language adapters produced a duplicate callable ID: ${callable.id}.`);
             callableIds.add(callable.id);

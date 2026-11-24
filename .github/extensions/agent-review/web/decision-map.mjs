@@ -162,6 +162,8 @@ export function scopeDecisionMap(map, paths) {
     // A multi-language map narrows to the languages this layer actually contains, so a one-language layer can run.
     const adapters = map.adapter_ids ? [...new Set([...callables, ...tests].map((item) => item.adapter_id).filter(Boolean))] : null;
     return { ...map, callables, verification: map.verification ? { ...map.verification, tests, omitted_tests: 0 } : map.verification,
+        ...(adapters?.length === 1 && map.source_hashes_by_adapter?.[adapters[0]]
+            ? { source_hashes: map.source_hashes_by_adapter[adapters[0]] } : {}),
         ...(adapters ? adapters.length === 1 ? { adapter_ids: undefined, adapter_id: adapters[0] } : { adapter_ids: adapters.length ? adapters : map.adapter_ids } : {}) };
 }
 
@@ -232,7 +234,7 @@ export function callablesForSubject(map, model, subject) {
         return map.callables.filter((item) => item.id === subject.id);
     }
     if (["class", "interface", "struct", "union", "enum", "trait", "record", "namespace", "type"].includes(subject.kind || subject.type)) {
-        if (["csharp", "rust", "cpp"].includes(subject.language)) {
+        if (["csharp", "rust", "cpp", "swift"].includes(subject.language)) {
             const descendants = new Set([subject.id]);
             let size;
             do {

@@ -4,6 +4,8 @@
   "venv",
   "__pycache__",
   "node_modules",
+  ".build",
+  ".swiftpm",
   ".tox",
   ".mypy_cache",
   ".pytest_cache",

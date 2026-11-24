@@ -8,7 +8,7 @@ export async function openChangeDetails(page) {
 }
 
 export async function openReviewTool(page, tool) {
-    const menu = page.locator(".workspace-explore");
+    const menu = page.locator(".workspace-explore").filter({ has: page.locator("#explore-architecture") });
     await menu.waitFor();
     await menu.evaluate((element) => { element.open = true; });
     await page.locator(`#explore-${tool}`).click();

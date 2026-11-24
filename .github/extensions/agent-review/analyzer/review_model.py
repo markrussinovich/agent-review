@@ -14,7 +14,7 @@ def stable_id(kind: str, *parts: object) -> str:
 
 def _package_key(item: dict[str, Any]) -> tuple[str, str]:
     ecosystem = item.get("ecosystem", "pypi")
-    return ecosystem, item["name"].lower() if ecosystem in {"nuget", "cargo"} else item["name"]
+    return ecosystem, item["name"].lower() if ecosystem in {"nuget", "cargo", "swiftpm"} else item["name"]
 
 
 def _package_id(key: tuple[str, str]) -> str:
@@ -29,10 +29,19 @@ def _package_metadata(key: tuple[str, str]) -> dict[str, str]:
         return {"ecosystem": key[0], "language": "go", "identity": key[1]}
     if key[0] == "cargo":
         return {"ecosystem": key[0], "language": "rust", "identity": key[1]}
+    if key[0] == "swiftpm":
+        return {"ecosystem": key[0], "language": "swift", "identity": key[1]}
     return {"ecosystem": key[0]} if key[0] != "pypi" else {}
 
 
 def _resolved_package_version(declarations: list[dict[str, Any]]) -> str | None:
+    if declarations and declarations[0].get("ecosystem") == "swiftpm":
+        if any(item.get("resolution_error") for item in declarations):
+            return None
+        pins = [item for item in declarations if item.get("evidence_kind") == "lock"]
+        versions = {item.get("resolved_version") for item in pins}
+        locations = {item.get("location") for item in pins}
+        return next(iter(versions)) if len(versions) == len(locations) == 1 and None not in versions else None
     if declarations and declarations[0].get("ecosystem") in ("nuget", "npm", "gomod", "cargo"):
         if any(item.get("resolution_error") for item in declarations):
             return None
@@ -48,7 +57,7 @@ def resolved_package_version(declarations: list[dict[str, Any]]) -> str | None:
 def _symbol_metadata(item: dict[str, Any]) -> dict[str, Any]:
     metadata = {key: item[key] for key in ("language", "ecosystem", "dialect", "conditions", "relationships_incomplete") if key in item}
     if (
-        item.get("language") in {"csharp", "go", "rust", "cpp"}
+        item.get("language") in {"csharp", "go", "rust", "cpp", "swift"}
         or str(item.get("path", "")).lower().endswith((".cs", ".go", ".rs"))
     ) and "identity" in item:
         metadata["identity"] = item["identity"]
@@ -78,11 +87,18 @@ def _is_cpp_symbol(node: dict[str, Any]) -> bool:
         "namespace", "struct", "union", "enum", "type", "constructor", "destructor", "operator", "lambda",
     }
 
+def _is_swift_symbol(node: dict[str, Any]) -> bool:
+    return node.get("language") == "swift" and node["type"] in {
+        "struct", "enum", "actor", "protocol", "extension", "type", "property",
+        "constructor", "destructor", "accessor", "closure",
+    }
+
 
 def _is_callable_node(node: dict[str, Any]) -> bool:
     return node["type"] in ("function", "method") or (
         (node.get("language") == "csharp" and node["type"] in ("property", "constructor", "operator", "accessor"))
         or (node.get("language") == "cpp" and node["type"] in ("constructor", "destructor", "operator", "lambda"))
+        or (node.get("language") == "swift" and node["type"] in ("constructor", "destructor", "accessor", "closure"))
     )
 
 
@@ -174,7 +190,7 @@ class ReviewModel:
         changed_symbols = [
             node for node in nodes
             if (node["type"] in ("class", "function", "method") or _is_csharp_symbol(node)
-                or _is_go_symbol(node) or _is_rust_symbol(node) or _is_cpp_symbol(node))
+                or _is_go_symbol(node) or _is_rust_symbol(node) or _is_cpp_symbol(node) or _is_swift_symbol(node))
             and node["change"] != "unchanged"
         ]
         changed_modules = [
@@ -216,6 +232,7 @@ class ReviewModel:
                 **({"go_loc": self.repository["go_loc"]} if "go_loc" in self.repository else {}),
                 **({"rust_loc": self.repository["rust_loc"]} if "rust_loc" in self.repository else {}),
                 **({"cpp_loc": self.repository["cpp_loc"]} if "cpp_loc" in self.repository else {}),
+                **({"swift_loc": self.repository["swift_loc"]} if "swift_loc" in self.repository else {}),
                 **(
                     {"review_languages": self.repository["review_languages"]}
                     if "review_languages" in self.repository
@@ -505,7 +522,7 @@ class ReviewModel:
         baseline = {_package_key(item) for item in self.packages["baseline"]}
         current = {_package_key(item) for item in self.packages["current"]}
         for key in changes:
-            if key[0] in {"nuget", "gomod", "cargo"}:
+            if key[0] in {"nuget", "gomod", "cargo", "swiftpm"}:
                 changes[key] = (
                     "version_changed" if key in baseline and key in current
                     else "added" if key in current else "removed"
@@ -515,7 +532,7 @@ class ReviewModel:
     @staticmethod
     def _declared_package_text(declarations: list[dict[str, Any]]) -> str:
         return ", ".join(
-            f"{item['name']}{' ' if item.get('ecosystem') in ('nuget', 'npm', 'gomod', 'cargo') and item.get('specifier') else ''}{item.get('specifier', '')}"
+            f"{item['name']}{' ' if item.get('ecosystem') in ('nuget', 'npm', 'gomod', 'cargo', 'swiftpm') and item.get('specifier') else ''}{item.get('specifier', '')}"
             for item in declarations
         )
 
@@ -589,7 +606,7 @@ class ReviewModel:
                 )
             if metrics["lines_changed"] >= 25 and (
                 node["type"] in ("module", "class", "function", "method")
-                or _is_csharp_symbol(node) or _is_go_symbol(node) or _is_rust_symbol(node) or _is_cpp_symbol(node)
+                or _is_csharp_symbol(node) or _is_go_symbol(node) or _is_rust_symbol(node) or _is_cpp_symbol(node) or _is_swift_symbol(node)
             ):
                 node["_size_evidence"] = self.add_evidence(
                     "line_delta", {"path": node["path"], "line": node["start_line"],
@@ -646,7 +663,7 @@ class ReviewModel:
             )
             append_finding(
                 node, "signature", "_signature_evidence",
-                "Public symbol contract changed" if _is_csharp_symbol(node) or _is_go_symbol(node) or _is_rust_symbol(node) or _is_cpp_symbol(node)
+                "Public symbol contract changed" if _is_csharp_symbol(node) or _is_go_symbol(node) or _is_rust_symbol(node) or _is_cpp_symbol(node) or _is_swift_symbol(node)
                 else "Public callable contract changed",
                 f"{node['name']} changed its signature with {callers} direct or transitive callers to verify.",
                 50 + min(32, callers * 3),

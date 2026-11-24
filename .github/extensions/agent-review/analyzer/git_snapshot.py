@@ -315,8 +315,8 @@ class Snapshot:
         result: dict[str, dict[str, object]] = {}
         retain_baseline = any(
             path.lower().endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".go", ".rs", ".md",
-                                  ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".ipp", ".tpp", ".inl"))
-            or path.rsplit("/", 1)[-1] in {"package.json", "go.mod", "go.sum", "Cargo.toml", "Cargo.lock"}
+                                  ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".ipp", ".tpp", ".inl", ".swift"))
+            or path.rsplit("/", 1)[-1] in {"package.json", "go.mod", "go.sum", "Cargo.toml", "Cargo.lock", "Package.resolved"}
             for path in set(self.baseline) | set(self.current)
         )
         for change in changes:

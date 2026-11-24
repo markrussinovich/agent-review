@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@repomix/tree-sitter-wasms": "0.1.17",
     "tree-sitter-c": "0.24.1",
     "tree-sitter-cpp": "0.23.4",
     "typescript": "5.9.3",

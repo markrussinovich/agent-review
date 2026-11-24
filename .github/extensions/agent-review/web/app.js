@@ -1301,6 +1301,7 @@ function renderSummary(model) {
     if (meta.go_loc !== undefined) coverageOptions.push("a Go coverprofile with coverage.sources.json hashes");
     if (meta.rust_loc !== undefined) coverageOptions.push("LCOV plus rust-coverage.json with the exact revision and SHA-256 source hashes");
     if (meta.cpp_loc !== undefined) coverageOptions.push("LCOV plus cpp-coverage.json with the exact revision and SHA-256 source hashes");
+    if (meta.swift_loc !== undefined) coverageOptions.push("LCOV plus swift-coverage.json with the exact revision, complete Swift/package input hashes and report_sha256");
     if (meta.python_loc || !coverageOptions.length) coverageOptions.push("Python coverage.json/coverage.xml");
     if (meta.csharp_loc !== undefined) coverageOptions.push("saved Coverlet Cobertura XML");
     const coveragePrerequisite = `Provide ${coverageOptions.join(" or ")}`;
@@ -1343,7 +1344,7 @@ function renderSummary(model) {
         details.addEventListener("click", openLimitations);
         elements.overview_limitation.append(el("strong", "", title), el("span", "", qualityIssues.join(" ")), details);
     }
-    elements.summary.title = `${meta.base_ref || "base"} @ ${(meta.base_sha || "").slice(0, 8)} → ${(meta.head_sha || "").slice(0, 8)} · ${meta.python_loc || 0} Python LOC${meta.node_loc !== undefined ? ` · ${meta.node_loc} JavaScript/TypeScript LOC` : ""}${meta.csharp_loc != null ? ` · ${meta.csharp_loc} C# LOC` : ""}${meta.go_loc != null ? ` · ${meta.go_loc} Go LOC` : ""}${meta.rust_loc != null ? ` · ${meta.rust_loc} Rust LOC` : ""}${meta.cpp_loc != null ? ` · ${meta.cpp_loc} C/C++ LOC` : ""}`;
+    elements.summary.title = `${meta.base_ref || "base"} @ ${(meta.base_sha || "").slice(0, 8)} → ${(meta.head_sha || "").slice(0, 8)} · ${meta.python_loc || 0} Python LOC${meta.node_loc !== undefined ? ` · ${meta.node_loc} JavaScript/TypeScript LOC` : ""}${meta.csharp_loc != null ? ` · ${meta.csharp_loc} C# LOC` : ""}${meta.go_loc != null ? ` · ${meta.go_loc} Go LOC` : ""}${meta.rust_loc != null ? ` · ${meta.rust_loc} Rust LOC` : ""}${meta.cpp_loc != null ? ` · ${meta.cpp_loc} C/C++ LOC` : ""}${meta.swift_loc != null ? ` · ${meta.swift_loc} Swift LOC` : ""}`;
 }
 
 function evidenceLabel(id) {
@@ -5304,7 +5305,7 @@ function layerVerifyBlock(layer) {
         actions.append(cancel);
     }
     block.append(actions);
-    const traced = plan && !["csharp", "rust", "cpp"].includes(plan.adapter_id);
+    const traced = plan && !["csharp", "rust", "cpp", "swift"].includes(plan.adapter_id);
     if (traced && status.ran && !status.stale) {
         const legend = el("p", "muted layer-verify-note trace-legend");
         for (const [kind, text] of [["passed", "a linked test ran this changed path"], ["missed", "no linked test reached it"], ["failing", "only failing tests ran it"]]) {
@@ -6339,7 +6340,7 @@ function renderVerificationBar(map, { compact = false, callables = null } = {}) 
     const button = el("button", "verification-run-button", run?.status === "running" ? "Running…" : "Run linked tests");
     button.type = "button";
     button.disabled = run?.status === "running" || !plan?.available;
-    button.title = plan?.available ? `Runs ${countLabel(plan.tests.length, "linked test")}${["csharp", "rust", "cpp"].includes(plan.adapter_id) ? " with test outcomes (no per-test path tracing)" : " with line tracing"}: ${plan.command}` : plan?.reason || "Checking linked tests…";
+    button.title = plan?.available ? `Runs ${countLabel(plan.tests.length, "linked test")}${["csharp", "rust", "cpp", "swift"].includes(plan.adapter_id) ? " with test outcomes (no per-test path tracing)" : " with line tracing"}: ${plan.command}` : plan?.reason || "Checking linked tests…";
     button.addEventListener("click", async () => {
         button.disabled = true;
         try {
@@ -6856,7 +6857,7 @@ function renderPackageView(model) {
             heading,
             el("small", "", `${item.ecosystem === "nuget" ? "NuGet · "
                 : item.ecosystem === "gomod" ? "Go module · "
-                    : item.ecosystem === "cargo" ? "Cargo · " : ""}${packageVersionText(item)}${
+                    : item.ecosystem === "cargo" ? "Cargo · " : item.ecosystem === "swiftpm" ? "SwiftPM · " : ""}${packageVersionText(item)}${
                 item.change === "removed" ? "" : usage ? ` · used in ${countLabel(usage, "file")}`
                     : lockedParents.length ? ` · required by ${countLabel(lockedParents.length, "locked package")}`
                         : item.ecosystem === "nuget" ? " · usage unresolved" : " · no usages found"}`),
@@ -6967,7 +6968,7 @@ function renderPackagePanel() {
         el("p", "muted", [
             item.ecosystem === "nuget" ? "NuGet"
                 : item.ecosystem === "gomod" ? "Go module"
-                    : item.ecosystem === "cargo" ? "Cargo" : null,
+                    : item.ecosystem === "cargo" ? "Cargo" : item.ecosystem === "swiftpm" ? "SwiftPM" : null,
             `Version ${packageVersionText(item)}`,
             item.ecosystem ? `${item.ecosystem} ecosystem` : null,
             declared?.source ? `declared in ${declared.source}` : null,
@@ -6976,7 +6977,9 @@ function renderPackagePanel() {
     );
     const packageDescription = assessment?.indicators?.provenance?.summary;
     header.append(el("p", `package-description${packageDescription ? "" : " muted"}`,
-        packageDescription || (entry.assessmentError
+        packageDescription || (item.ecosystem === "swiftpm"
+            ? "Snapshot evidence only: literal Package.swift declarations and saved Package.resolved pins. No manifest evaluation or public-registry assessment."
+            : entry.assessmentError
             ? "Package description unavailable because registry metadata could not be loaded."
             : assessment
                 ? "No package description was provided by the public registry."
@@ -6988,7 +6991,7 @@ function renderPackagePanel() {
     else declaration.append(document.createTextNode("the package manifest"));
     declaration.append(document.createTextNode(". Manifest changes are reviewed even when no static usage is resolved."));
     sections.push(declaration);
-    if (["nuget", "gomod", "cargo"].includes(item.ecosystem)) {
+    if (["nuget", "gomod", "cargo", "swiftpm"].includes(item.ecosystem)) {
         const declarations = el("ul", "usage-list");
         for (const entry of item.declared_current?.length ? item.declared_current : item.declared_base || []) {
             const row = el("li", "");
@@ -7024,10 +7027,14 @@ function renderPackagePanel() {
                     ? document.createTextNode(` · ${entry.lock_package_source}`) : document.createTextNode(""));
             }
             if (entry.resolution_error) row.append(el("small", "muted", ` · ${entry.resolution_error}`));
+            if (item.ecosystem === "swiftpm") {
+                row.append(el("small", "muted", ` · ${entry.declaration_note || "Saved evidence"}${entry.locked_revision ? ` Revision ${entry.locked_revision}.` : ""}`));
+            }
             declarations.append(row);
         }
         sections.push(packageSection(item.ecosystem === "gomod" ? "Saved Go module declarations"
-            : item.ecosystem === "cargo" ? "Saved Cargo declarations" : "Saved project declarations", declarations));
+            : item.ecosystem === "cargo" ? "Saved Cargo declarations"
+                : item.ecosystem === "swiftpm" ? "SwiftPM declarations and lock evidence" : "Saved project declarations", declarations));
     }
 
     if (item.change === "removed") {
@@ -7054,6 +7061,7 @@ function renderPackagePanel() {
             : item.ecosystem === "nuget" ? "Checking NuGet metadata and OSV for the saved project version…"
                 : item.ecosystem === "gomod" ? "Checking Go proxy metadata and OSV for the saved module version…"
                 : item.ecosystem === "cargo" ? "Checking crates.io metadata and OSV for the exact saved Cargo.lock version…"
+                : item.ecosystem === "swiftpm" ? "Reading saved SwiftPM dependency evidence; public-registry assessment is unavailable."
                 : "Checking PyPI, OSV, OpenSSF Scorecard, and download statistics…"));
     }
 
@@ -7119,7 +7127,7 @@ function renderPackagePanel() {
                 : "No static import was mapped to this declaration. This is a manifest change, not an observed import. Verify why the dependency is needed: it may support tooling, dynamic loading, use a different import name, or be unused."),
     ));
 
-    if (assessment) {
+    if (assessment && item.ecosystem !== "swiftpm") {
         const indicators = assessment.indicators || {};
         const maintenance = indicators.maintenance || {};
         const vulns = indicators.known_vulnerabilities || [];

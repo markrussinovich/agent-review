@@ -179,7 +179,7 @@ export function buildAnnotationVerificationPrompt(context, draft) {
 export function buildPackagePrompt(dependency, assessment, usageContext = {}) {
     return [
         INTERNAL_MARKER,
-        `A human is reviewing an AI agent's change that adds, changes, or removes ${{ npm: "npm", nuget: "NuGet", gomod: "Go module", cargo: "Cargo crate" }[dependency.ecosystem] || "Python"} package ${dependency.name} ${assessment.version || "(exact project version unknown)"}. Write a scan-friendly briefing.`,
+        `A human is reviewing an AI agent's change that adds, changes, or removes ${{ npm: "npm", nuget: "NuGet", gomod: "Go module", cargo: "Cargo crate", swiftpm: "SwiftPM (literal declarations and saved lock evidence only; no manifest evaluation or public risk assessment)" }[dependency.ecosystem] || "Python"} package ${dependency.name} ${assessment.version || "(exact project version unknown)"}. Write a scan-friendly briefing.`,
         "When the exact project version is unknown, explain adoption and observed usage normally, but explicitly state that version-specific vulnerability checks are unavailable; never substitute the latest release or a range's lower bound.",
         "Total length: 100-150 words. Every bullet is one sentence of at most 25 words; no paragraphs.",
         "Use exactly these Markdown sections in this order:",

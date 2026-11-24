@@ -19,7 +19,7 @@ async function fixture(t) {
         await mkdir(dirname(path), { recursive: true });
         await writeFile(path, content);
     };
-    for (const name of ["extension.mjs", "managed-copilot.mjs", "atomic-file.mjs", "copilot-extension.json", "package.json", "package-lock.json",
+    for (const name of ["extension.mjs", "managed-copilot.mjs", "atomic-file.mjs", "copilot-extension.json", "package.json", "package-lock.json", "swift-grammar-LICENSE.txt",
         "analyzer/analyze.py", "web/app.js", "tests/fixture.py", "analyzer/__pycache__/cached.pyc",
         "dotnet-analyzer/Program.cs", "dotnet-analyzer/AgentReview.DotnetAnalyzer.csproj",
         "dotnet-analyzer/bin/stale.dll", "dotnet-analyzer/obj/stale.json", "node_modules/stale.js"]) {
@@ -33,6 +33,8 @@ async function fixture(t) {
         if (args.includes("ci") || args.some((arg) => arg.startsWith("npm ci "))) {
             await put(join(options.cwd, "node_modules", "typescript", "lib", "typescript.js"));
             await put(join(options.cwd, "node_modules", ".bin", "tsc"));
+            await put(join(options.cwd, "node_modules", "@repomix", "tree-sitter-wasms", "out", "tree-sitter-swift.wasm"));
+            await put(join(options.cwd, "node_modules", "@repomix", "tree-sitter-wasms", "out", "tree-sitter-python.wasm"));
         } else if (args[0] === "publish") {
             const binaries = args[args.indexOf("--output") + 1];
             for (const name of ["AgentReview.Dotnet.dll", "AgentReview.Dotnet.deps.json",
@@ -53,12 +55,14 @@ test("distribution includes runtime assets, notices, locked tooling, and managed
     const { source, output, run, calls } = await fixture(t);
     const extension = await buildDistribution({ sourceRoot: source, outputRoot: output, run, sourceRevision: "abc123" });
     assert.equal(extension, join(output, extensionPath));
-    for (const name of ["extension.mjs", "managed-copilot.mjs", "atomic-file.mjs", "LICENSE", "analyzer/analyze.py", "web/app.js",
+    for (const name of ["extension.mjs", "managed-copilot.mjs", "atomic-file.mjs", "LICENSE", "swift-grammar-LICENSE.txt", "analyzer/analyze.py", "web/app.js",
+        "node_modules/@repomix/tree-sitter-wasms/out/tree-sitter-swift.wasm",
         "node_modules/typescript/lib/typescript.js", "dotnet-analyzer/ThirdPartyNotices.txt",
         "dotnet-analyzer/bin/Release/net10.0/AgentReview.Dotnet.dll"]) {
         await access(join(extension, ...name.split("/")));
     }
     for (const name of ["tests", "analyzer/__pycache__", "node_modules/stale.js", "node_modules/.bin",
+        "node_modules/@repomix/tree-sitter-wasms/out/tree-sitter-python.wasm",
         "dotnet-analyzer/Program.cs", "dotnet-analyzer/obj", "dotnet-analyzer/bin/stale.dll"]) {
         await assert.rejects(access(join(extension, ...name.split("/"))), { code: "ENOENT" });
     }

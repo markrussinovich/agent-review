@@ -7,6 +7,7 @@ export const LANGUAGE_SUPPORT = Object.freeze([
     Object.freeze({ id: "rust", name: "Rust", extensions: Object.freeze([".rs"]) }),
     Object.freeze({ id: "markdown", name: "Markdown", executable: false, extensions: Object.freeze([".md"]) }),
     Object.freeze({ id: "cpp", name: "C / C++", extensions: Object.freeze([".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".ipp", ".tpp", ".inl"]) }),
+    Object.freeze({ id: "swift", name: "Swift", extensions: Object.freeze([".swift"]) }),
 ]);
 
 export function isCppSourcePath(path) {
@@ -36,5 +37,7 @@ export function isReviewSymbol(node) {
         || (node?.language === "go" && ["type", "struct", "interface"].includes(kind))
         || (node?.language === "rust" && ["module", "struct", "enum", "trait"].includes(kind))
         || (node?.language === "cpp" && ["namespace", "struct", "union", "enum", "type",
-            "constructor", "destructor", "operator", "lambda"].includes(kind));
+            "constructor", "destructor", "operator", "lambda"].includes(kind))
+        || (node?.language === "swift" && ["struct", "enum", "actor", "protocol", "extension", "type",
+            "property", "constructor", "destructor", "accessor", "closure"].includes(kind));
 }

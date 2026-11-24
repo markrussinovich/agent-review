@@ -1,4 +1,6 @@
 export function packageEvidenceLinks(name, version, repositoryUrl, ecosystem = "pypi") {
+    if (ecosystem === "swiftpm") return { registry: null, release: null, maintenance: null,
+        vulnerabilities: null, downloads: null, scorecard: null };
     const packageName = encodeURIComponent(name);
     if (ecosystem === "nuget") {
         const registry = `https://www.nuget.org/packages/${packageName}`;

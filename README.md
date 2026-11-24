@@ -1,7 +1,7 @@
 # Agent Review
 
 A GitHub Copilot Canvas extension for reviewing agent-made changes in Python,
-Node.js/TypeScript, C#/.NET, Go, Rust, C/C++, and Markdown repositories. Start with the change's intent and architecture,
+Node.js/TypeScript, C#/.NET, Go, Rust, C/C++, Swift, and Markdown repositories. Start with the change's intent and architecture,
 then follow its impact down to findings, dependency evidence, and source diffs.
 
 [![Agent Review: change brief, architecture graph, attention queue, package changes, source diff, originating prompt, and AI briefing](docs/agent-review.png)](docs/agent-review.png)
@@ -1120,7 +1120,7 @@ exclusion reasons, empty-state controls, themes, narrow layout, and keyboard foc
 
 ## Limits and data
 
-- Structural analysis supports Python, Node.js/TypeScript, C#/.NET, Go, Rust, and C/C++; individual
+- Structural analysis supports Python, Node.js/TypeScript, C#/.NET, Go, Rust, C/C++, and Swift; individual
   rule-based checks can be language-specific. Other text files
   remain reviewable as diffs. No findings is **not** a correctness guarantee;
   **Priority** ranks attention, not security.
@@ -1290,6 +1290,129 @@ aggregate evidence, not proof that a named test executed a path.
 
 See the portable [C/C++ sample](test-repos/cpp-demo/README.md) for a
 dependency-free native build and review walkthrough.
+
+### Swift reviews
+
+Swift Phase 1 uses a **bundled Tree-sitter WASM parser**, with no Swift or Xcode
+installation required for static analysis. Both saved snapshots contribute
+types, protocols, actors, extensions, functions/methods, properties/accessors,
+initializers, closures, signature/body changes, lexical decisions, and
+source-backed architecture and impact relationships. Calls and
+inheritance/conformance links are **inferred**, never compiler-resolved facts.
+Unchanged consumers remain available when their target membership can be
+inferred from literal SwiftPM declarations.
+
+The pinned `@repomix/tree-sitter-wasms` distribution supplies the Swift grammar;
+its ABI 14 is exercised against the pinned `web-tree-sitter` runtime. Prepared
+releases retain only its Swift WASM plus licensing, including the upstream
+[Swift grammar notice](.github/extensions/agent-review/swift-grammar-LICENSE.txt).
+The grammar does not fully handle modern macro/directive syntax. Parse errors,
+conditional compilation, unresolved calls and unsupported manifest expressions
+are disclosed, not hidden. Ordinary call arguments within partially parsed
+Swift Testing bodies can still yield inferred links; this does not expand
+`#expect`, `#require`, or other macros. Tests in conditionally compiled files
+cannot be selected for execution. Closure capture/dynamic invocation is not
+resolved, and decision conditions are lexical rather than exhaustive control
+flow. Files are limited to 5 MB and two seconds per parse; decision maps retain
+60 entries per callable and 2,000 entries overall.
+
+**Scanning never evaluates Package.swift**, invokes Swift/Xcode, restores
+dependencies, expands macros, runs build plugins, or executes tests. Literal
+`.package`, `.target`, `.executableTarget`, `.testTarget`, and `.product`
+declarations are read from the syntax tree. Custom source/exclusion sets,
+conditional/dynamic dependencies, overlapping targets, and executable
+manifest mutation remain unknown. Supported literal target paths must remain
+inside the saved repository. A product declaration can map an import to a
+package; matching a package's name alone cannot.
+
+`Package.resolved` schemas 1, 2 and 3 supply **separate saved lock evidence**,
+including version, branch and revision. A pin is not proof that a manifest was
+resolved or that the package was built. Conflicting locations and invalid
+lockfiles are reported. Public SwiftPM registry metadata and vulnerability
+assessment are not implemented; risk remains unknown and no fallback PyPI
+query is made. `.build` and `.swiftpm` generated/dependency directories are
+excluded from snapshots. Xcode projects, schemes, Apple SDK integration,
+compiler-resolved calls, type inference, dynamic dispatch, macro expansion,
+actor isolation and Sendable correctness are deferred.
+
+#### Swift test evidence and opt-in execution
+
+Direct XCTestCase `test*` methods and Swift Testing `@Test` functions can link
+to changed callables through saved source relationships. These associations,
+including transitive links, are explicitly **inferred**. Named test outcomes
+and imported suite coverage do **not** upgrade them to **Confirmed**.
+
+**Run linked tests** requires an unambiguous saved SwiftPM test target. It shows
+the complete commands first, runs one manifest at a time, and selects exact
+test identities using anchored filters. Swift 6+ is required; configure
+`test_swift` in `.agent-review.json`, or `AGENT_REVIEW_TEST_SWIFT`, to select a
+particular Swift executable. The default is `swift` on PATH. Arguments are
+passed directly, not through a shell. A representative XCTest command is:
+
+```powershell
+swift test --package-path . --force-resolved-versions --enable-xctest --disable-swift-testing --parallel --num-workers 1 --filter '^CoreTests\.PolicyTests/testScore$' --xunit-output <temporary-results.xml>
+```
+
+Swift Testing runs disable XCTest instead and match the saved function/suite
+identity, including argument labels. Fresh xUnit reports must contain the
+selected named test and a completed outcome; missing reports, different tests,
+zero-test runs and inconsistent process results are errors. No per-test path
+trace is collected. Cancellation/timeouts stop the owned process tree.
+
+Execution may evaluate the manifest, obtain locked dependencies, build
+plugins/macros and execute reviewed code. **An export is not a sandbox**.
+Historical reviews run in disposable exports; worktree runs retain shared
+freshness checks. Swift source, test, manifest and lockfile inventories and
+hashes are checked before and after each command. Changed/missing/added inputs
+or symlinks prevent results being accepted. These checks are not an attestation
+against a malicious build that forges reports or transiently changes inputs.
+
+#### Importing Swift aggregate coverage
+
+Generate LCOV and its descriptor in the **same trusted coverage run**, then
+save both in the reviewed snapshot. At the repository root, `swift-coverage.json`
+has this shape (replace every hash with an actual SHA-256):
+
+```json
+{
+  "revision": "<full reviewed HEAD commit>",
+  "report": "lcov.info",
+  "report_sha256": "<SHA-256 of exact LCOV bytes>",
+  "source_hashes": {
+    "Package.swift": "<source SHA-256>",
+    "Package.resolved": "<source SHA-256>",
+    "Sources/Core/Policy.swift": "<source SHA-256>",
+    "Tests/CoreTests/PolicyTests.swift": "<source SHA-256>"
+  }
+}
+```
+
+Include **every saved `.swift` file and every present `Package.resolved`**,
+including tests; omit the lockfile key if it does not exist. Source hashing
+removes a leading UTF-8 BOM and normalizes CRLF to LF; the report hash uses
+unmodified bytes. LCOV `SF:` records must be exact repository-relative Swift
+paths with valid in-range line numbers and nonnegative hits. Export or filter
+out dependency and SDK records before hashing. Missing/stale input hashes,
+changed inventories, revision/report mismatches and malformed records reject
+the report as a whole. Do not bless an old report by recomputing metadata
+against newer sources. Accepted coverage annotates aggregate executed and
+unexecuted lines only; it never proves which test traversed a path.
+
+Swift regressions:
+
+```powershell
+python -m unittest discover -s .github\extensions\agent-review\tests -p test_swift_adapter.py
+node --test .github\extensions\agent-review\tests\test-swift-support.mjs
+node .github\extensions\agent-review\tests\browser\swift-review.mjs
+```
+
+The native SwiftPM case runs only when Swift is installed; otherwise it reports
+an explicit skip. Owned-runner stand-ins validate integration, cancellation,
+snapshot rejection and evidence handling, not the native toolchain. The browser
+regression uses the actual analyzer/server and a Git-backed SwiftPM sample;
+set `AGENT_REVIEW_UX_REPO`/`AGENT_REVIEW_UX_BASE` for read-only checks against
+another changed Swift repository. It does not execute that repository's tests.
+Use the browser package/executable/artifact settings described below.
 
 ### Rust reviews
 
@@ -1482,7 +1605,7 @@ disposable repository is separate from this persistent demo.
 
 Snapshot loading, review lifecycle, source navigation, and UI remain shared.
 Implemented language adapters are **Python**, **Node.js/TypeScript**, **C#/.NET**,
-**Go**, **Rust**, **C/C++**, and **Markdown**.
+**Go**, **Rust**, **C/C++**, **Swift**, and **Markdown**.
 
 - `analyzer/language_adapters.py` defines the snapshot contract and selects
   adapters using both trees (including deleted sources and manifest-only changes).
@@ -1497,7 +1620,9 @@ Implemented language adapters are **Python**, **Node.js/TypeScript**, **C#/.NET*
   routes Roslyn and the opt-in xUnit runner; `go-review-adapter.mjs` routes
   saved-source Go decisions and exact-test execution; and `rust-review-adapter.mjs` routes
   saved-syntax path extraction and the opt-in exact Cargo runner. `cpp-review-adapter.mjs`
-  routes precomputed Tree-sitter decisions and opt-in native test builds/execution. Per-language results merge
+  routes precomputed Tree-sitter decisions and opt-in native test builds/execution.
+  `swift-review-adapter.mjs` routes saved Swift syntax, literal SwiftPM evidence
+  and opt-in exact named-test execution. Per-language results merge
   into the shared code-path view; unknown adapters and duplicate callable IDs
   fail explicitly.
 - `web/languages.mjs` shares implemented source-language and test-path
