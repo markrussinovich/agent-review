@@ -142,8 +142,8 @@ setTimeout(() => fs.writeFileSync(report, '<testsuites><testsuite tests="1"><tes
                 assert.equal(state.testRun.history.at(-1).status, "cancelled");
                 assert.equal(state.testRun.counts.passed, 2, "Cancellation retains earlier named outcomes without confirming paths.");
             }
-            await page.screenshot({ path: join(artifacts, `swift-${theme}-source.png`), fullPage: true });
         }
+        await page.screenshot({ path: join(artifacts, `swift-${theme}-source.png`), fullPage: true });
         await page.locator("#source-close").click();
         if (fixture) {
             await openChangeDetails(page);
@@ -163,7 +163,7 @@ setTimeout(() => fs.writeFileSync(report, '<testsuites><testsuite tests="1"><tes
         assert.deepEqual(errors, []);
         await page.close();
     }
-    console.log(`PASS Swift live application: ${fixture ? "Git-backed package, production parser and owned stand-in runner (not native Swift)" : repo}; light/dark, source, paths, coverage, packages, focus and narrow layouts.`);
+    console.log(`PASS Swift live application: ${fixture ? "Git-backed package, production parser and owned stand-in runner (not native Swift)" : repo}; light/dark, source, paths, graph and narrow layouts${fixture ? ", plus coverage, package evidence, keyboard execution and cancellation" : " (read-only; no native execution)"}.`);
 } finally {
     await browser?.close();
     await server?.close();

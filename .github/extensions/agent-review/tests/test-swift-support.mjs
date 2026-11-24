@@ -11,7 +11,7 @@ import { baseline, current } from "./fixtures/swift-demo.mjs";
 import { reviewAdapter, sourceAdapter, testAdapterForMap, mergeCodePathMaps } from "../language-adapters.mjs";
 import { isReviewSymbol } from "../web/languages.mjs";
 import { parseSourceReference } from "../web/source-references.mjs";
-import { pathEvidence, scopeDecisionMap } from "../web/decision-map.mjs";
+import { pathEvidence, scopeDecisionMap, callablesForSubject } from "../web/decision-map.mjs";
 import { swiftTestPlan, swiftTestCommand, formatSwiftTestCommand, swiftTestOutcome, runSwiftTests } from "../swift-test-run.mjs";
 import { ReviewState } from "../review-state.mjs";
 import { exportSnapshot } from "../test-run.mjs";
@@ -138,6 +138,19 @@ struct Value { var data: Int { get { return 7 } set { log() } } }
     assert.ok(report.symbols.some((symbol) => symbol.kind === "closure"));
     const getter = report.code_paths.callables.find((item) => item.qualname === "Value.data.get");
     assert.equal(getter.entries[0].decision.value, "7");
+    const closure = report.symbols.find((symbol) => symbol.kind === "closure");
+    assert.deepEqual(callablesForSubject(report.code_paths, report, closure).map((item) => item.id), [closure.id]);
+    for (const [kind, source] of [
+        ["actor", "actor Store { func read() -> Int { return 1 } }"],
+        ["protocol", "protocol Store { func read() -> Int }"],
+        ["extension", "extension Store { func read() -> Int { return 1 } }"],
+    ]) {
+        const scoped = await analyzeSwiftSnapshot({ current: { "Scope.swift": source } });
+        const owner = scoped.symbols.find((symbol) => symbol.kind === kind);
+        const member = scoped.symbols.find((symbol) => symbol.name === "read");
+        assert.ok(owner && member);
+        assert.ok(callablesForSubject(scoped.code_paths, scoped, owner).some((item) => item.id === member.id), kind);
+    }
 });
 
 test("overloads, local shadowing, instance dispatch, closures and conditional compilation stay conservative", async () => {
